@@ -56,8 +56,7 @@ use automerge::AutoCommit;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
-    OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
-    RetryPolicy, RiskLevel,
+    OperationKind, ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::ImagerDoc;
@@ -160,6 +159,11 @@ pub fn operation_resource(
 ) -> Resource {
     let device = device.unwrap_or("").to_string();
     let expected = device.clone();
+    let confirmation = if device.is_empty() {
+        ConfirmationPolicy::Confirm
+    } else {
+        ConfirmationPolicy::Phrase { phrase: device }
+    };
     let write = ActionSpec::typed_operation(
         "write",
         "Erase drive and write image",
@@ -181,7 +185,7 @@ pub fn operation_resource(
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Destructive,
-        confirmation: ConfirmationPolicy::Phrase { phrase: device },
+        confirmation,
         retry: RetryPolicy::AtMostOnce,
         // The handler starts the worker; status is a separate operation.
         execution: ExecutionMode::Immediate,
@@ -302,6 +306,8 @@ pub enum ImagerAction {
     SetDeviceLabel { value: String },
     /// Enroll the setup machine's person onto the target as a new device.
     SetEnrollLocalIdentity { on: bool },
+    /// Create the empty source, history, and install profile on a new record.
+    EnsureRecords,
 }
 
 impl Action for ImagerAction {
@@ -355,6 +361,7 @@ impl Action for ImagerAction {
             ImagerAction::SetEnrollLocalIdentity { on } => {
                 ImagerDoc::set_profile_enroll_local_identity(doc, *on);
             }
+            ImagerAction::EnsureRecords => ImagerDoc::seed(doc, &[]),
         }
         Ok(())
     }
@@ -654,46 +661,73 @@ fn source_resource(source: &Source) -> Resource {
     .with_action(clear)
 }
 
+/// Whether an authenticated Tilo image may carry the install-profile palette.
+pub(crate) fn source_is_customizable(source: &Source) -> bool {
+    source.installable
+        && source.kind == SourceKind::TiloImage
+        && source.expected_sha256.as_deref().is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// Collaborative children for [`tilo_resource::publish`]: reviewed source and
+/// (when customizable) the install-profile actions.
+pub(crate) fn document_children(
+    source: Option<&Source>,
+    profile: &InstallProfile,
+) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let Some(source) = source else {
+        return children;
+    };
+    children.push(source_resource(source));
+    if source_is_customizable(source) {
+        children.extend(provide_resources(&source.name, profile));
+    }
+    // Wi-Fi and enrollment apply during write for every reviewed source.
+    // The media profile stays secret-free and never carries the passphrase.
+    children.extend(provide_write_setup(&source.name));
+    children
+}
+
+/// Export headless configuration — a View on the write plan, not document state.
+pub(crate) fn export_config_spec(plan_complete: bool) -> ActionSpec {
+    operation_spec(
+        "export-config",
+        "Export headless configuration",
+        OperationKind::View,
+        ImagerOperation::ExportConfig,
+    )
+    .with_contract(ActionContract {
+        availability: if plan_complete {
+            tilo_actions::Availability::Available
+        } else {
+            tilo_actions::Availability::Unavailable {
+                code: "incomplete_plan".into(),
+                reason: "Select an image source and target drive first".into(),
+            }
+        },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
+        discovery: DiscoveryScope::Launchable,
+        ..ActionContract::view()
+    })
+}
+
 fn target_id(target: &TargetDrive) -> String {
     let identity = target.stable_id.as_deref().unwrap_or(&target.name);
     format!("imager.target:{identity}")
 }
 
-/// The complete resource topology, including local device/job observations.
-/// Source/profile records are collaborative; device and job resources are
-/// explicitly local capability projections and expose only safe status/write
-/// operations with their contracts.
-pub fn plan_resources(
-    source: Option<&Source>,
+/// Machine-local target / job / result projections. Not document state — the
+/// framework resource does not own these; standalone publish and (optionally)
+/// hosted extras may attach them beside the one document door.
+pub(crate) fn machine_local_resources(
     targets: &[TargetDrive],
     progress: &crate::model::Progress,
-    profile: &InstallProfile,
 ) -> Vec<Resource> {
     let mut resources = Vec::new();
-    let source_root = source.map_or_else(
-        || Resource::new("imager.sources", "imager.sources", "Image sources"),
-        |source| {
-            Resource::new("imager.sources", "imager.sources", "Image sources")
-                .with_child(source_resource(source))
-        },
-    );
-    resources.push(source_root);
-
-    if let Some(source) = source.filter(|source| {
-        source.installable
-            && source.kind == SourceKind::TiloImage
-            && source.expected_sha256.as_deref().is_some_and(|digest| {
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-    }) {
-        resources.extend(provide_resources(&source.name, profile));
-        // Official images also offer on-write Wi-Fi / enrollment; the media
-        // profile stays secret-free and never carries the passphrase or key.
-        resources.extend(provide_write_setup(&source.name));
-    } else if let Some(source) = source {
-        resources.extend(provide_write_setup(&source.name));
-    }
-
     let target_children = targets
         .iter()
         .map(|target| Resource::new(target_id(target), "imager.target", target.dev_path()));
@@ -733,14 +767,29 @@ pub fn plan_resources(
     resources
 }
 
-impl ResourceProvider for crate::app::ImagerApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        plan_resources(
-            self.resource_source(),
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ImagerApp {
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// plus machine-local target/job observations.
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let mut state = crate::resource::Imager::read(doc).unwrap_or_default();
+        if state.source.is_none() {
+            state.source = self.resource_source().cloned();
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::Imager>(
+            "imager.sources",
+            "Image sources",
+            &state,
+        );
+        // Live write availability on the same root (not a second sibling tree).
+        crate::resource::overlay_live_write_ops(&mut root, self);
+        let mut resources = vec![root];
+        resources.extend(machine_local_resources(
             self.resource_targets(),
             self.resource_progress(),
-            &ImagerDoc::profile(doc),
-        )
+        ));
+        resources
     }
 }
 
@@ -756,6 +805,18 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    fn find_kind<'a>(resources: &'a [Resource], kind: &str) -> Option<&'a Resource> {
+        for resource in resources {
+            if resource.kind == kind {
+                return Some(resource);
+            }
+            if let Some(found) = find_kind(&resource.children, kind) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     /// Dispatch an action through the executor, exactly as the on-screen
@@ -970,18 +1031,14 @@ mod tests {
             let mut doc = seeded();
             app.sync(&mut doc, &automerge::ROOT);
             // Seeded source is an installable Tilo image → customization and
-            // on-write Wi-Fi / enrollment are both published.
+            // on-write Wi-Fi / enrollment are both published under the door.
             {
-                let resources = ResourceProvider::resources(&app, &doc);
+                let resources = app.publish_resources(&doc);
                 assert!(
-                    resources
-                        .iter()
-                        .any(|resource| resource.kind == "imager.customization"),
+                    find_kind(&resources, "imager.customization").is_some(),
                     "official image publishes media customization"
                 );
-                let setup = resources
-                    .iter()
-                    .find(|resource| resource.kind == "imager.write-setup")
+                let setup = find_kind(&resources, "imager.write-setup")
                     .expect("official image publishes write setup");
                 let ids: Vec<&str> = setup.actions.iter().map(|a| a.id.as_str()).collect();
                 assert_eq!(
@@ -1003,7 +1060,7 @@ mod tests {
             };
             ImagerDoc::set_source(&mut doc, Some(&iso));
             app.sync(&mut doc, &automerge::ROOT);
-            let resources = ResourceProvider::resources(&app, &doc);
+            let resources = app.publish_resources(&doc);
             assert!(resources.iter().any(|resource| {
                 resource.kind == "imager.source"
                     || resource
@@ -1012,13 +1069,16 @@ mod tests {
                         .any(|child| child.kind == "imager.source")
             }));
             assert!(
-                !resources
-                    .iter()
-                    .any(|resource| resource.kind == "imager.customization")
+                !resources.iter().any(|resource| {
+                    resource.kind == "imager.customization"
+                        || resource
+                            .children
+                            .iter()
+                            .any(|child| child.kind == "imager.customization")
+                }),
+                "plain ISO must not publish a customization resource"
             );
-            let setup = resources
-                .iter()
-                .find(|resource| resource.kind == "imager.write-setup")
+            let setup = find_kind(&resources, "imager.write-setup")
                 .expect("disk image publishes write setup");
             let ids: Vec<&str> = setup.actions.iter().map(|a| a.id.as_str()).collect();
             assert_eq!(
@@ -1128,12 +1188,18 @@ mod tests {
     /// profile come from the document, the local device observations from the
     /// sample drives with no job running.
     fn doc_resources(doc: &AutoCommit) -> Vec<Resource> {
-        plan_resources(
-            ImagerDoc::source(doc).as_ref(),
+        let state =
+            <crate::resource::Imager as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Imager>(
+            "imager.sources",
+            "Image sources",
+            &state,
+        )];
+        resources.extend(machine_local_resources(
             &sample_targets(),
             &crate::model::Progress::default(),
-            &ImagerDoc::profile(doc),
-        )
+        ));
+        resources
     }
 
     ui::action_contract_tests! {
@@ -1233,5 +1299,15 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn an_empty_imager_record_is_created_by_the_action() {
+        let mut doc = automerge::AutoCommit::new();
+        assert!(ImagerDoc::is_empty(&doc));
+        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
+        assert!(!ImagerDoc::is_empty(&doc));
+        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
+        assert!(ImagerDoc::source(&doc).is_none());
     }
 }

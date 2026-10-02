@@ -29,7 +29,7 @@ collab-types = { path = "../../collab/collab-types" }
 getrandom.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 pollster.workspace = true
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 serde_json.workspace = true
 taffy = { workspace = true, features = ["content_size"] }
 tempfile.workspace = true

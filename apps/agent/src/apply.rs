@@ -47,10 +47,10 @@ pub struct Editor {
 /// action rather than only ones whose arguments happen to name a range.
 fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(c) = tilo_doc::model::open(doc, &automerge::ROOT) else {
         return out;
     };
-    let snap = qdoc::model::materialize(doc, &c);
+    let snap = tilo_doc::model::materialize(doc, &c);
     walk_block_texts(&snap.blocks, &mut out);
     out
 }
@@ -59,7 +59,7 @@ fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
 /// function rather than nested so the item does not follow statements in
 /// its caller's scope.
 fn walk_block_texts(
-    blocks: &[qdoc::BlockView],
+    blocks: &[tilo_doc::BlockView],
     out: &mut std::collections::BTreeMap<String, String>,
 ) {
     for b in blocks {
@@ -117,7 +117,7 @@ pub fn looks_like_a_document(bytes: &[u8]) -> bool {
 }
 
 fn has_document_schema(doc: &AutoCommit) -> bool {
-    qdoc::model::open(doc, &automerge::ROOT).is_ok()
+    tilo_doc::model::open(doc, &automerge::ROOT).is_ok()
 }
 
 impl Editor {
@@ -168,7 +168,7 @@ impl Editor {
         tilo_resource::history::versions(&mut self.doc)
             .into_iter()
             .rev()
-            .find(|version| !qdoc::model::is_schema_genesis(version))
+            .find(|version| !tilo_doc::model::is_schema_genesis(version))
             .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
     }
 
@@ -364,10 +364,10 @@ impl Editor {
         let Ok(doc) = AutoCommit::load(bytes) else {
             return false;
         };
-        let Ok(c) = qdoc::model::open(&doc, &automerge::ROOT) else {
+        let Ok(c) = tilo_doc::model::open(&doc, &automerge::ROOT) else {
             return false;
         };
-        let snapshot = qdoc::model::materialize(&doc, &c);
+        let snapshot = tilo_doc::model::materialize(&doc, &c);
         let blocks = crate::plan::blocks(&snapshot);
         crate::plan::find_addressed(&blocks, name).is_some()
     }
@@ -647,7 +647,7 @@ impl Editor {
 
     /// Mark whatever text this replica just added with the durable
     /// `author` mark, so the document itself records who wrote it. Read
-    /// back by [`qdoc::author_runs`]. A mark rather than a block field
+    /// back by [`tilo_doc::author_runs`]. A mark rather than a block field
     /// because authorship follows the characters: splitting a paragraph,
     /// merging two, typing into somebody else's sentence all leave each
     /// run attributed to whoever actually wrote it.
@@ -670,24 +670,17 @@ impl Editor {
         if spans.is_empty() {
             return;
         }
-        let Ok(c) = qdoc::model::open(&self.doc, &automerge::ROOT) else {
-            return;
+        let action = word_processor::actions::RichTextAction::SetMark {
+            region: word_processor::actions::RegionKind::Body,
+            spans: spans
+                .into_iter()
+                .map(|(block, start, end)| word_processor::actions::Span { block, start, end })
+                .collect(),
+            name: tilo_doc::schema::MARK_AUTHOR.to_string(),
+            value: Some(word_processor::actions::MarkVal::Str(self.author.clone())),
+            also_clear: Vec::new(),
         };
-        let mut ids = qdoc::IdGen::new(self.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
-            doc: &mut self.doc,
-            c: &c,
-            ids: &mut ids,
-        };
-        for (id, start, end) in spans {
-            dm.add_mark(
-                &id,
-                start,
-                end,
-                qdoc::schema::MARK_AUTHOR,
-                self.author.as_str(),
-            );
-        }
+        let _ = action.apply_under(&mut self.doc, &automerge::ROOT);
     }
 
     /// How many ancestor changes this replica is waiting for.
@@ -715,10 +708,10 @@ impl Editor {
     /// When the document held has no qdoc schema — one this editor was not
     /// seeded from a peer's snapshot for, or one from an app that does not
     /// use it.
-    pub fn snapshot(&self) -> Result<qdoc::DocSnapshot> {
-        let c = qdoc::model::open(&self.doc, &automerge::ROOT)
+    pub fn snapshot(&self) -> Result<tilo_doc::DocSnapshot> {
+        let c = tilo_doc::model::open(&self.doc, &automerge::ROOT)
             .map_err(|e| anyhow::anyhow!("the document has no qdoc schema: {e:?}"))?;
-        Ok(qdoc::model::materialize(&self.doc, &c))
+        Ok(tilo_doc::model::materialize(&self.doc, &c))
     }
 }
 
@@ -930,10 +923,10 @@ mod tests {
     #[test]
     fn comment_actions_are_discovered_and_applied_from_the_live_resource_tree() {
         let mut document = AutoCommit::new();
-        let containers = qdoc::model::init(&mut document, &ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&document, &containers);
+        let containers = tilo_doc::model::init(&mut document, &ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&document, &containers);
         let block = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut document,
                 c: &containers,
                 ids: &mut ids,
@@ -1012,10 +1005,10 @@ mod tests {
     #[test]
     fn a_confirmed_destructive_invocation_is_recorded_within_the_run() {
         let mut document = AutoCommit::new();
-        let containers = qdoc::model::init(&mut document, &ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&document, &containers);
+        let containers = tilo_doc::model::init(&mut document, &ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&document, &containers);
         let (paragraph, image) = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut document,
                 c: &containers,
                 ids: &mut ids,

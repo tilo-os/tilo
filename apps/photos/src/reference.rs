@@ -74,7 +74,6 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::model::OpenImage;
-    use tilo_actions::ResourceProvider;
 
     const PATH: &str = "/var/workspace/photos/harbour.png";
 
@@ -103,7 +102,7 @@ mod tests {
         let doc = doc_with_image(PATH);
         let r = image_reference(&doc).unwrap();
 
-        let published = PhotosResources.resources(&doc);
+        let published = PhotosResources.publish_resources(&doc);
         let ids: Vec<String> = published
             .iter()
             .map(|res| res.id.as_str().to_string())

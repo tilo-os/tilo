@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, RetryPolicy,
 };
 
 use crate::doc::SnippetsDoc;
@@ -335,20 +335,41 @@ fn snippet_label(s: &Snippet) -> String {
     format!("{} · {}", base, s.language.label())
 }
 
-/// Build the small contextual root shown immediately by Ctrl+K.
-pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
-    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
-    lib = lib.with_action(view_operation(
+/// Library-level View ops (search focus). Document mutations live on
+/// [`crate::resource::Snippets::declarations`] / [`crate::resource::Snippets::children`].
+pub(crate) fn library_view_specs() -> Vec<ActionSpec> {
+    vec![view_operation(
         "search",
         "Search snippets",
         &SnippetsOperation::FocusSearch,
-    ));
+    )]
+}
 
-    // Library-level: create a new snippet at the current folder. The uuid is
-    // minted once when the title argument is committed, then baked into the
-    // envelope, so replay stays deterministic.
-    let folder = ctx.current_folder.clone();
-    lib = lib.with_action(ActionSpec::prompted(
+/// Document-derived children for [`tilo_resource::publish`]: tags and snippets.
+pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
+    let tags = snippets
+        .iter()
+        .flat_map(|snippet| snippet.tags.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut children = Vec::with_capacity(tags.len().saturating_add(snippets.len()));
+    for tag in tags {
+        children.push(provide_tag_resource(tag));
+    }
+    for snippet in snippets {
+        children.push(provide_snippet_resource(snippet));
+    }
+    children
+}
+
+/// Stable resource id for the peer's selected sidebar folder.
+pub fn folder_resource_id(folder: &str) -> String {
+    format!("snippets.folder:{}", stable_key(folder))
+}
+
+/// Prompted create filed under `folder`. Uuid is minted when the title is
+/// committed so replay stays deterministic.
+fn new_snippet_in_folder_spec(folder: String) -> ActionSpec {
+    ActionSpec::prompted(
         "new-snippet",
         "New snippet",
         "Title",
@@ -363,9 +384,28 @@ pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> 
             }
             encode(&create_snippet_action(s))
         },
-    ));
+    )
+}
 
-    vec![lib]
+/// Peer-local sidebar folder: create bound to the selected folder. Published
+/// beside the framework root when hosted — never a second `snippets.library`.
+/// [`crate::resource::Snippets::declarations`] already files under All Snippets,
+/// so an empty folder yields no extra.
+pub fn live_folder_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
+    if ctx.current_folder.is_empty() {
+        return Vec::new();
+    }
+    vec![folder_context_resource(ctx)]
+}
+
+fn folder_context_resource(ctx: &SnippetsResourceCtx) -> Resource {
+    let folder = ctx.current_folder.clone();
+    Resource::new(
+        folder_resource_id(&folder),
+        "snippets.folder",
+        folder.clone(),
+    )
+    .with_action(new_snippet_in_folder_spec(folder))
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {
@@ -455,30 +495,24 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     ))
 }
 
-/// Build the complete resource tree for audits and non-interactive callers.
+/// The published library for audits and non-interactive callers. Sidebar folder
+/// creates stay live extras beside that root.
 pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut lib = provide_contextual_resources(ctx)
-        .pop()
-        .unwrap_or_else(|| Resource::new("snippets.library", "snippets.library", "Snippets"));
-    let snippets = SnippetsDoc::list(doc);
-    let tags = snippets
-        .iter()
-        .flat_map(|snippet| snippet.tags.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>();
-    for tag in tags {
-        lib = lib.with_child(provide_tag_resource(tag));
-    }
-
-    for s in snippets {
-        lib = lib.with_child(provide_snippet_resource(&s));
-    }
-
+    let state =
+        <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut lib = ui::tilo_resource::publish::<crate::resource::Snippets>(
+        crate::resource::LIBRARY_RESOURCE_ID,
+        "Snippets",
+        &state,
+    );
+    lib.children.extend(live_folder_resources(ctx));
     vec![lib]
 }
 
-impl ResourceProvider for crate::app::SnippetsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.snippets_resource_ctx(), doc)
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SnippetsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.published_library(doc)]
     }
 }
 
@@ -521,12 +555,12 @@ mod tests {
             .expect("a snippet resource names its id")
     }
 
-    // The complete tree (every tag and snippet), not the bounded contextual
-    // root Ctrl+K shows first, so the sweep reaches each snippet's actions.
+    // The published library: every tag and snippet from the document, so the
+    // sweep reaches each snippet's actions.
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| provide_resources(&SnippetsApp::new_demo().snippets_resource_ctx(), doc),
+        resources: |doc| SnippetsApp::new_demo().publish_resources(doc),
         palette: ["New snippet", "Delete snippet", "Reveal tagged snippets"],
         replay: [
             rename => |doc| encode(&rename_action(first_snippet(doc).id, "Converged Title")),
@@ -566,6 +600,10 @@ mod tests {
 
     /// Ctrl+K publishes the library tree; delete removes exactly one row; malformed ids are no-ops.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn snippet_tree_and_actions_touch_exactly_the_addressed_row() {
         // Case `ctrl_k_publishes_the_library_and_snippet_tree`.
         // Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
@@ -578,7 +616,12 @@ mod tests {
             assert_eq!(lib.kind, "snippets.library");
             let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
-            assert!(lib.children.is_empty(), "the contextual root stays bounded");
+            assert!(
+                lib.children
+                    .iter()
+                    .any(|child| child.kind == "snippets.snippet"),
+                "published snippets ride the library door"
+            );
             let snippet = first_snippet(&doc);
             let resource_id = snippet_resource_id(snippet.id);
             let snip =

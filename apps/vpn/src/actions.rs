@@ -13,7 +13,7 @@
 //!
 //! The resource tree mirrors the model: the vault owns its connections. The
 //! vault exports profile import (per protocol) and the global Tor toggle; each
-//! connection exports rename / toggle-Tor / delete.
+//! connection exports connect / disconnect / rename / toggle-Tor / delete.
 //!
 //! ## What is *not* an action
 //!
@@ -48,17 +48,18 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::VpnDoc;
-use crate::model::{ConnId, ConnKind, Connection, Vault};
+use crate::model::{ConnId, Connection, Vault};
 
 /// Registry `type_id` for every VPN action.
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
 pub const VPN_IMPORT_TYPE: &str = "vpn.import-profile";
 pub const VPN_DELETE_TYPE: &str = "vpn.delete-profile";
 pub const VPN_PROVISION_TYPE: &str = "vpn.provision-profile";
+pub const VPN_TOGGLE_TYPE: &str = "vpn.toggle-tunnel";
 
 /// Every collaborative operation the VPN client exports on its saved fleet.
 ///
@@ -213,67 +214,63 @@ fn config_contract() -> ActionContract {
     }
 }
 
+/// Connect / disconnect Effects for one saved profile. Live surfaces overlay
+/// availability from local `NetworkManager` provisioning; the resource door
+/// always advertises both so [`tilo_resource::publish`] owns the palette row.
+pub fn tunnel_toggle_specs(id: ConnId) -> Vec<ActionSpec> {
+    [("connect", "Connect"), ("disconnect", "Disconnect")]
+        .into_iter()
+        .filter_map(|(action_id, label)| {
+            ActionSpec::operation(
+                action_id,
+                label,
+                OperationKind::Effect,
+                VPN_TOGGLE_TYPE,
+                &id.to_string(),
+            )
+            .ok()
+            .map(|spec| {
+                spec.with_contract(ActionContract {
+                    permission: PermissionRequirement::Admin,
+                    risk: RiskLevel::Privileged,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: true },
+                    result: ResultSpec::Job,
+                    tags: vec!["vpn".into(), "tunnel".into()],
+                    ..ActionContract::default()
+                })
+            })
+        })
+        .collect()
+}
+
 /// A one-line label for a connection in the palette.
 fn connection_label(c: &Connection) -> String {
     format!("{} — {} · {}", c.name, c.kind.long_name(), c.status.label())
 }
 
-/// Build the resource tree the VPN client currently has open: the vault (add a
-/// connection per protocol + the global Tor toggle) and each saved connection
-/// (rename, toggle Tor, delete). Every document-mutating operation is exported
-/// as the same action the on-screen affordance dispatches.
-///
-/// The vault root is always published — an open VPN app can always "add a
-/// connection", even with an empty fleet — while the per-connection children
-/// track the saved list.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one resource-tree builder keeps profile actions and their contracts together"
-)]
-pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
-    let mut root = Resource::new("vpn.vault", "vpn.vault", "VPN");
-
-    // Global Tor preference (stored config).
+/// Global Tor preference. The label follows the saved setting.
+pub(crate) fn tor_global_spec(vault: &Vault) -> ActionSpec {
     let tor_label = if vault.tor_global {
         "Stop routing all traffic over Tor"
     } else {
         "Route all traffic over Tor"
     };
-    root = root.with_action(immediate_spec(
+    immediate_spec(
         "toggle-tor-global",
         tor_label,
         &set_tor_global_action(!vault.tor_global),
-    ));
+    )
+}
 
-    // A name is not a VPN profile. Import is a typed privileged host effect;
-    // the collaborative add action is emitted only after validation succeeds.
-    for kind in [ConnKind::WireGuard, ConnKind::OpenVpn] {
-        let (id, label) = match kind {
-            ConnKind::WireGuard => ("import-wireguard", "Import WireGuard profile"),
-            ConnKind::OpenVpn => ("import-openvpn", "Import OpenVPN profile"),
-        };
-        let Ok(mut spec) = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::Effect,
-            VPN_IMPORT_TYPE,
-            &kind.as_str(),
-        ) else {
-            continue;
-        };
-        spec.contract = ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: true },
-            result: ResultSpec::Job,
-            tags: vec!["vpn".into(), "import".into(), kind.as_str().into()],
-            ..ActionContract::default()
-        };
-        root = root.with_action(spec);
-    }
-
+/// Saved profiles as children of the published vault.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource-tree builder keeps profile actions and their contracts together"
+)]
+pub(crate) fn connection_resources(vault: &Vault) -> Vec<Resource> {
+    let mut children = Vec::new();
     for c in &vault.connections {
         let id = c.id;
         let mut cr = Resource::new(
@@ -305,6 +302,9 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
                 ..ActionContract::default()
             };
             cr = cr.with_action(provision);
+        }
+        for toggle in tunnel_toggle_specs(id) {
+            cr = cr.with_action(toggle);
         }
         // Never make endpoint, routing, address, certificate/key or other
         // tunnel material searchable. A peer can navigate the stable profile
@@ -349,22 +349,32 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             cr = cr.with_action(delete);
         }
 
-        root = root.with_child(cr);
+        children.push(cr);
     }
-
-    vec![root]
+    children
 }
 
-impl ResourceProvider for crate::app::VpnApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Level-triggered: recomputed each frame from the document, the source
-        // of truth every action reads and writes.
-        provide_resources(&VpnDoc::read_vault(doc))
+/// The published vault. Import effects and the Tor toggle ride that resource;
+/// each saved profile is a child.
+pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::Vpn>(
+        "vpn.vault",
+        "VPN",
+        vault,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::VpnApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.published_vault(&VpnDoc::read_vault(doc))]
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::model::ConnKind;
+
     use super::*;
     use crate::app::VpnApp;
     use crate::model::draft_connection;
@@ -486,6 +496,8 @@ mod tests {
             let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
             assert!(h_actions.contains(&"delete"), "{h_actions:?}");
+            assert!(h_actions.contains(&"connect"), "{h_actions:?}");
+            assert!(h_actions.contains(&"disconnect"), "{h_actions:?}");
 
             // The flattened tree exports every action, including the per-connection
             // operations that sort after the vault-level ones.
@@ -495,6 +507,8 @@ mod tests {
                 .collect();
             assert!(flat.contains(&"Delete connection"), "{flat:?}");
             assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
+            assert!(flat.contains(&"Connect"), "{flat:?}");
+            assert!(flat.contains(&"Disconnect"), "{flat:?}");
         }
         // Case `out_of_range_action_is_a_no_op`:
         // A malformed / out-of-range payload is a no-op, not an error: deleting a
@@ -568,12 +582,11 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| ResourceProvider::resources(&VpnApp::new_demo(), doc),
+        resources: |doc| VpnApp::new_demo().publish_resources(doc),
         palette: [
             "Route all traffic over Tor",
             "Import WireGuard profile",
             "Import OpenVPN profile",
-            "Delete connection",
             "Set up on this device",
         ],
         replay: [

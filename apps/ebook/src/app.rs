@@ -1213,7 +1213,7 @@ pub struct BooksApp {
     /// Framework-owned action dispatch: each on-page affordance dispatches
     /// its [`EbookAction`](crate::actions::EbookAction) through this so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl BooksApp {
@@ -1420,7 +1420,7 @@ impl BooksApp {
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -3780,11 +3780,30 @@ impl BooksApp {
         color: HiColor,
     ) -> Option<crate::actions::HighlightPlan> {
         let (start, end) = sel.ordered();
-        let layout = self.layout.as_ref()?;
-        let clens: HashMap<usize, usize> = layout
-            .blocks
+        // Prefer painted layout metrics; fall back to chapter block lengths so a
+        // select-passage View can publish highlight-selection before the next
+        // frame lays out the reader.
+        let blocks: Vec<(usize, usize, String)> = if let Some(layout) = self.layout.as_ref() {
+            layout
+                .blocks
+                .iter()
+                .map(|b| (b.index, b.char_len, b.text.clone()))
+                .collect()
+        } else {
+            let chapter = self.open_book()?.chapters.get(self.chapter)?;
+            chapter
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| {
+                    let text = block.plain_text();
+                    (index, text.chars().count(), text)
+                })
+                .collect()
+        };
+        let clens: HashMap<usize, usize> = blocks
             .iter()
-            .map(|b| (b.index, b.char_len))
+            .map(|(index, char_len, _)| (*index, *char_len))
             .collect();
         // Distinct highlight *groups* the selection overlaps (a group is one
         // logical highlight, possibly several per-block rows). Toggling works on
@@ -3815,25 +3834,25 @@ impl BooksApp {
             // One ranged highlight per block the selection touches, each covering
             // exactly the selected characters — so a drag across paragraphs marks
             // precisely what was selected.
-            for b in &layout.blocks {
-                if b.index < start.block || b.index > end.block {
+            for (index, char_len, text) in &blocks {
+                if *index < start.block || *index > end.block {
                     continue;
                 }
-                let lo = if b.index == start.block { start.ch } else { 0 };
-                let hi = if b.index == end.block {
+                let lo = if *index == start.block { start.ch } else { 0 };
+                let hi = if *index == end.block {
                     end.ch
                 } else {
-                    b.char_len
+                    *char_len
                 };
-                let lo = lo.min(b.char_len);
-                let hi = hi.min(b.char_len);
+                let lo = lo.min(*char_len);
+                let hi = hi.min(*char_len);
                 if lo >= hi {
                     continue;
                 }
-                let excerpt: String = b.text.chars().skip(lo).take((hi - lo).min(120)).collect();
+                let excerpt: String = text.chars().skip(lo).take((hi - lo).min(120)).collect();
                 pieces.push(crate::actions::HiPiece {
                     id: Uuid::new_v4().to_string(),
-                    block: b.index,
+                    block: *index,
                     start: lo,
                     end: hi,
                     excerpt,
@@ -3976,10 +3995,88 @@ impl BooksApp {
         );
     }
 
+    /// Show the shelf settings and drop books the shared library no longer lists.
+    /// An empty projection does not wipe a shelf that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::EbookState) {
+        if state.settings != self.settings {
+            self.settings = state.settings.clone();
+            self.layout = None;
+        }
+        self.library_prefs = state.prefs;
+        if state.entries.is_empty() {
+            return;
+        }
+        let keep: std::collections::HashSet<&str> = state
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        let before = self.library.len();
+        std::sync::Arc::make_mut(&mut self.library).retain(|book| keep.contains(book.id.as_str()));
+        if self.library.len() == before {
+            return;
+        }
+        self.library_paths
+            .retain(|id, _| keep.contains(id.as_str()));
+        self.watched_sources
+            .retain(|_, id| keep.contains(id.as_str()));
+        self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
+        if self.library.is_empty() {
+            self.view = View::Library;
+        }
+        self.layout = None;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Ebook>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test-only: plant a non-empty text selection so hosted reading extras
+    /// bind highlight / note-selection rows.
+    #[cfg(test)]
+    pub(crate) fn select_passage_for_test(
+        &mut self,
+        start_block: usize,
+        start_ch: usize,
+        end_block: usize,
+        end_ch: usize,
+    ) {
+        self.sel = Some(TextSel {
+            anchor: DocPos {
+                block: start_block,
+                ch: start_ch,
+            },
+            head: DocPos {
+                block: end_block,
+                ch: end_ch,
+            },
+        });
+        self.selected_block = Some(start_block);
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
     /// affordance dispatched: a control and its Ctrl+K entry must build the
     /// identical action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -5102,31 +5199,21 @@ impl Widget for BooksApp {
             self.all_annotations = Arc::new(Vec::new());
         }
         self.persist_progress(doc);
-        let mut live_actions = vec![<Self as tilo_actions::ResourceProvider>::resource(
-            self,
-            doc,
-            "ebook.settings",
-        )];
+        let mut live_actions = vec![Self::publish_resource(self, doc, "ebook.settings")];
         if let Some(book) = self.open_book() {
-            live_actions.push(<Self as tilo_actions::ResourceProvider>::resource(
+            live_actions.push(Self::publish_resource(
                 self,
                 doc,
                 &format!("ebook.book:{}", book.id),
             ));
         }
-        live_actions.extend(self.fonts.iter().map(|font| {
-            <Self as tilo_actions::ResourceProvider>::resource(
-                self,
-                doc,
-                &format!("ebook.font:{}", font.id),
-            )
-        }));
+        live_actions.extend(
+            self.fonts
+                .iter()
+                .map(|font| Self::publish_resource(self, doc, &format!("ebook.font:{}", font.id))),
+        );
         live_actions.extend(self.schemes.iter().map(|scheme| {
-            <Self as tilo_actions::ResourceProvider>::resource(
-                self,
-                doc,
-                &format!("ebook.scheme:{}", scheme.id),
-            )
+            Self::publish_resource(self, doc, &format!("ebook.scheme:{}", scheme.id))
         }));
         let live_actions = live_actions.into_iter().flatten().collect::<Vec<_>>();
         let mut action_hasher = std::collections::hash_map::DefaultHasher::new();
@@ -5861,12 +5948,56 @@ impl ui::search::capability::SearchSource for BooksApp {
     }
 }
 
+impl BooksApp {
+    fn overlay_open_book_actions(
+        resource: &mut tilo_actions::Resource,
+        book_id: &str,
+        ctx: &crate::actions::BookResourceCtx,
+    ) {
+        if resource.id.as_str() == book_id {
+            *resource = crate::actions::current_book_actions(resource.clone(), ctx);
+            return;
+        }
+        for child in &mut resource.children {
+            Self::overlay_open_book_actions(child, book_id, ctx);
+        }
+    }
+}
+
 impl ui::resources::PublishesResources for BooksApp {
-    /// Publish the open book + its annotations so the host's Ctrl+K action
-    /// palette scopes to them, via [`crate::actions`]'s
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
+    /// Standalone / `--shots` / unit tests publish the library roots. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// library Document door — keep only the live reading-selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        let overlay_open_book = |root: &mut tilo_actions::Resource| {
+            let Some(ctx) = self.current_book_resource_context() else {
+                return;
+            };
+            let book_id = format!("ebook.book:{}", ctx.book_id);
+            Self::overlay_open_book_actions(root, &book_id, &ctx);
+            root.children
+                .extend(crate::actions::live_reading_resources(&ctx));
+        };
+
+        if self.actions.is_hosted() {
+            // Hosted: framework owns the library door; surface only exports
+            // reading-selection extras. Open-book View overlays stay on
+            // `resource()` lookup so DFS can still resolve without republishing
+            // ebook.book beside ResourceRoot.
+            let Some(ctx) = self.current_book_resource_context() else {
+                return Vec::new();
+            };
+            return crate::actions::live_reading_resources(&ctx);
+        }
+        let state =
+            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Ebook>(
+            crate::resource::LIBRARY_RESOURCE_ID,
+            "Books library",
+            &state,
+        );
+        overlay_open_book(&mut root);
+        vec![root]
     }
     fn action_directory_resource_page(
         &self,
@@ -5879,32 +6010,50 @@ impl ui::resources::PublishesResources for BooksApp {
             [offset] => usize::from(*offset),
             _ => return None,
         };
-        let roots = ["ebook.library", "ebook.settings"];
-        if offset > roots.len() {
+        if self.actions.is_hosted() {
+            let resources = self.resources(doc);
+            let total = resources.len();
+            if offset > total {
+                return None;
+            }
+            let take = max_results.min(total.saturating_sub(offset));
+            let next_offset = offset.saturating_add(take);
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources: resources.into_iter().skip(offset).take(take).collect(),
+                next_cursor: if next_offset < total {
+                    vec![next_offset as u8]
+                } else {
+                    Vec::new()
+                },
+                exhausted: next_offset >= total,
+            });
+        }
+        let resources = self.resources(doc);
+        let total = resources.len();
+        if offset > total {
             return None;
         }
-        let take = max_results.min(roots.len().saturating_sub(offset));
+        let take = max_results.min(total.saturating_sub(offset));
         let next_offset = offset.saturating_add(take);
-        let resources = roots
-            .get(offset..next_offset)?
-            .iter()
-            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
-            .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: if next_offset < roots.len() {
+            resources: resources.into_iter().skip(offset).take(take).collect(),
+            next_cursor: if next_offset < total {
                 vec![next_offset as u8]
             } else {
                 Vec::new()
             },
-            exhausted: next_offset >= roots.len(),
+            exhausted: next_offset >= total,
         })
     }
     fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
         Some(format!("ebook-search:{}", self.search_revision))
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        // The framework root already owns the library door.
+        if self.is_hosted() && id == "ebook.library" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

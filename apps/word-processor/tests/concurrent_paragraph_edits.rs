@@ -40,7 +40,7 @@ fn apply(doc: &mut AutoCommit, action: &RichTextAction) {
 }
 
 /// Merge both directions and require identical results.
-fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> qdoc::DocSnapshot {
+fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> tilo_doc::DocSnapshot {
     let mut a_copy = a.clone();
     let mut b_copy = b.clone();
     a.merge_incoming(&mut b_copy).unwrap();
@@ -54,17 +54,17 @@ fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> qdoc::DocSnapshot {
     snap_a
 }
 
-fn snapshot(doc: &AutoCommit) -> qdoc::DocSnapshot {
-    let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-    qdoc::model::materialize(doc, &c)
+fn snapshot(doc: &AutoCommit) -> tilo_doc::DocSnapshot {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    tilo_doc::model::materialize(doc, &c)
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<String> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-    qdoc::model::blocks_in_order(doc, &c)
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    tilo_doc::model::blocks_in_order(doc, &c)
 }
 
-fn only_text(snap: &qdoc::DocSnapshot) -> &str {
+fn only_text(snap: &tilo_doc::DocSnapshot) -> &str {
     assert_eq!(snap.blocks.len(), 1, "{snap:?}");
     &snap.blocks[0].text
 }

@@ -212,11 +212,11 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `tilo_resource::history`, materialises past versions
-# with `qdoc::snapshot::at` and
+# with `tilo_doc::snapshot::at` and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
-# uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
+# uses `tilo-doc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
-qdoc = { version = "0.1.0", path = "../../doc/qdoc" }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc" }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # Every catalogue and text index is a tantivy index through the shared

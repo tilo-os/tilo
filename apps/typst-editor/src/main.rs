@@ -1,17 +1,8 @@
 //! Typst — thin binary entry point. All logic lives in the library.
 //!
-//! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!     (headless screenshot; identical passes to the live app).
+//! The live window runs on the app framework (`TypstEditorShell`). Capture
+//! modes keep the standalone screenshot pipeline with demo documents.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
@@ -40,20 +31,31 @@ use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-/// Entry point: dispatches to the offscreen `--shots` renderer, the headless
-/// `--headless-drive` driver, or the live windowed event loop.
-///
-/// # Errors
-/// Returns an error when the `--shots` path fails to lay out or render the
-/// offscreen frame (a taffy layout error, or an I/O failure writing the PNG).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(&launch_spec());
+    if standalone_capture() {
+        ui::launch::run_or_exit(&standalone_launch_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&typst_editor::framework_launch_spec());
 }
 
-fn launch_spec() -> LaunchSpec {
+fn standalone_capture() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn standalone_launch_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.typst-editor", typst_editor::app_root)
         .history(&typst_editor::framework_history::HISTORY)
         .configure_app(|app| app.set_window_title(Some("Typst".into())))
@@ -139,5 +141,7 @@ fn render_shot_to_png(
 
 #[test]
 fn production_launch_registers_history() {
-    launch_spec().validate_history_declaration().unwrap();
+    standalone_launch_spec()
+        .validate_history_declaration()
+        .unwrap();
 }

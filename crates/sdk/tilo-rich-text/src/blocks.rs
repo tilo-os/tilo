@@ -1,8 +1,8 @@
 //! Rich text as the editor's blocks: what an app that stored text in a
 //! form of its own reads and writes when it moves to rich text.
 
-use qdoc_rich_text::RichTextState;
-use qdoc_rich_text::action::{AttrVal, MarkVal};
+use tilo_document::RichTextState;
+use tilo_document::action::{AttrVal, MarkVal};
 use ui::automerge::{ObjId, ScalarValue};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Doc, ModelError};
@@ -48,9 +48,9 @@ fn mark_scalar(value: MarkVal) -> ScalarValue {
 /// Returns [`ModelError`] when `root` holds no rich text.
 pub fn blocks_under(doc: &Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
     let containers =
-        qdoc::model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))?;
+        tilo_doc::model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))?;
     Ok(
-        qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+        tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
             .iter()
             .map(content_of)
             .collect(),
@@ -58,7 +58,7 @@ pub fn blocks_under(doc: &Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelE
 }
 
 /// Write `blocks` into the rich text under `root`, which holds no text yet
-/// (as [`initialize_under`](qdoc_rich_text::RichText::initialize_under)
+/// (as [`initialize_under`](tilo_document::RichText::initialize_under)
 /// leaves it): how an app brings text it stored in a form of its own into
 /// rich text, when migrating a document or seeding one. Kinds, nesting,
 /// code fences and inline marks are stored as the editor stores them when a
@@ -76,7 +76,7 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
     let Some((containers, empty, mut ids)) = prepare_fill(doc, root, &texts)? else {
         return Ok(());
     };
-    let mut dm = qdoc::model::DocMut {
+    let mut dm = tilo_doc::model::DocMut {
         doc,
         c: &containers,
         ids: &mut ids,
@@ -109,7 +109,13 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
             let start = char_of_byte(&block.text, range.start);
             let end = char_of_byte(&block.text, range.end);
             if start < end && !author.is_empty() {
-                dm.add_mark(&id, start, end, qdoc::schema::MARK_AUTHOR, author.as_str());
+                dm.add_mark(
+                    &id,
+                    start,
+                    end,
+                    tilo_doc::schema::MARK_AUTHOR,
+                    author.as_str(),
+                );
             }
         }
         previous = Some(id);
@@ -128,7 +134,7 @@ fn prepare_fill(
     doc: &Doc,
     root: &ObjId,
     texts: &[&str],
-) -> Result<Option<(qdoc::model::Containers, String, qdoc::model::IdGen)>, ActionError> {
+) -> Result<Option<(tilo_doc::model::Containers, String, tilo_doc::model::IdGen)>, ActionError> {
     let field = FieldState::read_only(doc, root.clone(), 0)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
     let presented = shown(&field.state);
@@ -141,7 +147,7 @@ fn prepare_fill(
     if texts.is_empty() {
         return Ok(None);
     }
-    let containers = qdoc::model::open(doc, root)
+    let containers = tilo_doc::model::open(doc, root)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
     let mut seed = root.to_string().into_bytes();
     for text in texts {
@@ -152,7 +158,7 @@ fn prepare_fill(
     Ok(Some((
         containers,
         empty.id.clone(),
-        qdoc::model::IdGen::for_action(cx),
+        tilo_doc::model::IdGen::for_action(cx),
     )))
 }
 
@@ -166,13 +172,13 @@ fn prepare_fill(
 pub fn fill_clips_under(
     doc: &mut Doc,
     root: &ObjId,
-    clips: &[qdoc_rich_text::ClipBlock],
+    clips: &[tilo_document::ClipBlock],
 ) -> Result<(), ActionError> {
     let texts: Vec<&str> = clips.iter().map(|clip| clip.text.as_str()).collect();
     let Some((containers, empty, mut ids)) = prepare_fill(doc, root, &texts)? else {
         return Ok(());
     };
-    let mut dm = qdoc::model::DocMut {
+    let mut dm = tilo_doc::model::DocMut {
         doc,
         c: &containers,
         ids: &mut ids,
@@ -191,9 +197,9 @@ pub fn fill_clips_under(
         }
         for (key, value) in &clip.attrs {
             let value = match value {
-                qdoc_rich_text::ClipAttr::Bool(value) => ScalarValue::Boolean(*value),
-                qdoc_rich_text::ClipAttr::Int(value) => ScalarValue::Int(*value),
-                qdoc_rich_text::ClipAttr::Str(value) => ScalarValue::Str(value.as_str().into()),
+                tilo_document::ClipAttr::Bool(value) => ScalarValue::Boolean(*value),
+                tilo_document::ClipAttr::Int(value) => ScalarValue::Int(*value),
+                tilo_document::ClipAttr::Str(value) => ScalarValue::Str(value.as_str().into()),
             };
             dm.set_attr(&id, key, value);
         }
@@ -201,9 +207,9 @@ pub fn fill_clips_under(
         for mark in &clip.marks {
             if mark.start < mark.end {
                 let value = match &mark.value {
-                    qdoc::document::MarkValue::Bool(value) => ScalarValue::Boolean(*value),
-                    qdoc::document::MarkValue::Int(value) => ScalarValue::Int(*value),
-                    qdoc::document::MarkValue::Str(value) => {
+                    tilo_doc::document::MarkValue::Bool(value) => ScalarValue::Boolean(*value),
+                    tilo_doc::document::MarkValue::Int(value) => ScalarValue::Int(*value),
+                    tilo_doc::document::MarkValue::Str(value) => {
                         ScalarValue::Str(value.as_str().into())
                     }
                 };
@@ -226,14 +232,14 @@ pub fn put_rich_text(
     doc: &mut Doc,
     parent: &ObjId,
     key: &str,
-    clips: &[qdoc_rich_text::ClipBlock],
+    clips: &[tilo_document::ClipBlock],
 ) -> Result<ObjId, ActionError> {
     use ui::automerge::ObjType;
     use ui::automerge::transaction::Transactable;
     let root = doc
         .put_object(parent, key, ObjType::Map)
         .map_err(|error| refused(error.to_string()))?;
-    qdoc_rich_text::RichText::initialize_under(doc, &root)
+    tilo_document::RichText::initialize_under(doc, &root)
         .map_err(|error| refused(error.to_string()))?;
     fill_clips_under(doc, &root, clips)?;
     Ok(root)
@@ -245,7 +251,7 @@ pub fn rich_text_at(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
     use ui::automerge::{ObjType, ReadDoc, Value};
     match doc.get(parent, key) {
         Ok(Some((Value::Object(ObjType::Map), root))) => {
-            qdoc::model::open(doc, &root).is_ok().then_some(root)
+            tilo_doc::model::open(doc, &root).is_ok().then_some(root)
         }
         _ => None,
     }
@@ -266,12 +272,12 @@ pub fn plain_blocks(text: &str) -> Vec<BlockContent> {
 
 /// Plain text as the paragraphs an action carries, a paragraph per line.
 #[must_use]
-pub fn plain_clips(text: &str) -> Vec<qdoc_rich_text::ClipBlock> {
+pub fn plain_clips(text: &str) -> Vec<tilo_document::ClipBlock> {
     if text.is_empty() {
         return Vec::new();
     }
     text.split('\n')
-        .map(|line| qdoc_rich_text::ClipBlock {
+        .map(|line| tilo_document::ClipBlock {
             kind: "paragraph".to_owned(),
             text: line.to_owned(),
             marks: Vec::new(),
@@ -286,7 +292,7 @@ pub fn plain_clips(text: &str) -> Vec<qdoc_rich_text::ClipBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_rich_text::RichText;
+    use tilo_document::RichText;
     use ui::automerge::transaction::Transactable;
     use ui::automerge::{AutoCommit, ObjType, ROOT};
     use ui::widget::BlockKind;
@@ -372,18 +378,18 @@ mod tests {
 
     #[test]
     fn clipped_paragraphs_are_written_as_they_were() {
-        use qdoc_rich_text::{ClipAttr, ClipBlock};
+        use tilo_document::{ClipAttr, ClipBlock};
         let mut doc = AutoCommit::new();
         let root = field(&mut doc);
         let clips = [
             ClipBlock {
                 kind: "paragraph".into(),
                 text: "hi @Ada".into(),
-                marks: vec![qdoc::document::MarkSpan {
+                marks: vec![tilo_doc::document::MarkSpan {
                     start: 3,
                     end: 7,
                     name: "mention".into(),
-                    value: qdoc::document::MarkValue::Str("u-ada".into()),
+                    value: tilo_doc::document::MarkValue::Str("u-ada".into()),
                 }],
                 level: None,
                 ordered: None,
@@ -434,8 +440,8 @@ mod tests {
         source
             .apply(
                 &mut doc,
-                &qdoc_rich_text::RichTextAction::SpliceText {
-                    region: qdoc_rich_text::action::RegionKind::Body,
+                &tilo_document::RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
                     block,
                     at: 0,
                     del: 0,
@@ -455,7 +461,7 @@ mod tests {
             source
                 .apply(
                     &mut doc,
-                    &qdoc_rich_text::RichTextAction::AppendParagraph { text: "x".into() }
+                    &tilo_document::RichTextAction::AppendParagraph { text: "x".into() }
                 )
                 .is_err()
         );

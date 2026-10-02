@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
-use qdoc_codecs::OdsCodec;
-use qdoc_codecs::ods::common_styles_part;
+use tilo_doc_codecs::OdsCodec;
+use tilo_doc_codecs::ods::common_styles_part;
 
 use crate::model::{CellFormat, Currency, addr_to_a1};
 use crate::xlsx::SheetTable;

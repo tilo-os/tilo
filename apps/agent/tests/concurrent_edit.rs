@@ -45,10 +45,10 @@ const TYPED: &str = "!";
 fn seed_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -70,9 +70,9 @@ fn seed_document() -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn heading_id(doc: &AutoCommit) -> String {
@@ -88,13 +88,13 @@ fn heading_id(doc: &AutoCommit) -> String {
 fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
     let before = doc.get_heads();
     {
-        let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
         let at = blocks(doc)
             .into_iter()
             .find(|b| b.id == block)
             .map_or(0, |b| b.text.chars().count());
-        let mut ids = qdoc::model::seeded_id_gen(doc, &c);
-        let mut dm = qdoc::DocMut {
+        let mut ids = tilo_doc::model::seeded_id_gen(doc, &c);
+        let mut dm = tilo_doc::DocMut {
             doc,
             c: &c,
             ids: &mut ids,
@@ -269,7 +269,7 @@ fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, St
         .filter(|x| x.kind == "cell")
         .map(|x| {
             let n = |k: &str| match x.attrs.get(k) {
-                Some(qdoc::AttrVal::Int(v)) => *v,
+                Some(tilo_doc::AttrVal::Int(v)) => *v,
                 _ => -1,
             };
             (n("row"), n("col"), x.text.clone())

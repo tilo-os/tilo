@@ -1005,8 +1005,8 @@ fn prepend(doc: &mut automerge::AutoCommit, page: notes::PageId, text: &str) {
     NotesDoc::edit_page_body(
         doc,
         page,
-        &qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        &tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block,
             at: 0,
             del: 0,

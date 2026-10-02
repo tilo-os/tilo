@@ -25,8 +25,8 @@ filesystem = [
     "dep:iroh-gossip",
     "dep:automerge",
     "dep:tilo-automerge",
-    "dep:qdoc",
-    "dep:qdoc-codecs",
+    "dep:tilo-doc",
+    "dep:tilo-doc-codecs",
     "dep:tilo-content",
     "dep:collab-types",
     "dep:ed25519-dalek",
@@ -124,9 +124,9 @@ ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
-qdoc = { version = "0.1.0", path = "../../doc/qdoc", optional = true }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
-qdoc-codecs = { version = "0.1.0", path = "../../doc/qdoc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
+tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }

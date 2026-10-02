@@ -514,7 +514,7 @@ pub struct FeedsApp {
     /// [`FeedsAction`] through here so it brackets exactly one undo boundary,
     /// encodes under [`FEEDS_ACTION_TYPE`](crate::actions::FEEDS_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// The document heads the mirrored [`Store`] was last reconciled against.
     /// When the document moves out-of-band (a Ctrl+K palette action mutates it
     /// directly, not through this widget's methods) and the fetch backlog is
@@ -612,7 +612,7 @@ impl FeedsApp {
             last_frame: ui::time::now(),
             worker: None,
             synced: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             store_heads: Vec::new(),
             demo,
             text_scale: 1.0,
@@ -1114,69 +1114,14 @@ impl FeedsApp {
         article_limit: usize,
         tag_limit: usize,
     ) -> FeedsResourceCtx {
-        let folders = self
-            .store
-            .folders_sorted()
-            .iter()
-            .take(folder_limit)
-            .map(|f| actions::FolderRef {
-                id: f.id,
-                name: f.name.clone(),
-                collapsed: f.collapsed,
-            })
-            .collect();
-        let mut sorted_feeds = self.store.feeds.iter().take(feed_limit).collect::<Vec<_>>();
-        sorted_feeds.sort_by_key(|feed| feed.title.to_lowercase());
-        let mut remaining_articles = article_limit;
-        let feeds: Vec<actions::FeedRef> = sorted_feeds
-            .into_iter()
-            .take(feed_limit)
-            .map(|f| {
-                let articles = self
-                    .store
-                    .articles
-                    .iter()
-                    .filter(|article| article.feed_id == f.id)
-                    .take(remaining_articles)
-                    .map(|article| actions::ArticleRef {
-                        id: article.id,
-                        title: article.title.clone(),
-                        read: article.read,
-                        starred: article.starred,
-                        tags: article.tags.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                remaining_articles = remaining_articles.saturating_sub(articles.len());
-                actions::FeedRef {
-                    id: f.id,
-                    title: f.title.clone(),
-                    folder: f.folder,
-                    unread: self.store.unread_ids_for(Filter::Feed(f.id)),
-                    articles,
-                }
-            })
-            .collect();
-        let next_folder_order = self
-            .store
-            .folders
-            .iter()
-            .map(|f| f.order)
-            .max()
-            .map_or(0, |m| m + 1);
-        FeedsResourceCtx {
-            folders,
-            feeds,
-            tags: self
-                .store
-                .tags_limited(tag_limit)
-                .into_iter()
-                .map(|name| actions::TagRef { name })
-                .collect(),
-            unread: self.store.unread_ids_for(Filter::All),
-            next_feed_order: self.store.next_feed_order(None),
-            next_folder_order,
-            settings: self.settings,
-        }
+        actions::resource_ctx_from_library_with_limits(
+            &self.store,
+            self.settings,
+            folder_limit,
+            feed_limit,
+            article_limit,
+            tag_limit,
+        )
     }
 
     fn toggle_folder(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -1843,18 +1788,53 @@ impl FeedsApp {
             return;
         }
         let n = self.pending_doc_writes.len().min(FLUSH_BUDGET);
-        for w in self.pending_doc_writes.drain(..n) {
-            match w {
-                DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
-                DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
+        let mut articles = Vec::new();
+        let mut feeds = Vec::new();
+        for write in self.pending_doc_writes.drain(..n) {
+            match write {
+                DocWrite::Article(article) => articles.push(article),
+                DocWrite::Feed(feed) => feeds.push(feed),
             }
         }
-        // Commit this batch so the pending-op buffer doesn't accumulate across
-        // frames. An `AutoCommit` that never commits makes each successive `put`
-        // re-scan the growing uncommitted transaction — O(n²) over a big
-        // refresh, which is what turned a large batch into a multi-second stall.
-        // Committing per flush keeps each write O(1)-ish.
-        doc.commit();
+        // One document action for this frame's budget. The dispatcher commits
+        // it, so a large refresh still persists in bounded steps.
+        self.perform_action(doc, &FeedsAction::UpsertFetched { articles, feeds });
+    }
+
+    /// Show the library the framework resource already holds.
+    /// An empty projection does not wipe feeds that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::FeedsState) {
+        if state.store.is_empty() {
+            return;
+        }
+        self.store.clone_from(&state.store);
+        self.settings = state.settings;
+        self.ensure_selection();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    pub(crate) fn published_reader(&self) -> Vec<tilo_actions::Resource> {
+        crate::resource::provide_resources(&crate::resource::FeedsState {
+            store: self.store.clone(),
+            settings: self.settings,
+        })
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     // --- geometry --------------------------------------------------------
@@ -4536,7 +4516,12 @@ impl Widget for FeedsApp {
             if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
             } else {
-                FeedsDoc::write_settings(state, &self.settings);
+                self.perform_action(
+                    state,
+                    &FeedsAction::SetReadSettings {
+                        settings: self.settings,
+                    },
+                );
             }
             self.synced = true;
             self.store_heads = state.get_heads();
@@ -5407,13 +5392,20 @@ impl ui::search::capability::SearchSource for FeedsApp {
 
 impl ui::resources::PublishesResources for FeedsApp {
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    /// action palette scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the reader door; hosted returns
+    /// nothing rather than a second hand-built tree.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return Vec::new();
+        }
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == crate::resource::READER_RESOURCE_ID {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -5733,6 +5725,12 @@ mod tests {
                 app.empty_onboarding_prompt().is_some(),
                 "the empty store still shows onboarding after a live sync",
             );
+            assert!(FeedsDoc::has_settings(&doc));
+            let recorded = app
+                .actions
+                .last_dispatched()
+                .expect("reading settings are an action");
+            assert!(String::from_utf8_lossy(&recorded.payload).contains("SetReadSettings"));
         }
 
         // --- phase: demo_build_is_populated_and_hides_onboarding ---

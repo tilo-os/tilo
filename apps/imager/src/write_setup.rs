@@ -217,7 +217,11 @@ impl WriteSetupPanel {
         }
     }
 
-    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut AutoCommit,
+        host: &mut crate::resource::ActionSink,
+        action: &ImagerAction,
+    ) {
         host.dispatch_with_context(
             doc,
             IMAGER_ACTION_TYPE,
@@ -401,11 +405,11 @@ impl WriteSetupPanel {
     }
 
     /// Route a winit event. `top` must match the draw/extent origin.
-    pub fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         content: Rect,
         top: f64,
@@ -455,7 +459,7 @@ impl WriteSetupPanel {
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         g: &SetupGeom,
     ) -> SetupResponse {
@@ -497,7 +501,7 @@ impl WriteSetupPanel {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         g: &SetupGeom,
     ) -> SetupResponse {

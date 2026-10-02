@@ -38,8 +38,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-content = { path = "../../crates/system/content" }
 # The draft body is rich text, edited in the SDK rich-text editor and sent as
 # its HTML part.
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["html"] }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["html"] }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }

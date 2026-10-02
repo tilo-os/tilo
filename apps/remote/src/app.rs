@@ -712,7 +712,7 @@ pub struct RemoteApp {
     /// connection is added, edited, renamed, favourited, or deleted. It brackets
     /// the undo boundary and applies each action through the executor, so the
     /// on-screen affordances and the Ctrl+K palette share one replayable path.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_resource_operation: Option<PendingResourceOperation>,
     /// Canvas-side confirmation mirroring resource-action policy. This is
     /// private view state and never replicated with the connection profile.
@@ -996,7 +996,7 @@ impl RemoteApp {
             list_rows_measured_at: None,
             dirty: true,
             seeded: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_resource_operation: None,
             pending_confirmation: None,
             notice: None,
@@ -2007,8 +2007,34 @@ impl RemoteApp {
     /// The last action an on-screen affordance dispatched, for the
     /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the saved connections the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
+        if self.workspace.connections() == state {
+            return;
+        }
+        self.workspace.connections = state.to_vec();
+        if self
+            .selected
+            .and_then(|id| self.workspace.get(id))
+            .is_none()
+        {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
+        }
+        self.seeded = true;
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Remote>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 }
 
@@ -2582,9 +2608,24 @@ impl Widget for RemoteApp {
             }
         } else {
             if doc_conns.is_empty() {
-                // We're the origin — publish our list (empty when live).
-                for c in self.workspace.connections().to_vec() {
-                    RemoteDoc::upsert(state, &c);
+                // Publish a demo list through the connection action. A live
+                // window starts empty, so this loop writes nothing there.
+                for connection in self.workspace.connections().to_vec() {
+                    if self.actions.is_hosted() {
+                        let action = crate::actions::upsert_action(&connection);
+                        self.actions.dispatch_with_context(
+                            state,
+                            crate::actions::REMOTE_ACTION_TYPE,
+                            &action,
+                            tilo_actions::ActionContext::for_action(
+                                "so.tilo.remote",
+                                "Remote",
+                                &action,
+                            ),
+                        );
+                    } else {
+                        RemoteDoc::upsert(state, &connection);
+                    }
                 }
             } else {
                 // Adopt a peer's list wholesale.
@@ -3569,25 +3610,25 @@ impl ui::resources::PublishesResources for RemoteApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
+        // The framework root publishes saved connections. Keep only the live
+        // session resource when hosted — it is not in Resource::children.
+        if self.actions.is_hosted() {
+            return self.live_session_resources();
         }
-        resources
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "remote.connections" {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                self.live_session_resources()
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
@@ -3601,6 +3642,28 @@ impl ui::undo::CommittedActions for RemoteApp {
 }
 
 impl RemoteApp {
+    /// Live SSH/RDP session affordances are not in [`crate::resource::Remote`]'s
+    /// children — publish them beside the framework tree when hosted.
+    pub(crate) fn live_session_resources(&self) -> Vec<tilo_actions::Resource> {
+        let Some(id) = self.session_for else {
+            return Vec::new();
+        };
+        let Some(connection) = self.workspace.get(id) else {
+            return Vec::new();
+        };
+        let can_send_text = matches!(
+            &self.live,
+            Some(LiveSession::Ssh(session))
+                if session.status() == SessionStatus::Connected
+        );
+        let host_key_issue = self.ssh_host_key_issue(id);
+        vec![crate::actions::session_resource(
+            connection,
+            can_send_text,
+            host_key_issue.as_ref(),
+        )]
+    }
+
     fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -6731,6 +6794,18 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
         }
         None => order.first().copied().unwrap_or(Field::Name),
     }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

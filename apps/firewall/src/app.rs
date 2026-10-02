@@ -572,7 +572,7 @@ pub struct FirewallApp {
     /// [`FirewallAction`] through here so it brackets exactly **one** undo
     /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_effect: Option<PendingFirewallEffect>,
     completed_effect: Option<tilo_actions::InvocationUpdate>,
 }
@@ -681,7 +681,7 @@ impl FirewallApp {
             seeded: false,
             available,
             pending_delete: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_effect: None,
             completed_effect: None,
         }
@@ -736,16 +736,48 @@ impl FirewallApp {
         }
     }
 
+    /// Show a shared configuration the framework resource already holds.
+    /// An empty projection does not wipe a config just read from the host.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::FirewallConfig) {
+        if state.zones.is_empty() || state.validate().is_err() {
+            return;
+        }
+        self.config = state.clone();
+        self.available = true;
+        if self.config.zone(self.selected_zone).is_none() {
+            self.selected_zone = self.config.default_zone;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Firewall>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
-    /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// firewall is unavailable / has no zones (nothing to act on). Exposed to
     /// [`crate::actions`], which can't read the app's private fields directly.
     pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
         if !self.available || self.config.zones.is_empty() {
@@ -1478,13 +1510,30 @@ impl Widget for FirewallApp {
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
-                    self.last_json = Some(self.config.to_json());
+                    // A legacy JSON document is accepted once, then promoted
+                    // to native maps before any visible control can dispatch.
+                    let snapshot = if FirewallDoc::has_native(state) {
+                        self.config.to_json()
+                    } else {
+                        self.perform_action(
+                            state,
+                            &crate::actions::FirewallAction::PublishImported {
+                                config: self.config.clone(),
+                            },
+                        );
+                        self.last_json.clone().unwrap_or_default()
+                    };
+                    self.last_json = Some(snapshot);
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
             } else if !self.config.zones.is_empty() {
-                let json = FirewallDoc::store(state, &self.config);
-                self.last_json = Some(json);
+                self.perform_action(
+                    state,
+                    &crate::actions::FirewallAction::PublishImported {
+                        config: self.config.clone(),
+                    },
+                );
             }
             self.seeded = true;
             return;
@@ -1976,10 +2025,9 @@ impl Widget for FirewallApp {
 }
 
 impl ui::resources::PublishesResources for FirewallApp {
-    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Publish the open configuration so the host's Ctrl+K palette scopes to
+    /// it. When the framework hosts the surface, that door already owns the
+    /// config — only service-recovery stays here.
     #[allow(
         clippy::expect_used,
         reason = "the empty string operation payload is always serializable"
@@ -2012,31 +2060,36 @@ impl ui::resources::PublishesResources for FirewallApp {
                 ),
             ];
         }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            root.actions.push(
-                tilo_actions::ActionSpec::operation(
-                    "apply",
-                    "Apply firewall configuration",
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &"",
-                )
-                .expect("firewall apply payload is serializable")
-                .with_contract(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    retry: tilo_actions::RetryPolicy::Idempotent,
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
+        // The framework root publishes the config document (including apply).
+        // When hosted and available, return nothing — recovery above stays as
+        // the only live extra (it is not in Resource::children).
+        if self.actions.is_hosted() {
+            return Vec::new();
         }
-        resources
+        self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "firewall.config" {
+            return None;
+        }
+        find_resource_tree(&self.publish_resources(doc), id)
+    }
+}
+
+fn find_resource_tree(
+    resources: &[tilo_actions::Resource],
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl ui::undo::CommittedActions for FirewallApp {
@@ -4122,6 +4175,23 @@ fn target_color(theme: &Theme, target: Target) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A demo ruleset is published through the firewall action, not a raw store.
+    #[test]
+    fn a_demo_firewall_is_published_through_the_action() {
+        let mut app = FirewallApp::new_demo();
+        assert!(!app.actions.is_hosted());
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let recorded = app
+            .last_dispatched()
+            .expect("the imported ruleset is submitted through the action sink");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::FIREWALL_ACTION_TYPE
+        );
+        assert!(FirewallDoc::load(&doc).is_some_and(|config| !config.zones.is_empty()));
+    }
 
     fn app_with_rect() -> FirewallApp {
         // Sample-populated build: these tests exercise rule/zone behaviour

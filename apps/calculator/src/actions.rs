@@ -47,10 +47,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ui::time::UNIX_EPOCH;
 
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 use ui::doc::{put_if_changed, put_text_diffed};
+use ui::tilo_resource::Resource as TiloResource;
 
 use crate::model::{HistoryEntry, Mode, PlotFn};
 
@@ -112,14 +112,6 @@ impl GraphKind {
         match self {
             GraphKind::Curve2d => "curve2d",
             GraphKind::Surface3d => "surface3d",
-        }
-    }
-
-    /// The left-hand side shown in a palette label (`y = …` / `z = …`).
-    fn lhs(self) -> &'static str {
-        match self {
-            GraphKind::Curve2d => "y",
-            GraphKind::Surface3d => "z",
         }
     }
 }
@@ -447,215 +439,21 @@ pub struct CalcResourceCtx {
     pub surfaces: Vec<PlotFn>,
 }
 
-/// A one-line, length-capped palette label.
-fn clip(s: &str, n: usize) -> String {
-    let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if t.chars().count() > n {
-        t.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
-    } else {
-        t
-    }
+/// Publish the calculator resource tree through [`tilo_resource::publish`].
+/// `ctx` is retained for call-site compatibility; the document is the source
+/// of truth for durable rows.
+pub fn provide_resources(_ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let state = <crate::resource::Calculator as TiloResource>::read(doc).unwrap_or_default();
+    vec![ui::tilo_resource::publish::<crate::resource::Calculator>(
+        <crate::resource::Calculator as TiloResource>::KIND,
+        "Calculator",
+        &state,
+    )]
 }
 
-fn history_label(e: &HistoryEntry) -> String {
-    let body = if e.expr.trim().is_empty() {
-        e.result.clone()
-    } else {
-        format!("{} = {}", e.expr.trim(), e.result.trim())
-    };
-    clip(&body, 48)
-}
-
-fn graph_label(kind: GraphKind, f: &PlotFn) -> String {
-    let rhs = if f.expr.trim().is_empty() {
-        "(empty)"
-    } else {
-        f.expr.trim()
-    };
-    clip(&format!("{} = {}", kind.lhs(), rhs), 48)
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "mirrors encode()'s always-serializable invariant"
-)]
-fn immediate_spec(id: &str, label: &str, action: &CalculatorAction) -> ActionSpec {
-    let spec = ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
-        .expect("encode calculator action")
-        .reversible();
-    if id.contains("delete") || id.contains("clear") {
-        spec.destructive()
-    } else {
-        spec
-    }
-}
-
-/// Build one graph list's resources (one `calculator.graph` per row).
-fn row_ids(doc: &AutoCommit, key: &str) -> Vec<String> {
-    crate::doc::visible_ids(doc, key)
-}
-
-fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> Vec<Resource> {
-    rows.iter()
-        .enumerate()
-        .filter_map(|(i, f)| {
-            // A positional address can silently rebind after a concurrent
-            // insertion/deletion. If the CRDT row identity is unavailable,
-            // fail closed and do not publish an externally invokable target.
-            let stable = stable_ids.get(i)?.clone();
-            let mut res = Resource::new(
-                format!("calculator.graph:{}:{stable}", kind.slug()),
-                "calculator.graph",
-                graph_label(kind, f),
-            );
-            // Replace the formula — a prompted edit, diff-spliced into the row's
-            // CRDT Text (the discrete, replayable twin of live typing).
-            let edit_id = stable.clone();
-            res = res.with_action(ActionSpec::prompted(
-                "edit",
-                "Edit formula",
-                "Formula",
-                "e.g. sin(x)…",
-                ExecutionLocus::ClientLocal,
-                move |text: &str| {
-                    encode(&set_graph_expr_action(kind, edit_id.as_str(), text.trim()))
-                },
-            ));
-            let vis_label = if f.visible { "Hide" } else { "Show" };
-            res = res.with_action(immediate_spec(
-                "toggle-visibility",
-                vis_label,
-                &toggle_graph_visible_action(kind, &stable),
-            ));
-            res = res.with_action(immediate_spec(
-                "delete",
-                "Delete formula",
-                &delete_graph_action(kind, &stable),
-            ));
-            Some(res)
-        })
-        .collect()
-}
-
-/// Build the calculator's resource tree: one `calculator.workspace` root that
-/// owns a `calculator.history_entry` per committed computation and a
-/// `calculator.graph` per saved 2D curve / 3D surface. Every document-mutating
-/// operation is exported as the same action its on-screen affordance dispatches.
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the operation payload contains only derived enum variants and strings; serialization cannot fail"
-)]
-pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
-
-    for (id, label, operation) in [
-        (
-            "show-calculator",
-            "Show calculator",
-            CalculatorOperation::ShowCalculator,
-        ),
-        (
-            "show-graph-2d",
-            "Show 2D graph",
-            CalculatorOperation::ShowGraph2d,
-        ),
-        (
-            "show-graph-3d",
-            "Show 3D graph",
-            CalculatorOperation::ShowGraph3d,
-        ),
-    ] {
-        let spec = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::View,
-            CALCULATOR_OPERATION_TYPE,
-            &operation,
-        )
-        .expect("CalculatorOperation is always serializable")
-        .retry_policy(RetryPolicy::Idempotent);
-        root = root.with_action(spec);
-    }
-
-    // Workspace-level: add a graph formula (prompted). Offer the kind matching
-    // the current mode first; both remain reachable so Ctrl+K can add to either.
-    let (primary, secondary) = match ctx.mode {
-        Mode::Graph3d => (GraphKind::Surface3d, GraphKind::Curve2d),
-        _ => (GraphKind::Curve2d, GraphKind::Surface3d),
-    };
-    for kind in [primary, secondary] {
-        let (id, label) = match kind {
-            GraphKind::Curve2d => ("add-function", "Add function"),
-            GraphKind::Surface3d => ("add-surface", "Add surface"),
-        };
-        root = root.with_action(ActionSpec::prompted(
-            id,
-            label,
-            "Formula",
-            "e.g. sin(x)…",
-            ExecutionLocus::ClientLocal,
-            move |text: &str| encode(&add_graph_action(kind, text.trim())),
-        ));
-    }
-
-    // Snapshot IDs before making a clear action: this keeps clear scoped to the
-    // exact resources the user saw, so a concurrent later addition survives.
-    let history_ids = row_ids(doc, "history");
-    // Workspace-level: clear the whole history (only when there is any).
-    if !ctx.history.is_empty() {
-        root = root.with_action(immediate_spec(
-            "clear-history",
-            "Clear history",
-            &clear_history_ids_action(history_ids.clone()),
-        ));
-    }
-
-    // History entries → one resource each, deletable.
-    for (i, e) in ctx.history.iter().enumerate() {
-        let Some(stable) = history_ids.get(i) else {
-            continue;
-        };
-        root = root.with_child(
-            Resource::new(
-                format!("calculator.history_entry:{stable}"),
-                "calculator.history_entry",
-                history_label(e),
-            )
-            .with_action(
-                ActionSpec::operation(
-                    "open",
-                    "Recall calculation",
-                    OperationKind::View,
-                    CALCULATOR_OPERATION_TYPE,
-                    &CalculatorOperation::RecallHistory { id: stable.clone() },
-                )
-                .expect("CalculatorOperation is always serializable")
-                .retry_policy(RetryPolicy::Idempotent),
-            )
-            .with_action(immediate_spec(
-                "delete",
-                "Delete entry",
-                &delete_history_entry_action(stable),
-            )),
-        );
-    }
-
-    // Saved graph formulas → 2D curves then 3D surfaces.
-    let function_ids = row_ids(doc, GraphKind::Curve2d.doc_key());
-    for child in graph_resources(GraphKind::Curve2d, &ctx.funcs, &function_ids) {
-        root = root.with_child(child);
-    }
-    let surface_ids = row_ids(doc, GraphKind::Surface3d.doc_key());
-    for child in graph_resources(GraphKind::Surface3d, &ctx.surfaces, &surface_ids) {
-        root = root.with_child(child);
-    }
-
-    vec![root]
-}
-
-impl ResourceProvider for crate::app::CalculatorApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CalculatorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.calc_resource_ctx(), doc)
     }
 }
@@ -679,7 +477,7 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
+    fn prompted_encode(spec: &tilo_actions::ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
             ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
@@ -922,7 +720,7 @@ mod tests {
             commit_history => |_| encode(&commit_history_action("6*7", "42")),
         ],
         encodes: [
-            clear_history => ("calculator.workspace", "clear-history", |doc, _| {
+            clear_history => ("calculator.document", "clear-history", |doc, _| {
                 encode(&clear_history_ids_action(crate::doc::visible_ids(doc, "history")))
             }),
             toggle_visibility => ("calculator.graph", "toggle-visibility", |_, res| {
@@ -955,7 +753,7 @@ mod tests {
             let resources = provide_resources(&ctx(), &doc);
             assert_eq!(resources.len(), 1, "one workspace root");
             let ws = &resources[0];
-            assert_eq!(ws.kind, "calculator.workspace", "ctrl_k: workspace kind");
+            assert_eq!(ws.kind, "calculator.document", "ctrl_k: document kind");
             let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(ws_actions.contains(&"add-function"), "{ws_actions:?}");
             assert!(ws_actions.contains(&"add-surface"), "{ws_actions:?}");
@@ -1049,7 +847,7 @@ mod tests {
             let d1 = tree.refresh(&root, &node_map, None, &resources);
             assert!(!d1.added.is_empty(), "the first refresh populates the tree");
             let ws = tree
-                .node(&ui::SemanticId("r:calculator.workspace".into()))
+                .node(&ui::SemanticId("r:calculator.document".into()))
                 .expect("workspace node present");
             assert_eq!(
                 ws.name.as_deref(),

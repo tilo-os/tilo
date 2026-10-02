@@ -978,6 +978,8 @@ fn surface(
 pub struct ClocksApp {
     inner: Element,
     state: ui::LocalState<ClockState>,
+    pub(crate) actions: crate::resource::ActionSink,
+    hosted: bool,
     generation: u64,
     last_saved: String,
     last_notification: Option<(uuid::Uuid, String, String)>,
@@ -1073,6 +1075,8 @@ impl ClocksApp {
         Self {
             inner: surface(&mode, &state, &notice, &validation_error),
             state,
+            actions: crate::resource::ActionSink::default(),
+            hosted: false,
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
@@ -1378,8 +1382,22 @@ impl ClocksApp {
     }
 }
 
+impl ui::undo::CommittedActions for ClocksApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for ClocksApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
@@ -1540,12 +1558,50 @@ impl Widget for ClocksApp {
     }
 }
 
-impl ui::resources::PublishesResources for ClocksApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let _ = doc;
-        self.state.with(crate::actions::provide_resources)
+impl ClocksApp {
+    /// Framework [`ResourceSurface::attach`] marks the surface hosted so
+    /// `resources` does not republish `clocks.collection` beside `ResourceRoot`.
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn timer_count(&self) -> usize {
+        self.state.with(|state| state.timers.len())
+    }
+}
+
+impl ui::resources::PublishesResources for ClocksApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.hosted {
+            return self.state.with(crate::actions::live_clock_extras);
+        }
+        self.state.with(|state| {
+            let mut root =
+                ui::tilo_resource::publish::<crate::resource::Clocks>("clocks", "Clocks", state);
+            root.children
+                .extend(crate::actions::live_clock_extras(state));
+            vec![root]
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         fn find(
             resources: Vec<tilo_actions::Resource>,
             id: &str,
@@ -1560,8 +1616,7 @@ impl ui::resources::PublishesResources for ClocksApp {
             }
             None
         }
-        self.state
-            .with(|state| find(crate::actions::provide_resources(state), id))
+        find(self.resources(doc), id)
     }
 }
 

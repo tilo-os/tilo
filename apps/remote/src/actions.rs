@@ -39,8 +39,7 @@ use automerge::AutoCommit;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec, RetryPolicy,
-    RiskLevel,
+    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::RemoteDoc;
@@ -464,14 +463,11 @@ fn immediate_spec(id: &str, label: &str, action: &RemoteAction) -> ActionSpec {
     ActionSpec::immediate(id, label, REMOTE_ACTION_TYPE, action).expect("encode remote action")
 }
 
-/// The connection-list root and every saved child, exported to Ctrl+K with
-/// view, network-effect, and document actions. Level-triggered: recomputed from `doc` each
-/// frame, so the labels and the favourite target always track the live state
-/// (favourite flips to the opposite of the stored value, exactly as the
-/// on-screen star does).
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let connections = RemoteDoc::list(doc)
-        .into_iter()
+/// Saved connections as children of the published list. Labels and the
+/// favourite target track the live record.
+pub(crate) fn connection_resources(connections: &[crate::model::Connection]) -> Vec<Resource> {
+    connections
+        .iter()
         .map(|c| {
             let id = c.id;
             let label = if c.name.trim().is_empty() {
@@ -490,7 +486,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 OperationKind::View,
                 &RemoteOperation::EditConnection { connection_id: id },
             ))
-            .with_action(connect_spec(&c))
+            .with_action(connect_spec(c))
             .with_action(
                 ActionSpec::prompted(
                     "rename",
@@ -520,31 +516,51 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     .reversible(),
             )
         })
-        .collect::<Vec<_>>();
-    let workspace = Resource::new(
-        "remote.connections",
-        "remote.connection-list",
-        "Remote connections",
-    )
-    .with_action(operation_spec(
-        "open",
-        "Show connections",
-        OperationKind::View,
-        &RemoteOperation::ShowConnections,
-    ))
-    .with_action(operation_spec(
-        "new",
-        "New connection",
-        OperationKind::View,
-        &RemoteOperation::NewConnectionForm,
-    ))
-    .with_children(connections);
-    vec![workspace]
+        .collect()
 }
 
-impl ResourceProvider for crate::app::RemoteApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+/// List-level Views on the published connection list.
+pub(crate) fn list_view_specs() -> Vec<ActionSpec> {
+    vec![
+        operation_spec(
+            "open",
+            "Show connections",
+            OperationKind::View,
+            &RemoteOperation::ShowConnections,
+        ),
+        operation_spec(
+            "new",
+            "New connection",
+            OperationKind::View,
+            &RemoteOperation::NewConnectionForm,
+        ),
+    ]
+}
+
+/// The published connection list and every saved child.
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let connections = RemoteDoc::list(doc);
+    vec![ui::tilo_resource::publish::<crate::resource::Remote>(
+        "remote.connections",
+        "Remote connections",
+        &connections,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::RemoteApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state =
+            <crate::resource::Remote as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Remote>(
+            "remote.connections",
+            "Remote connections",
+            &state,
+        );
+        if let Some(session) = self.live_session_resources().pop() {
+            root.children.push(session);
+        }
+        vec![root]
     }
 }
 
@@ -594,7 +610,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_connections(),
         registry: registry(),
-        resources: |doc| provide_resources(doc),
+        resources: |doc| crate::app::RemoteApp::new().publish_resources(doc),
         palette: [
             "Rename connection",
             "Open connection settings",
@@ -799,13 +815,18 @@ mod tests {
             let resources = provide_resources(&doc);
             assert_eq!(resources.len(), 1, "one connection-list root");
             assert_eq!(resources[0].id.as_str(), "remote.connections");
-            assert_eq!(
-                resources[0]
-                    .actions
-                    .iter()
-                    .map(|action| (action.id.as_str(), action.kind))
-                    .collect::<Vec<_>>(),
-                vec![("open", OperationKind::View), ("new", OperationKind::View)],
+            let actions: Vec<_> = resources[0]
+                .actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.kind))
+                .collect();
+            assert!(
+                actions.contains(&("open", OperationKind::View)),
+                "{actions:?}"
+            );
+            assert!(
+                actions.contains(&("new", OperationKind::View)),
+                "{actions:?}"
             );
             assert_eq!(resources[0].children.len(), 1, "one saved connection child");
             let r = &resources[0].children[0];

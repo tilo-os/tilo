@@ -38,15 +38,17 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourcePresentation, ResourceProvider, ResourceViewSpec, ResultSpec, RetryPolicy,
+    Resource, ResourcePresentation, ResourceViewSpec, ResultSpec, RetryPolicy,
 };
 
 use crate::continuation::{self, BuilderDomain};
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
-use qdoc_rich_text::RichTextAction;
-use qdoc_rich_text::action::RegionKind;
+use tilo_document::RichText;
+use tilo_document::RichTextAction;
+use tilo_document::action::RegionKind;
+use ui::tilo_resource::Resource as _;
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -1023,7 +1025,7 @@ pub fn set_mark_action(
         page,
         RichTextAction::SetMark {
             region: RegionKind::Body,
-            spans: vec![qdoc_rich_text::action::Span {
+            spans: vec![tilo_document::action::Span {
                 block: block.to_owned(),
                 start: range.start,
                 end: range.end,
@@ -1499,6 +1501,74 @@ pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) 
     page_resource_from_index(m, &index, doc, workspace.as_ref(), 0, &mut remaining)
 }
 
+/// Root page resources for the notebook — the tree [`Resource::children`] and
+/// [`provide_resources`] both publish. Each page nests its rich-text body.
+fn merge_doc_pages(published: &mut Vec<Resource>, enriched: Vec<Resource>) {
+    for rich in enriched {
+        if let Some(existing) = published.iter_mut().find(|child| child.id == rich.id) {
+            if existing.presentation.is_none() {
+                existing.presentation = rich.presentation;
+            }
+            if existing.views.is_empty() {
+                existing.views = rich.views;
+            }
+            for action in rich.actions {
+                if !existing.actions.iter().any(|have| have.id == action.id) {
+                    existing.actions.push(action);
+                }
+            }
+            merge_doc_pages(&mut existing.children, rich.children);
+        } else {
+            published.push(rich);
+        }
+    }
+}
+
+pub(crate) fn notebook_page_children(
+    pages: &[PageMeta],
+    doc: Option<&AutoCommit>,
+) -> Vec<Resource> {
+    let index = PageResourceIndex::new(pages);
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    let empty = AutoCommit::new();
+    let doc = doc.unwrap_or(&empty);
+    let workspace = crate::notebook::project(doc, None).ok();
+    index
+        .children_of(None)
+        .iter()
+        .filter_map(|root| {
+            if remaining == 0 {
+                return None;
+            }
+            Some(page_resource_from_index(
+                root,
+                &index,
+                doc,
+                workspace.as_ref(),
+                0,
+                &mut remaining,
+            ))
+        })
+        .collect()
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "empty rich-text document initialize/read cannot fail"
+)]
+fn page_body_child(page: &PageMeta) -> Resource {
+    // Vocabulary door for the nested body. Live editor edits still wrap
+    // through [`NotesAction::EditBody`] until a nested dispatcher can address
+    // the page's body map directly.
+    let mut body_doc = AutoCommit::new();
+    RichText::initialize(&mut body_doc).expect("empty rich text initializes");
+    let state = RichText::read(&body_doc).expect("empty rich text reads");
+    let id = format!("notes.page:{}/body", page.id);
+    let mut body = ui::tilo_resource::publish::<RichText>(&id, &page.title, &state);
+    stamp_published_dynamic_continuations(&mut body, id.as_bytes());
+    body
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the published page-resource action table: one independent spec per action"
@@ -1646,6 +1716,8 @@ fn page_resource_from_index(
             ));
         }
     }
+    // Nested rich-text body — same action vocabulary as a root RichText.
+    res = res.with_child(page_body_child(m));
     res
 }
 
@@ -1775,18 +1847,45 @@ fn block_resource_in_page(
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut resources = vec![notebook_resource(ctx, doc), tags_resource(ctx)];
+    let mut notebook = notebook_resource(ctx, doc);
     let backlink_targets = canonical_backlink_index(doc, &ctx.pages)
         .into_keys()
         .collect::<HashSet<_>>();
-    for resource in &mut resources {
-        decorate_backlinks(resource, &backlink_targets);
+    decorate_backlinks(&mut notebook, &backlink_targets);
+    vec![notebook]
+}
+
+/// Attach Draft continuation domains to published dynamic doors that still
+/// lack one (`apply` / `group` and rich-text catalogue builders). Fixed
+/// encodings and already-stamped specs are left alone.
+fn stamp_published_dynamic_continuations(resource: &mut Resource, scope: &[u8]) {
+    let actions = std::mem::take(&mut resource.actions);
+    resource.actions = actions
+        .into_iter()
+        .map(|spec| {
+            if spec.fixed_invocation_encoding().is_some() || spec.has_continuation_identity() {
+                return spec;
+            }
+            let action = spec.id.clone();
+            let scope = scope.to_vec();
+            spec.with_continuation_identity(continuation::builder(BuilderDomain::PublishedDoor {
+                action,
+                scope,
+            }))
+        })
+        .collect();
+    for child in &mut resource.children {
+        let child_scope = child.id.as_str().as_bytes().to_vec();
+        stamp_published_dynamic_continuations(child, &child_scope);
     }
-    resources
 }
 
 fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
-    let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notes");
+    let state =
+        <crate::resource::Notebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let published =
+        ui::tilo_resource::publish::<crate::resource::Notebook>("notes.notebook", "Notes", &state);
+    let mut notebook = published;
 
     if ctx.can_go_back
         && let Some(action) = view_operation_spec("back", "Back", &NotesOperation::NavigateBack)
@@ -1805,6 +1904,11 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     // deterministic.
     let index = PageResourceIndex::new(&ctx.pages);
     let order = index.next_order(None);
+    // The declaration already published `new-page`. The standalone spec carries
+    // the current order and continuation identity, so it replaces that row.
+    notebook
+        .actions
+        .retain(|action| action.id.as_str() != "new-page");
     notebook = notebook.with_action(
         ActionSpec::prompted(
             "new-page",
@@ -1827,25 +1931,37 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     notebook = notebook.with_action(markdown_content_operation());
     notebook = with_daily_note_action(notebook, ctx, &index);
 
-    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
-    // Every action in this publication reads the same immutable document.
-    // Validate it once; revalidating every block for each note's four tree
-    // actions and duplicate action made ordinary typing stall on menu refresh.
-    let workspace = crate::notebook::project(doc, None).ok();
-    for root in index.children_of(None) {
-        if remaining == 0 {
-            break;
+    // `publish` already attached the page tree and the tag catalogue. Doc-backed
+    // previews merge onto those pages. A tag that exists only in this context
+    // is added beside the published tags; `new-tag` keeps this context's
+    // continuation identity.
+    let enriched = notebook_page_children(&ctx.pages, Some(doc));
+    let mut tags = notebook
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "notes.tags")
+        .cloned()
+        .unwrap_or_else(|| Resource::new("notes.tags", "notes.tags", "Tags"));
+    notebook
+        .children
+        .retain(|child| child.id.as_str() != "notes.tags");
+    merge_doc_pages(&mut notebook.children, enriched);
+    let live_tags = tags_resource(ctx);
+    for action in live_tags.actions {
+        if let Some(existing) = tags.actions.iter_mut().find(|have| have.id == action.id) {
+            *existing = action;
+        } else {
+            tags.actions.push(action);
         }
-        notebook = notebook.with_child(page_resource_from_index(
-            root,
-            &index,
-            doc,
-            workspace.as_ref(),
-            0,
-            &mut remaining,
-        ));
     }
+    for child in live_tags.children {
+        if !tags.children.iter().any(|have| have.id == child.id) {
+            tags.children.push(child);
+        }
+    }
+    notebook.children.push(tags);
     decorate_tag_actions(&mut notebook, ctx);
+    stamp_published_dynamic_continuations(&mut notebook, b"notes.notebook");
     notebook
 }
 
@@ -1886,10 +2002,10 @@ fn with_daily_note_action(
     )
 }
 
-fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
-    // Tags are sibling resources, not a page-tree hack. Assignment edges are
-    // exposed as absolute assign/unassign actions on each page, while tag
-    // records publish their own stable open/rename/delete identities.
+pub(crate) fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
+    // Tags ride the notebook. Assignment edges are exposed as absolute
+    // assign/unassign actions on each page, while tag records publish their
+    // own stable open/rename/delete identities.
     let mut tags_root = Resource::new("notes.tags", "notes.tags", "Tags");
     tags_root = tags_root.with_action(
         ActionSpec::prompted(
@@ -2095,20 +2211,36 @@ fn tag_page_resource(tag: TagId, page: &PageMeta) -> Resource {
     page_ref
 }
 
-impl ResourceProvider for crate::app::NotesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+fn find_note(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_note(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl crate::app::NotesApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.notes_resource_ctx_for(doc)
             .map(|ctx| provide_resources(&ctx, doc))
             .unwrap_or_default()
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.notes_resource_ctx_for(doc)?;
         if id == "notes.notebook" {
             return Some(notebook_resource(&ctx, doc));
         }
         if id == "notes.tags" {
-            return Some(tags_resource(&ctx));
+            return notebook_resource(&ctx, doc)
+                .children
+                .into_iter()
+                .find(|child| child.id.as_str() == "notes.tags");
         }
         if let Some(tag_id) = id.strip_prefix("notes.tag:")
             && let Ok(tag_id) = tag_id.parse::<TagId>()
@@ -2130,6 +2262,14 @@ impl ResourceProvider for crate::app::NotesApp {
             && let Ok(page_id) = page_id.parse::<PageId>()
             && let Some(page) = ctx.pages.iter().find(|page| page.id == page_id)
         {
+            let mut notebook = notebook_resource(&ctx, doc);
+            let published_backlinks = canonical_backlink_index(doc, &ctx.pages)
+                .into_keys()
+                .collect::<HashSet<_>>();
+            decorate_backlinks(&mut notebook, &published_backlinks);
+            if let Some(found) = find_note(&notebook, id) {
+                return Some(found);
+            }
             let mut resource = page_resource(page, &ctx.pages, doc);
             decorate_tag_actions(&mut resource, &ctx);
             let backlink_targets = canonical_backlink_index(doc, &ctx.pages)
@@ -2641,7 +2781,7 @@ mod tests {
     fn notebook_resources(doc: &AutoCommit) -> Vec<Resource> {
         let author = ui::permissions::UserId("action-contract".into());
         let app = crate::app::NotesApp::from_document(doc, &author).expect("a canonical notebook");
-        ResourceProvider::resources(&app, doc)
+        app.publish_resources(doc)
     }
 
     fn page_meta(doc: &AutoCommit, id: PageId) -> PageMeta {
@@ -2700,17 +2840,25 @@ mod tests {
     fn page_resources_publish_the_tree_view_copy_link_and_valid_moves() {
         eprintln!("phase ctrl_k_publishes_the_nested_page_tree");
         {
-            let (doc, _projects, _a, _b, _inbox) = seeded();
+            let (doc, projects_id, _a, _b, _inbox) = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            assert_eq!(resources.len(), 2, "notebook + stable tags root");
+            assert_eq!(resources.len(), 1, "one notebook root");
             let notebook = &resources[0];
             assert_eq!(notebook.kind, "notes.notebook");
             let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(nb_actions.contains(&"new-page"), "{nb_actions:?}");
             assert!(nb_actions.contains(&"daily-note"), "{nb_actions:?}");
 
-            // Two root pages, in order.
-            assert_eq!(notebook.children.len(), 2, "Projects + Inbox");
+            // Two root pages, in order, plus the tag catalogue.
+            assert_eq!(
+                notebook
+                    .children
+                    .iter()
+                    .filter(|child| child.kind == "notes.page")
+                    .count(),
+                2,
+                "Projects + Inbox"
+            );
             let projects = notebook
                 .children
                 .iter()
@@ -2722,14 +2870,21 @@ mod tests {
             assert!(p_actions.contains(&"delete"), "{p_actions:?}");
             assert!(p_actions.contains(&"new-child"), "{p_actions:?}");
 
-            // Its two children nest underneath, in order.
-            assert_eq!(
-                projects.children.len(),
-                2,
-                "Launch + Notes nest under Projects"
-            );
-            assert_eq!(projects.children[0].label, "Launch");
-            assert_eq!(projects.children[1].label, "Notes");
+            // Its two child notes nest underneath, in order, plus the body.
+            let page_children: Vec<_> = projects
+                .children
+                .iter()
+                .filter(|r| r.kind == "notes.page")
+                .collect();
+            assert_eq!(page_children.len(), 2, "Launch + Notes nest under Projects");
+            assert_eq!(page_children[0].label, "Launch");
+            assert_eq!(page_children[1].label, "Notes");
+            let body = projects
+                .children
+                .iter()
+                .find(|r| r.kind == RichText::KIND)
+                .expect("page nests a rich-text body child");
+            assert_eq!(body.id.as_str(), format!("notes.page:{projects_id}/body"));
         }
 
         eprintln!("phase page_resource_publishes_the_localized_editor_view");
@@ -3153,8 +3308,10 @@ mod tests {
                 can_go_forward: false,
             };
             let resources = provide_resources(&ctx, &AutoCommit::new());
+            // The notebook, each bounded page, that page's rich-text body, and
+            // the tag catalogue.
             assert!(
-                resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+                resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT * 2 + 2,
                 "notebook context must remain bounded"
             );
             let late = pages.last().expect("late note");
@@ -3192,12 +3349,21 @@ mod tests {
             };
 
             let resources = provide_resources(&ctx, &AutoCommit::new());
+            let tags = resources[0]
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == "notes.tags")
+                .expect("tag catalogue");
             assert_eq!(
-                resources[1].children.len(),
+                tags.children.len(),
                 RESOURCE_TAG_SNAPSHOT_LIMIT,
                 "the open Tags resource must have a fixed materialization ceiling"
             );
-            let page_resource = &resources[0].children[0];
+            let page_resource = resources[0]
+                .children
+                .iter()
+                .find(|child| child.kind == "notes.page")
+                .expect("page");
             assert!(
                 page_resource.actions.len() <= RESOURCE_PAGE_TAG_ACTION_LIMIT + 12,
                 "per-note tag actions must not grow with the whole vocabulary"
@@ -3469,10 +3635,11 @@ mod tests {
             );
             NotesDoc::set_tag_assignment(&mut doc, projects, tag, true);
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            let tags = resources
+            let tags = resources[0]
+                .children
                 .iter()
                 .find(|resource| resource.id.as_str() == "notes.tags")
-                .expect("tags root");
+                .expect("tags ride the notebook");
             let resource = tags
                 .children
                 .iter()

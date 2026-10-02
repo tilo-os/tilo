@@ -647,7 +647,10 @@ pub struct PlayerApp {
     /// hermetic. Live runs always derive loading from decoder frame state.
     shot_loading: bool,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
     shared_library: crate::shared::SharedLibrary,
     shot_shared: bool,
     /// Opaque source identity for durable shared playlists and markers. It
@@ -971,7 +974,8 @@ impl PlayerApp {
             shot_metadata: None,
             shot_loading: false,
             pending_pip: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
+            framework_hosted: false,
             shared_library: crate::shared::SharedLibrary::default(),
             shot_shared: false,
             current_media_ref: None,
@@ -1285,6 +1289,72 @@ impl PlayerApp {
         self.collab = Some(CollabPlayback::new(role));
         self.manager = Some(CollaborationManager::new());
         self
+    }
+
+    /// Mark this player as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only live track extras beside the framework door.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    /// Test-only: drop staged decoder metadata so hosted extras go empty.
+    #[cfg(test)]
+    pub(crate) fn clear_shot_metadata_for_test(&mut self) {
+        self.shot_metadata = Some(DecoderMetadata::default());
+    }
+
+    /// Test-only: seed a playlist that has not been published through the
+    /// framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_playlist_for_test(&mut self, id: &str, name: &str) {
+        self.shared_library.playlists.push(crate::shared::Playlist {
+            id: id.into(),
+            name: name.into(),
+        });
+    }
+
+    /// Test-only: shared-library playlist ids currently held on the surface.
+    #[cfg(test)]
+    pub(crate) fn shared_playlist_ids_for_test(&self) -> Vec<String> {
+        self.shared_library
+            .playlists
+            .iter()
+            .map(|playlist| playlist.id.clone())
+            .collect()
+    }
+
+    /// Show the playlists and annotations the framework resource holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_shared_library(&mut self, state: &crate::shared::SharedLibrary) {
+        let incoming_empty =
+            state.playlists.is_empty() && state.items.is_empty() && state.annotations.is_empty();
+        let local_has_rows = !self.shared_library.playlists.is_empty()
+            || !self.shared_library.items.is_empty()
+            || !self.shared_library.annotations.is_empty();
+        if incoming_empty && (local_has_rows || self.shot_shared) {
+            return;
+        }
+        if state != &self.shared_library {
+            self.shared_library = state.clone();
+            self.invalidate_search_cache();
+            self.dirty = true;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::VideoPlayer>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Shared read access to the inner video surface (for the headless shot
@@ -4319,12 +4389,20 @@ impl ui::search::capability::SearchSource for PlayerApp {
 impl ui::resources::PublishesResources for PlayerApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resources(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-        )
+        let ctx = self.action_context(&audio_tracks, &subtitle_tracks, &chapters);
+        // Framework [`tilo_resource::publish`] owns the application root,
+        // transport/library Views, and shared-library document children.
+        // Audio/subtitle/chapter rows are live decoder presentation only —
+        // keep that same standalone slice when hosted, never a second root.
+        if self.framework_hosted {
+            return crate::actions::live_track_resources(&ctx, doc);
+        }
+        crate::actions::resources(&ctx, doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.framework_hosted && id == "video-player.application" {
+            return None;
+        }
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resource(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),

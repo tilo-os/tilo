@@ -219,8 +219,8 @@ fn prepare_fixture_owned(
                 let action = crate::actions::add_image_asset_action(
                     page,
                     bytes,
-                    qdoc_rich_text::RichTextAction::SpliceText {
-                        region: qdoc_rich_text::action::RegionKind::Body,
+                    tilo_document::RichTextAction::SpliceText {
+                        region: tilo_document::action::RegionKind::Body,
                         block: block_id,
                         at: 0,
                         del: text.chars().count(),

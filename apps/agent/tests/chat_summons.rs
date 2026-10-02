@@ -57,9 +57,9 @@ fn config(path: std::path::PathBuf) -> Config {
 fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     word_processor::actions::provide_resources(
         &word_processor::actions::WpResourceCtx {
-            caret_block: qdoc::model::open(doc, &automerge::ROOT)
+            caret_block: tilo_doc::model::open(doc, &automerge::ROOT)
                 .map(|c| {
-                    qdoc::model::materialize(doc, &c)
+                    tilo_doc::model::materialize(doc, &c)
                         .blocks
                         .first()
                         .map(|b| b.id.clone())
@@ -199,10 +199,10 @@ fn scenario_outcome(
         additional.apply(&mut chat).unwrap();
     }
     let mut document = AutoCommit::new();
-    let schema = qdoc::model::init(&mut document, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&document, &schema);
+    let schema = tilo_doc::model::init(&mut document, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&document, &schema);
     {
-        let mut edit = qdoc::DocMut {
+        let mut edit = tilo_doc::DocMut {
             doc: &mut document,
             c: &schema,
             ids: &mut ids,
@@ -400,9 +400,9 @@ fn scenario_outcome(
         requests * usize::from(expected_reply && allowed),
         "one actual owner dispatch across restart"
     );
-    let schema = qdoc::model::open(&document, &automerge::ROOT).unwrap();
+    let schema = tilo_doc::model::open(&document, &automerge::ROOT).unwrap();
     assert_eq!(
-        qdoc::model::materialize(&document, &schema)
+        tilo_doc::model::materialize(&document, &schema)
             .blocks
             .iter()
             .filter(|b| b.kind == "cell")

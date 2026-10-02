@@ -220,8 +220,8 @@ mod tests {
     fn document() -> (AutoCommit, WpResourceCtx) {
         let mut doc = AutoCommit::new();
         crate::initialize_empty_document(&mut doc).unwrap();
-        let c = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-        let block = qdoc::model::blocks_in_order(&doc, &c)[0].clone();
+        let c = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+        let block = tilo_doc::model::blocks_in_order(&doc, &c)[0].clone();
         let ctx = WpResourceCtx {
             caret_block: block.clone(),
             caret_offset: 0,
@@ -298,7 +298,7 @@ mod tests {
             std::path::PathBuf::from("first.md"),
             crate::WpFormat::Markdown,
         );
-        let first = action(&ResourceProvider::resources(&widget, &doc), "save-as");
+        let first = action(&widget.publish_resources(&doc), "save-as");
         let draft = first
             .continuation_identity(ContinuationQuery::Draft)
             .expect("actual file context");
@@ -306,7 +306,7 @@ mod tests {
             std::path::PathBuf::from("second.md"),
             crate::WpFormat::Markdown,
         );
-        let next = action(&ResourceProvider::resources(&widget, &doc), "save-as");
+        let next = action(&widget.publish_resources(&doc), "save-as");
         assert_ne!(
             next.continuation_identity(ContinuationQuery::Draft),
             Some(draft)
@@ -333,7 +333,7 @@ mod tests {
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             ActionDirectoryInvocationDomain::Unsupported
         );
-        let image = action(&ResourceProvider::resources(&widget, &doc), "place-image");
+        let image = action(&widget.publish_resources(&doc), "place-image");
         assert!(
             image
                 .continuation_identity(ContinuationQuery::Draft)
@@ -356,7 +356,7 @@ mod tests {
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             before
         );
-        let a = action(&ResourceProvider::resources(&widget, &doc), "use-selected");
+        let a = action(&ui::resources::resources(&widget, &doc), "use-selected");
         assert!(
             a.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
                 .is_some()
@@ -386,7 +386,7 @@ mod tests {
                 ui::resources::action_directory_invocation_domain(&changed, &doc),
                 before
             );
-            let other = action(&ResourceProvider::resources(&changed, &doc), "use-selected");
+            let other = action(&ui::resources::resources(&changed, &doc), "use-selected");
             assert_ne!(
                 other.continuation_identity(ContinuationQuery::Exact(
                     ContinuationArguments::Immediate
@@ -415,7 +415,7 @@ mod tests {
         changed = ctx.clone();
         changed.format_spans.reverse();
         assert_ne!(identity(&changed), before);
-        let mut comment = qdoc::snapshot::CommentView {
+        let mut comment = tilo_doc::snapshot::CommentView {
             id: "first-parent".into(),
             author: "Author".into(),
             date: String::new(),
@@ -449,13 +449,13 @@ mod tests {
         let (doc, _) = document();
         let mut widget = crate::WordProcessorWidget::from_document(&doc).unwrap();
         widget.set_file("same-name.md".into(), crate::WpFormat::Html);
-        let first = action(&ResourceProvider::resources(&widget, &doc), "save");
+        let first = action(&widget.publish_resources(&doc), "save");
         let args = serde_json::Map::new();
         let before = first
             .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(&args)));
         assert!(before.is_some());
         widget.set_file("same-name.md".into(), crate::WpFormat::Markdown);
-        let second = action(&ResourceProvider::resources(&widget, &doc), "save");
+        let second = action(&widget.publish_resources(&doc), "save");
         assert_ne!(
             second.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
                 &args

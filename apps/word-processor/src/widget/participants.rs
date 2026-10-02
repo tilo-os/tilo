@@ -291,18 +291,18 @@ fn truncate(text: &str, max: usize) -> &str {
 
 /// The canonical Text object of `block` in `region`, if it has one.
 fn text_obj(doc: &AutoCommit, region: RegionKind, block: &str) -> Option<ObjId> {
-    let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-    let obj = qdoc::model::region_block_obj(doc, &containers, region.to_region(), block)?;
-    match doc.get(&obj, qdoc::schema::BLOCK_TEXT).ok()? {
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let obj = tilo_doc::model::region_block_obj(doc, &containers, region.to_region(), block)?;
+    match doc.get(&obj, tilo_doc::schema::BLOCK_TEXT).ok()? {
         Some((Value::Object(ObjType::Text), text)) => Some(text),
         _ => None,
     }
 }
 
 fn block_len(doc: &AutoCommit, region: RegionKind, block: &str) -> Option<usize> {
-    let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-    let obj = qdoc::model::region_block_obj(doc, &containers, region.to_region(), block)?;
-    Some(qdoc::model::block_text_on(doc, &obj).map_or(0, |text| text.chars().count()))
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let obj = tilo_doc::model::region_block_obj(doc, &containers, region.to_region(), block)?;
+    Some(tilo_doc::model::block_text_on(doc, &obj).map_or(0, |text| text.chars().count()))
 }
 
 /// Pin `point` to the character right after it (or to the block end), so an

@@ -706,7 +706,7 @@ pub struct ChatApp {
     // through this one field. It brackets the undo boundary, encodes under
     // `CHAT_ACTION_TYPE`, and applies through the executor so a peer replays the
     // byte-identical change. See [`crate::actions`].
-    pub(crate) actions: ui::ActionHost,
+    pub(crate) actions: crate::resource::ActionSink,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -966,7 +966,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
             content,
             rect: Rect::ZERO,
@@ -1037,12 +1037,55 @@ impl ChatApp {
         );
     }
 
+    pub(crate) fn ensure_composer_draft(&mut self, doc: &mut AutoCommit, key: &str) {
+        if key.is_empty() || ChatDoc::rich_draft_is_settled(doc, key) {
+            return;
+        }
+        self.perform_action(
+            doc,
+            &ChatAction::EnsureRichDraft {
+                key: key.to_string(),
+            },
+        );
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
     /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the rooms and channels the framework resource already holds.
+    /// An empty projection does not wipe unpublished local rooms or messages.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ChatState) {
+        if !state.workspaces.is_empty() {
+            self.workspaces.clone_from(&state.workspaces);
+        }
+        if !state.channels.is_empty() {
+            self.channels.clone_from(&state.channels);
+        }
+        // Messages stay on the live sync path — never clear them from an
+        // empty resource projection that has not caught up yet.
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// The context Ctrl+K needs to build Chat's resource tree: the active
@@ -3220,29 +3263,38 @@ impl Widget for ChatApp {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
         if !self.canonical && self.is_live {
-            // Live instance. `app-state` has already restored the previous
-            // session's document by now, so an unseeded document really is a
-            // first run: scaffold a real, empty starter workspace for this
-            // user — never the demo.
-            // Keyed off `is_live` (not on whether anything persisted) so a
-            // live run with no data dir still gets the honest empty starter
-            // rather than the demo.
-            if !ChatDoc::is_seeded(doc) {
-                ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
-            }
-            // Announce this peer into the shared roster so every other
-            // participant sees its real name/colour — whether we seeded the
-            // workspace or adopted a peer's shared document. Guarded so it
-            // writes once and doesn't churn the doc (which would spam empty
-            // collab deltas) on subsequent frames.
-            if ChatDoc::ensure_user(
+            let status = model::Presence::Online;
+            // A brand-new live record still needs the honest first workspace.
+            // SeedStarter owns that write; EnsureUser only joins the roster.
+            if ChatDoc::list_workspaces(doc).is_empty() {
+                self.perform_action(
+                    doc,
+                    &actions::ChatAction::SeedStarter {
+                        id: self.me.id.clone(),
+                        name: self.me.name.clone(),
+                        initials: self.me.initials.clone(),
+                        color_idx: self.me.color_idx,
+                    },
+                );
+            } else if !ChatDoc::user_is_current(
                 doc,
                 &self.me.id,
                 &self.me.name,
                 &self.me.initials,
                 self.me.color_idx,
-                model::Presence::Online,
-            ) {}
+                status,
+            ) {
+                self.perform_action(
+                    doc,
+                    &actions::ChatAction::EnsureUser {
+                        id: self.me.id.clone(),
+                        name: self.me.name.clone(),
+                        initials: self.me.initials.clone(),
+                        color_idx: self.me.color_idx,
+                        status: status.as_str().to_string(),
+                    },
+                );
+            }
         } else if !self.canonical && self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -3779,7 +3831,8 @@ impl Widget for ChatApp {
                 Action::SetValue(_) | Action::SetSelection { .. } => match hit {
                     Hit::FocusMain => {
                         self.focus = Focus::Main;
-                        ChatDoc::ensure_rich_draft(state, &self.active_channel);
+                        let channel = self.active_channel.clone();
+                        self.ensure_composer_draft(state, &channel);
                         self.composer_main.sync(state);
                         if !self.composer_main.perform_action(action, state, path) {
                             return false;
@@ -3791,7 +3844,7 @@ impl Widget for ChatApp {
                             return false;
                         };
                         self.focus = Focus::Thread;
-                        ChatDoc::ensure_rich_draft(state, &key);
+                        self.ensure_composer_draft(state, &key);
                         self.composer_thread.sync(state);
                         if !self.composer_thread.perform_action(action, state, path) {
                             return false;
@@ -3939,26 +3992,34 @@ impl ui::search::capability::SearchSource for ChatApp {
 }
 
 impl ui::resources::PublishesResources for ChatApp {
-    /// The resource tree Chat currently has open — the active workspace, its
-    /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`], the same builder the affordance covenant tests
-    /// drive. Recomputed each frame; empty until a workspace is selected.
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// channel/message Document ops ride [`tilo_resource::publish`]; this
+    /// returns only live extras — never a second `chat.workspace` Document door.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        // The framework root already owns the workspace door.
+        if self.is_hosted() && id == "chat.workspace" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
     /// The tree a delivered invocation resolves against for an agent task
     /// participant: the same resources, authored as that participant (its
-    /// posts carry it as author and its display name). Chat keeps no other
-    /// per-participant view state.
+    /// posts carry it as author and its display name). When hosted, Document
+    /// ops stay on `ResourceRoot`'s publish — do not republish a second chat root.
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
         match participant.and_then(|p| self.participant_ctx(p)) {
             Some(ctx) => crate::actions::provide_resources(&ctx, doc),
             None => ui::resources::resources(self, doc),
@@ -3970,6 +4031,9 @@ impl ui::resources::PublishesResources for ChatApp {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "chat.workspace" {
+            return None;
+        }
         match participant.and_then(|p| self.participant_ctx(p)) {
             Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
             None => ui::resources::resource(self, doc, id),
@@ -4054,6 +4118,29 @@ impl ChatApp {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+    use ui::widget::Widget;
+
+    /// A live peer joins the roster through `EnsureUser`, hosted or standalone.
+    #[test]
+    fn a_live_peer_joins_through_the_user_action() {
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true;
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let recorded = app
+            .last_dispatched()
+            .expect("the live peer is submitted as EnsureUser");
+        assert_eq!(recorded.type_id.as_str(), actions::CHAT_ACTION_TYPE);
+        assert!(crate::doc::ChatDoc::user_is_current(
+            &state.doc,
+            &app.me.id,
+            &app.me.name,
+            &app.me.initials,
+            app.me.color_idx,
+            crate::model::Presence::Online,
+        ));
+    }
+
     #[test]
     fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
         use ui::widget::PrimaryScrollAction;

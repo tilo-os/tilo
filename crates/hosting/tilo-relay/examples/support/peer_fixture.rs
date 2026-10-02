@@ -80,8 +80,8 @@ pub fn fixture_writer_insert(
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
-    let containers = qdoc::model::open(&doc, &automerge::ROOT).map_err(|e| e.to_string())?;
-    let block = qdoc::model::blocks_in_order(&doc, &containers)
+    let containers = tilo_doc::model::open(&doc, &automerge::ROOT).map_err(|e| e.to_string())?;
+    let block = tilo_doc::model::blocks_in_order(&doc, &containers)
         .first()
         .cloned()
         .ok_or("Writer body empty")?;

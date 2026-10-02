@@ -841,6 +841,24 @@ relink only what changed. `build --target web --bundle app` is the same
 build; Tilo's own apps also build into the shared desktop bundle
 (`--bundle desktop`).
 
+The core the build links exports what the app imports. The core the registry
+serves is built for Tilo's own web apps, so a package that imports something
+only this app uses (a generic instantiation from `serde_json`, say) can fail
+to link in a page that runs that core; the page names the missing symbols.
+
+`dev --platform web` serves the page and rebuilds after every save. An edit to
+the app relinks only its module; the page notices the finished build and
+reloads into the same record. The record's state lives in the browser's
+storage, not in the module, so the document survives the new code. An edit
+to the SDK rebuilds the core too. `--bind` picks another address.
+
+The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
+Node.js and brotli, which the builder image `tilo-app add ci` uses has.
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
+example a wrapper that runs it on a remote machine and brings `target/web`
+back. A web package's `[budget]` applies to its module as it
+does to a thin binary.
+
 ### Android
 
 The same app builds as a standalone Android app, with nothing Android-specific

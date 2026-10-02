@@ -167,6 +167,28 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Default live path: ResourceApp host. Captures, helpers and smoke probes
+    // above keep the standalone launch path.
+    if !args.iter().any(|arg| {
+        [
+            "--shots",
+            "--shots-dir",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+            "--demo",
+            "--setup",
+            "--import-folders",
+        ]
+        .iter()
+        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+    }) {
+        // The drive list comes from lsblk only when this is set. Captures
+        // and `--demo` leave it unset and stay on the seeded document.
+        enable_live_drive_probe();
+        ui::framework::run::<imager::ImagerShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.imager", live_root)
             .runtime_attachment(|_| !cfg!(target_os = "windows"))
@@ -178,6 +200,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .configure_app(|app| imager::actions::register(app.action_registry_mut())),
     )?;
     Ok(())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set once before the framework host constructs the drive probe"
+)]
+fn enable_live_drive_probe() {
+    unsafe { std::env::set_var("IMAGER_LIVE", "1") };
 }
 
 #[allow(

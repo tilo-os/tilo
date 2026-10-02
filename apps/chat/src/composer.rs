@@ -118,7 +118,7 @@ impl MessageEditor {
     }
 
     /// What the edit holds, as an action carries paragraphs.
-    pub fn clips(&self) -> Vec<qdoc_rich_text::ClipBlock> {
+    pub fn clips(&self) -> Vec<tilo_document::ClipBlock> {
         self.host.widget().source().clip_blocks()
     }
 }

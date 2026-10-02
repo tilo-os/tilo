@@ -2946,7 +2946,15 @@ impl Widget for ImportApp {
 
 impl ui::resources::PublishesResources for ImportApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
+        let projection = self.import_projection();
+        let described = import_actions::resource(&projection);
+        let mut published = ui::tilo_resource::publish::<import_actions::ImportGuide>(
+            import_actions::IMPORT_RESOURCE_ID,
+            &described.label,
+            &projection,
+        );
+        published.presentation = described.presentation;
+        vec![published]
     }
 }
 

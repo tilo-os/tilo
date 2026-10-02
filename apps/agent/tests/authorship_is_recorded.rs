@@ -31,10 +31,10 @@ const PERSON: &str = "ada";
 fn a_page_somebody_wrote() -> (Vec<u8>, String) {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(PERSON.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     let block = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -50,9 +50,9 @@ fn a_page_somebody_wrote() -> (Vec<u8>, String) {
 /// Every author run the document records for `block`, oldest position first.
 fn runs_on(bytes: &[u8], block: &str) -> Vec<(usize, usize, String)> {
     let doc = AutoCommit::load(bytes).expect("reload the document");
-    let c = qdoc::model::open(&doc, &automerge::ROOT).expect("open the schema");
-    let marks = qdoc::model::marks(&doc, &c, block);
-    qdoc::author_runs(&marks)
+    let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open the schema");
+    let marks = tilo_doc::model::marks(&doc, &c, block);
+    tilo_doc::author_runs(&marks)
 }
 
 /// Each case seeds its own fresh page, so no edit leaks between them.
@@ -104,8 +104,8 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
         // that only ever sees the saved bytes reads the same answer.
         let text = {
             let doc = AutoCommit::load(&saved).expect("reload");
-            let c = qdoc::model::open(&doc, &automerge::ROOT).expect("open");
-            qdoc::model::block_text(&doc, &c, &block).unwrap_or_default()
+            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open");
+            tilo_doc::model::block_text(&doc, &c, &block).unwrap_or_default()
         };
         let authored: String = text.chars().skip(*start).take(end - start).collect();
         assert_eq!(

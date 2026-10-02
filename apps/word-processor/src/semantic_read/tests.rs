@@ -3,7 +3,7 @@ use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use tilo_automerge::ApplyIncoming as _;
 
 fn fixture(texts: &[&str]) -> AutoCommit {
-    let mut source = qdoc::Document::new();
+    let mut source = tilo_doc::Document::new();
     let mut previous = None;
     for text in texts {
         let id = source.insert_block(previous.as_deref(), "paragraph");
@@ -23,8 +23,8 @@ fn limits(items: usize) -> Limits {
 #[test]
 fn semantic_read_pages_requested_capacity_in_literal_qdoc_order() {
     let mut doc = fixture(&["third", "first", "second"]);
-    let c = qdoc::model::open(&doc, &ROOT).unwrap();
-    let ids = qdoc::model::blocks_in_order(&doc, &c);
+    let c = tilo_doc::model::open(&doc, &ROOT).unwrap();
+    let ids = tilo_doc::model::blocks_in_order(&doc, &c);
     for (id, key) in ids.iter().zip([vec![2], vec![1], vec![1, 0]]) {
         let (_, block) = doc.get(&c.blocks, id.as_str()).unwrap().unwrap();
         doc.put(&block, "order", key).unwrap();
@@ -148,7 +148,7 @@ fn semantic_read_full_requested_capacity_and_noncanonical_cursor() {
 #[test]
 fn semantic_read_refuses_to_emit_an_unusable_oversized_cursor() {
     let mut doc = fixture(&[]);
-    let blocks = qdoc::model::open(&doc, &ROOT).unwrap().blocks;
+    let blocks = tilo_doc::model::open(&doc, &ROOT).unwrap().blocks;
     let id = "\"".repeat(256);
     let block = doc
         .put_object(&blocks, id, automerge::ObjType::Map)
@@ -179,9 +179,9 @@ fn semantic_read_uses_exact_bound_root_and_refuses_cross_root_cursor() {
         (&left, ["left one", "left two"]),
         (&right, ["right one", "right two"]),
     ] {
-        let c = qdoc::model::init(&mut doc, root);
-        let mut ids = qdoc::IdGen::new("same-block-ids".into());
-        let mut dm = qdoc::DocMut {
+        let c = tilo_doc::model::init(&mut doc, root);
+        let mut ids = tilo_doc::IdGen::new("same-block-ids".into());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -224,16 +224,16 @@ fn semantic_read_uses_borrowed_owner_heads_without_cloning_legacy_isolation() {
     let heads = doc.base_heads();
     doc.isolate_at(&vec![heads[0]; 20_000]);
     let (basis, largest) = allocation::largest(|| {
-        qdoc::semantic_read::begin(&doc, &heads, limits(1), 64).map(|(basis, _)| basis)
+        tilo_doc::semantic_read::begin(&doc, &heads, limits(1), 64).map(|(basis, _)| basis)
     });
     assert_eq!(basis.unwrap().heads, [heads[0].to_string()]);
     assert!(largest < 4096, "legacy head vector cloned: {largest}");
     assert!(matches!(
-        qdoc::semantic_read::begin(&doc, &vec![heads[0]; 65], limits(1), 64),
+        tilo_doc::semantic_read::begin(&doc, &vec![heads[0]; 65], limits(1), 64),
         Err(ReadError::Limit)
     ));
     assert!(matches!(
-        qdoc::semantic_read::begin(&doc, &[heads[0], heads[0]], limits(1), 64),
+        tilo_doc::semantic_read::begin(&doc, &[heads[0], heads[0]], limits(1), 64),
         Err(ReadError::Malformed)
     ));
 }
@@ -246,8 +246,8 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
     };
     let plain = "0123456789".repeat(1000);
     let mut doc = fixture(&[&plain]);
-    let containers = qdoc::model::open(&doc, &ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &containers)[0].clone();
+    let containers = tilo_doc::model::open(&doc, &ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &containers)[0].clone();
     let block = doc.get(&containers.blocks, block).unwrap().unwrap().1;
     let text = doc.get(&block, "text").unwrap().unwrap().1;
     doc.split_block(&text, 17).unwrap();
@@ -301,7 +301,7 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
 #[test]
 fn semantic_read_skips_invalid_block_rows_with_oversized_keys() {
     let mut doc = fixture(&["kept"]);
-    let blocks = qdoc::model::open(&doc, &ROOT).unwrap().blocks;
+    let blocks = tilo_doc::model::open(&doc, &ROOT).unwrap().blocks;
     doc.put(&blocks, "x".repeat(1024), "invalid scalar row")
         .unwrap();
     doc.put_object(&blocks, "y".repeat(1024), automerge::ObjType::Map)

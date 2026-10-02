@@ -14,7 +14,7 @@ resolver = "2"
 
 # Members name `workspace-hack = { version = "0.1" }` and the root manifest's
 # `[patch.crates-io]` points it at crates/workspace-hack. Workspaces outside
-# this one that reach members by path (fuzz/, qdoc-codec-markdown-wasm) have no
+# this one that reach members by path (fuzz/, tilo-doc-codec-markdown-wasm) have no
 # patch and resolve crates.io's empty workspace-hack 0.1.0 instead, so neither
 # their lockfiles nor a wasm32 build take on the host dependency set.
 workspace-hack-line-style = "version-only"

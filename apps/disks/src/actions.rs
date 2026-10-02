@@ -141,13 +141,15 @@ mod tests {
         ui::resources::resources(&app, doc)
     }
 
-    // Disks publishes only effect operations, so the registry decodes nothing.
-    // Without live disk access (as in tests) every effect is published as
-    // unavailable, which the palette rightly hides, so there is no `palette`
-    // section: the sweep checks the published surface and its contracts.
+    // Select is a document action; effects stay unpublished without live disks
+    // so the palette section is empty. The sweep still needs the disks decoder.
     ui::action_contract_tests! {
         seed: synced().1,
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        registry: {
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            <crate::resource::Disks as ui::tilo_resource::Resource>::register(&mut registry);
+            registry
+        },
         resources: |doc| resources_for(doc),
     }
 

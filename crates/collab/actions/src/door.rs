@@ -671,6 +671,10 @@ fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource
 }
 
 #[cfg(test)]
+#[allow(
+    deprecated,
+    reason = "tests pin ResourceProvider behaviour while the trait stays re-exported"
+)]
 mod tests {
     use super::*;
     use crate::action::{Action, ActionError, Doc};

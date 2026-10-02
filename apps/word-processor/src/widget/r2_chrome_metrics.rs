@@ -290,10 +290,10 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_image_bytes(&mut state.doc, PNG);
         wp.sync(&mut state.doc, &state.root);
-        let image = qdoc::model::open(&state.doc, &state.root)
+        let image = tilo_doc::model::open(&state.doc, &state.root)
             .ok()
             .and_then(|c| {
-                qdoc::model::materialize(&state.doc, &c)
+                tilo_doc::model::materialize(&state.doc, &c)
                     .blocks
                     .into_iter()
                     .find(|b| b.kind == "image")

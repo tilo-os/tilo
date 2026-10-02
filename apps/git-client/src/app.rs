@@ -246,6 +246,8 @@ struct RemoteJob {
     result: Option<Result<(), String>>,
     invocation: Option<tilo_actions::InvocationId>,
     progress_sent: bool,
+    /// Palette label while the transfer is in flight (live hosted extra).
+    label: String,
 }
 
 pub struct GitClientApp {
@@ -259,7 +261,7 @@ pub struct GitClientApp {
     /// host brackets the undo boundary, encodes and applies through the executor
     /// (so it replays byte-identically on peers), and remembers the last action
     /// for the affordance == `ActionSpec` covenant test.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
@@ -288,6 +290,8 @@ pub struct GitClientApp {
     remote_job: Option<RemoteJob>,
 
     settings: Settings,
+    /// Fingerprint of the last shared-repo projection written to the document.
+    shared_repo_fingerprint: Option<String>,
     /// Set once after the first sync seeds the settings into the doc.
     settings_seeded: bool,
     /// An initial preference was forced at construction (the `GIT_CLIENT_SPLIT`
@@ -500,7 +504,7 @@ impl GitClientApp {
             .with_font_size(14.0)
             .with_mono();
         Self {
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             flap,
             last_flap_tick: ui::time::now(),
             hamburger_rect: Rect::ZERO,
@@ -518,6 +522,7 @@ impl GitClientApp {
             last_error: None,
             remote_job: None,
             settings,
+            shared_repo_fingerprint: None,
             settings_seeded: false,
             settings_forced: split_forced,
             settings_seg: Rect::ZERO,
@@ -728,6 +733,12 @@ impl GitClientApp {
         let path = self
             .repo()
             .ok_or_else(|| "remote operation requires a repository".to_string())?;
+        let label = match action {
+            RemoteAction::Fetch => "Fetching…",
+            RemoteAction::Pull => "Pulling…",
+            RemoteAction::Push => "Pushing…",
+        }
+        .to_string();
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("git-remote".into())
@@ -747,6 +758,7 @@ impl GitClientApp {
             result: None,
             invocation,
             progress_sent: false,
+            label,
         });
         Ok(())
     }
@@ -1124,8 +1136,87 @@ impl GitClientApp {
     /// on-screen control dispatched, for the affordance == `ActionSpec`
     /// covenant test.
     #[doc(hidden)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the diff preferences the framework resource already holds. The
+    /// live on-disk repository model is not replaced by the shared projection.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::doc::GitClientState) {
+        if self.settings_forced {
+            return;
+        }
+        self.settings = state.settings;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Label for an in-flight fetch/pull/push, when one is running.
+    pub(crate) fn remote_job_label(&self) -> Option<String> {
+        self.remote_job.as_ref().map(|job| job.label.clone())
+    }
+
+    /// Write the shared repository projection when branches/commits/remotes move.
+    fn publish_shared_repo_if_needed(&mut self, doc: &mut AutoCommit) {
+        if self.awaiting_repo {
+            return;
+        }
+        let fingerprint = crate::doc::shared_fingerprint(&self.model);
+        if self.shared_repo_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        let shared = crate::doc::SharedRepo::from_model(&self.model);
+        let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
+        let action = crate::actions::GitClientAction::WriteSharedRepo { json };
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::GIT_CLIENT_ACTION_TYPE,
+            &action,
+            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
+        );
+        self.shared_repo_fingerprint = Some(fingerprint);
+    }
+
+    fn preference_actions(&self) -> [crate::actions::GitClientAction; 4] {
+        [
+            crate::actions::set_diff_layout_action(self.settings.diff_layout),
+            crate::actions::GitClientAction::SetShowWhitespace {
+                on: self.settings.show_whitespace,
+            },
+            crate::actions::GitClientAction::SetSyntaxHighlight {
+                on: self.settings.syntax_highlight,
+            },
+            crate::actions::GitClientAction::SetWrapLines {
+                on: self.settings.wrap_lines,
+            },
+        ]
+    }
+
+    fn publish_settings(&mut self, doc: &mut AutoCommit) {
+        for action in self.preference_actions() {
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::GIT_CLIENT_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
+            );
+        }
     }
 
     // --- Drawing -------------------------------------------------------
@@ -2687,11 +2778,14 @@ impl Widget for GitClientApp {
             // preferences. An initial override forced at construction (the
             // GIT_CLIENT_SPLIT screenshot path) wins over the persisted value.
             if !self.settings_forced {
-                self.settings = Settings::read(state);
+                // Read without creating the map. The preference actions below
+                // are what write it, hosted or standalone.
+                self.settings = Settings::read_only(state);
             }
-            self.settings.write(state);
+            self.publish_settings(state);
             self.settings_seeded = true;
         }
+        self.publish_shared_repo_if_needed(state);
     }
 
     fn build_layout(
@@ -3055,11 +3149,31 @@ impl Widget for GitClientApp {
 }
 
 impl ui::resources::PublishesResources for GitClientApp {
-    /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
-    /// [`crate::actions`]). Empty when no repository is open.
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the repository door — keep only live working-tree status and in-flight
+    /// remote jobs.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the repository door.
+        if self.is_hosted() && id == "git_client.repo" {
+            return None;
+        }
+        if let Some(found) = self.publish_resource(doc, id) {
+            return Some(found);
+        }
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        None
     }
 }
 
@@ -3616,6 +3730,7 @@ impl GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::Widget;
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.
@@ -3628,6 +3743,26 @@ mod tests {
         // Settle the reveal to the resolved default for this width.
         app.flap.snap(app.flap_open());
         app
+    }
+
+    /// The first sync publishes preferences through the action sink.
+    #[test]
+    fn a_fresh_client_publishes_preferences_through_the_sink() {
+        let mut app = GitClientApp::new();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let recorded = app
+            .actions
+            .last_dispatched()
+            .expect("the first sync submits a preference action");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::GIT_CLIENT_ACTION_TYPE
+        );
+        assert_eq!(
+            crate::settings::Settings::read_only(&state.doc).diff_layout,
+            app.settings.diff_layout
+        );
     }
 
     /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,

@@ -278,7 +278,7 @@ mod tests {
                 Outcome::ReadOnly,
                 Outcome::PendingWrites,
                 Outcome::UnsupportedOwner {
-                    mapping: "qdoc".into(),
+                    mapping: "tilo-doc".into(),
                 },
                 Outcome::InvalidRequest,
             ] {

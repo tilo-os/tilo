@@ -36,10 +36,14 @@ BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
 
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
+    "crates/doc/tilo-doc/",
+    "crates/doc/tilo-doc-codecs/",
+    # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,
+    # which places changes by tilo-doc's storage keys.
+    "crates/doc/tilo-document/",
+    # Pre-rename paths kept so a partial tree still classifies correctly.
     "crates/doc/qdoc/",
     "crates/doc/qdoc-codecs/",
-    # The rich-text resource: qdoc's rich text as a tilo-resource resource,
-    # which places changes by qdoc's storage keys.
     "crates/doc/qdoc-rich-text/",
     "crates/sdk/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved

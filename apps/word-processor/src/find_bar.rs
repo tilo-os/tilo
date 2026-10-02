@@ -5,7 +5,7 @@
 //! instead of editing qdoc itself: the parent editor remains the sole owner of
 //! undoable document mutations.
 
-use qdoc::snapshot::BlockView;
+use tilo_doc::snapshot::BlockView;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};

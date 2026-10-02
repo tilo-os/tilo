@@ -49,6 +49,7 @@ mod input_context;
 mod metrics;
 mod mini_month;
 pub mod model;
+pub mod resource;
 pub mod search_provider;
 mod sidebar;
 pub mod store;
@@ -63,6 +64,7 @@ pub use model::{
     Attendee, Event, InviteStatus, Model, OccurrenceOverride, Priority, Project, Recurrence, Task,
     View,
 };
+pub use resource::{Calendar, CalendarShell};
 
 use ui::widget::Widget;
 

@@ -13,6 +13,9 @@ const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
 pub struct Bookmark {
     pub url: String,
     pub title: String,
+    /// CRDT add-tags still present for this URL. File-cache rows leave this
+    /// empty; remove is published from the document projection.
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,6 +74,7 @@ impl Bookmarks {
             } else {
                 bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES)
             },
+            tags: Vec::new(),
         });
         self.revision = self.revision.wrapping_add(1);
         true
@@ -151,6 +155,7 @@ impl Bookmarks {
                             |title| bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES),
                         ),
                     url: url.to_string(),
+                    tags: Vec::new(),
                 })
             })
             .take(MAX_BOOKMARKS)

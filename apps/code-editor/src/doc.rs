@@ -91,6 +91,17 @@ impl EditorDoc {
         id
     }
 
+    /// The durable project id, when one has been written.
+    pub fn project_id(doc: &AutoCommit) -> Option<String> {
+        match doc.get(&ROOT, "project_id") {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                ScalarValue::Str(id) if uuid::Uuid::parse_str(id).is_ok() => Some(id.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Get-or-create the durable file-record namespace. Unlike `buffers`, this
     /// is the collaborative project tree rather than a cache of editor panes.
     pub fn files_map(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -316,11 +327,23 @@ impl EditorDoc {
         reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
     )]
     pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, "terminal_panel") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
+        let _ = tilo_actions::Action::apply(
+            &crate::actions::CodeEditorAction::EnsureTerminalPanel,
+            doc,
+        );
+        match Self::terminal_panel(doc) {
+            Some(id) => id,
+            None => doc
                 .put_object(&ROOT, "terminal_panel", ObjType::Map)
                 .expect("put_object terminal_panel on root never fails"),
+        }
+    }
+
+    /// The embedded terminal's map, when the document already has one.
+    pub fn terminal_panel(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, "terminal_panel") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
         }
     }
 

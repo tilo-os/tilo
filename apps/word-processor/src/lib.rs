@@ -78,8 +78,8 @@ use automerge::{AutoCommit, ObjId};
 /// generator. Holds no copy of the doc — it operates over a borrowed host
 /// `AutoCommit` (the same one `ui::State` owns, snapshots for undo, and syncs).
 pub struct EditorDoc {
-    pub containers: qdoc::Containers,
-    pub ids: qdoc::IdGen,
+    pub containers: tilo_doc::Containers,
+    pub ids: tilo_doc::IdGen,
 }
 
 impl EditorDoc {
@@ -87,14 +87,20 @@ impl EditorDoc {
     /// not already present.
     pub fn bind(doc: &mut AutoCommit, root: &ObjId) -> Self {
         let containers =
-            qdoc::model::open(doc, root).unwrap_or_else(|_| qdoc::model::init(doc, root));
-        let ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+            tilo_doc::model::open(doc, root).unwrap_or_else(|_| tilo_doc::model::init(doc, root));
+        let ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
         Self { containers, ids }
     }
 
-    /// A mutable editing view over the host doc.
-    pub fn edit<'a>(&'a mut self, doc: &'a mut AutoCommit) -> qdoc::DocMut<'a> {
-        qdoc::DocMut {
+    /// Private engine handle for import/seed helpers. Interactive edits go
+    /// through [`crate::actions::RichTextAction`] / the framework dispatcher —
+    /// not this API.
+    #[allow(
+        dead_code,
+        reason = "seed/import helpers and lib tests bind through this handle"
+    )]
+    pub(crate) fn edit<'a>(&'a mut self, doc: &'a mut AutoCommit) -> tilo_doc::DocMut<'a> {
+        tilo_doc::DocMut {
             doc,
             c: &self.containers,
             ids: &mut self.ids,
@@ -102,15 +108,15 @@ impl EditorDoc {
     }
 
     pub fn blocks(&self, doc: &AutoCommit) -> Vec<String> {
-        qdoc::model::blocks_in_order(doc, &self.containers)
+        tilo_doc::model::blocks_in_order(doc, &self.containers)
     }
 
     pub fn text(&self, doc: &AutoCommit, id: &str) -> Option<String> {
-        qdoc::model::block_text(doc, &self.containers, id)
+        tilo_doc::model::block_text(doc, &self.containers, id)
     }
 
-    pub fn snapshot(&self, doc: &AutoCommit) -> qdoc::DocSnapshot {
-        qdoc::model::materialize(doc, &self.containers)
+    pub fn snapshot(&self, doc: &AutoCommit) -> tilo_doc::DocSnapshot {
+        tilo_doc::model::materialize(doc, &self.containers)
     }
 }
 
@@ -126,16 +132,16 @@ pub enum WpFormat {
     Markdown,
     /// Plain text: each line is a paragraph, and nothing is markup.
     Text,
-    /// PDF — **export only** (rendered via the `qdoc-pdf` crate). Importing PDF is
+    /// PDF — **export only** (rendered via the `tilo-doc-pdf` crate). Importing PDF is
     /// not supported and returns a clear error.
     Pdf,
-    /// HTML — export via `qdoc_codecs::export_html`; **import** via `qdoc_codecs::HtmlCodec` (so
+    /// HTML — export via `tilo_doc_codecs::export_html`; **import** via `tilo_doc_codecs::HtmlCodec` (so
     /// `.html`/`.htm` files can be opened as well as saved).
     Html,
-    /// RTF — export via `qdoc_codecs::export_rtf`; **import** via `qdoc_codecs::RtfCodec` (so
+    /// RTF — export via `tilo_doc_codecs::export_rtf`; **import** via `tilo_doc_codecs::RtfCodec` (so
     /// `.rtf` files can be opened as well as saved).
     Rtf,
-    /// EPUB — **export only** (rendered via `qdoc_codecs::export_epub`). Importing EPUB
+    /// EPUB — **export only** (rendered via `tilo_doc_codecs::export_epub`). Importing EPUB
     /// is not supported and returns a clear error.
     Epub,
 }
@@ -165,17 +171,17 @@ impl WpFormat {
     pub(crate) fn import(
         self,
         bytes: &[u8],
-        dm: &mut qdoc::DocMut,
+        dm: &mut tilo_doc::DocMut,
         inputs: &mut tilo_content::ContentInputs,
-    ) -> Result<(), qdoc_codecs::CodecError> {
-        use qdoc_codecs::FormatProvider;
+    ) -> Result<(), tilo_doc_codecs::CodecError> {
+        use tilo_doc_codecs::FormatProvider;
         match self {
-            WpFormat::Odt => qdoc_codecs::OdtCodec.import(bytes, dm, inputs),
-            WpFormat::Docx => qdoc_codecs::DocxCodec.import(bytes, dm, inputs),
-            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.import(bytes, dm, inputs),
+            WpFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, inputs),
+            WpFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, inputs),
+            WpFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, inputs),
             WpFormat::Text => {
                 let text = std::str::from_utf8(bytes)
-                    .map_err(|e| qdoc_codecs::CodecError::Parse(e.to_string()))?;
+                    .map_err(|e| tilo_doc_codecs::CodecError::Parse(e.to_string()))?;
                 dm.bulk(|dm| {
                     let mut previous: Option<String> = None;
                     for line in text.lines() {
@@ -186,16 +192,16 @@ impl WpFormat {
                 });
                 Ok(())
             }
-            WpFormat::Pdf => Err(qdoc_codecs::CodecError::Unsupported(
+            WpFormat::Pdf => Err(tilo_doc_codecs::CodecError::Unsupported(
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
-            // HTML import is handled by the `qdoc_codecs::HtmlCodec` codec (export still
-            // routes through `qdoc_codecs::export_html` below).
-            WpFormat::Html => qdoc_codecs::HtmlCodec.import(bytes, dm, inputs),
-            // RTF import is handled by the `qdoc_codecs::RtfCodec` codec (export still
-            // routes through `qdoc_codecs::export_rtf` below).
-            WpFormat::Rtf => qdoc_codecs::RtfCodec.import(bytes, dm, inputs),
-            WpFormat::Epub => Err(qdoc_codecs::CodecError::Unsupported(
+            // HTML import is handled by the `tilo_doc_codecs::HtmlCodec` codec (export still
+            // routes through `tilo_doc_codecs::export_html` below).
+            WpFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, inputs),
+            // RTF import is handled by the `tilo_doc_codecs::RtfCodec` codec (export still
+            // routes through `tilo_doc_codecs::export_rtf` below).
+            WpFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, inputs),
+            WpFormat::Epub => Err(tilo_doc_codecs::CodecError::Unsupported(
                 "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
             )),
         }
@@ -204,14 +210,14 @@ impl WpFormat {
     /// Project `dr` into this format, embedding the images it references from `content`.
     pub(crate) fn export(
         self,
-        dr: qdoc::DocRef,
+        dr: tilo_doc::DocRef,
         content: &dyn tilo_content::ContentSource,
-    ) -> Result<Vec<u8>, qdoc_codecs::CodecError> {
-        use qdoc_codecs::FormatProvider;
+    ) -> Result<Vec<u8>, tilo_doc_codecs::CodecError> {
+        use tilo_doc_codecs::FormatProvider;
         match self {
-            WpFormat::Odt => qdoc_codecs::OdtCodec.export(dr, content),
-            WpFormat::Docx => qdoc_codecs::DocxCodec.export(dr, content),
-            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.export(dr, content),
+            WpFormat::Odt => tilo_doc_codecs::OdtCodec.export(dr, content),
+            WpFormat::Docx => tilo_doc_codecs::DocxCodec.export(dr, content),
+            WpFormat::Markdown => tilo_doc_codecs::MarkdownCodec.export(dr, content),
             WpFormat::Text => {
                 let lines: Vec<String> = dr
                     .materialize()
@@ -222,36 +228,36 @@ impl WpFormat {
                 Ok(format!("{}\n", lines.join("\n")).into_bytes())
             }
             // PDF isn't a `FormatProvider` codec — it renders from the materialized
-            // snapshot via `qdoc-pdf`. Map its error into the shared `CodecError`.
+            // snapshot via `tilo-doc-pdf`. Map its error into the shared `CodecError`.
             WpFormat::Pdf => {
                 let snap = dr.materialize();
-                qdoc_pdf::render_pdf(&snap, content)
-                    .map_err(|e| qdoc_codecs::CodecError::Export(e.to_string()))
+                tilo_doc_pdf::render_pdf(&snap, content)
+                    .map_err(|e| tilo_doc_codecs::CodecError::Export(e.to_string()))
             }
             // HTML/RTF aren't `FormatProvider` codecs either — they render from
-            // the materialized snapshot via `qdoc_codecs::export_html`/`qdoc_codecs::export_rtf`,
+            // the materialized snapshot via `tilo_doc_codecs::export_html`/`tilo_doc_codecs::export_rtf`,
             // returning UTF-8 bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
-                let rendered = qdoc_codecs::export_html::render_html(
+                let rendered = tilo_doc_codecs::export_html::render_html(
                     &snap,
-                    qdoc_codecs::export_html::HtmlOptions::default(),
+                    tilo_doc_codecs::export_html::HtmlOptions::default(),
                     content,
                 );
                 Ok(rendered.into_bytes())
             }
             WpFormat::Rtf => {
                 let snap = dr.materialize();
-                let rendered = qdoc_codecs::export_rtf::render_rtf(&snap);
+                let rendered = tilo_doc_codecs::export_rtf::render_rtf(&snap);
                 Ok(rendered.into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
-            // ZIP container from the materialized snapshot via `qdoc_codecs::export_epub`.
+            // ZIP container from the materialized snapshot via `tilo_doc_codecs::export_epub`.
             // Map its error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                let rendered = qdoc_codecs::export_epub::render_epub(&snap, content);
-                rendered.map_err(|e| qdoc_codecs::CodecError::Export(e.to_string()))
+                let rendered = tilo_doc_codecs::export_epub::render_epub(&snap, content);
+                rendered.map_err(|e| tilo_doc_codecs::CodecError::Export(e.to_string()))
             }
         }
     }
@@ -260,7 +266,7 @@ impl WpFormat {
 /// Make the document as just imported the start of its undo history: the first undo takes back
 /// the first edit, not the file.
 ///
-/// The import into the fresh document commits its content as changes (see `qdoc::DocMut::bulk`),
+/// The import into the fresh document commits its content as changes (see `tilo_doc::DocMut::bulk`),
 /// and the undo log brackets each action from the heads of the previous boundary, so without a
 /// boundary here the first edit's entry would span the whole import.
 fn start_history_here(state: &mut ui::State) {
@@ -321,26 +327,15 @@ pub fn open_document_with_records(
             .adopt_existing_file(&state.doc, path.to_path_buf(), bytes, format)
             .map_err(invalid_data)?;
     } else {
-        let containers = qdoc::model::init(&mut state.doc, &state.root);
-        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-        let mut inputs = tilo_content::ContentInputs::new();
+        // Import through ReplaceFormatted, then start history so opening a
+        // file is the document's baseline rather than an undo step.
+        widget.model_mut().bind(&mut state.doc, &state.root);
+        if !widget
+            .model_mut()
+            .replace_with_format(&mut state.doc, &bytes, format)
         {
-            let mut dm = qdoc::DocMut {
-                doc: &mut state.doc,
-                c: &containers,
-                ids: &mut ids,
-            };
-            format
-                .import(&bytes, &mut dm, &mut inputs)
-                .map_err(invalid_data)?;
+            return Err(invalid_data(format!("could not import {}", path.display())));
         }
-        // The document only names the file's images; they are kept before it is.
-        widget
-            .model()
-            .content_store()
-            .put_inputs(&inputs)
-            .map_err(invalid_data)?;
-        // The opened file is where undo begins: the import is not an edit.
         start_history_here(&mut state);
         widget.set_file(path.to_path_buf(), format);
         widget.remember_open_document(&state.doc);
@@ -428,22 +423,17 @@ impl Template {
 pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpFormat) {
     let format = WpFormat::Markdown;
     let mut state = ui::State::new();
-    let containers = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    // Import with a throwaway model so the widget handed back stays unbound
+    // until the host's first sync, matching a new document.
     {
-        let mut dm = qdoc::DocMut {
-            doc: &mut state.doc,
-            c: &containers,
-            ids: &mut ids,
-        };
+        let mut importer = WordProcessor::new();
+        importer.bind(&mut state.doc, &state.root);
         // Templates are bundled and validated by tests, so import cannot fail
         // in practice; if a malformed one ever shipped, say so on stderr and
         // hand back the empty document rather than killing the process — the
         // release profile sets `panic = "abort"`.
-        // Templates are Markdown and embed no binary content.
-        let mut inputs = tilo_content::ContentInputs::new();
-        if let Err(e) = format.import(t.content().as_bytes(), &mut dm, &mut inputs) {
-            eprintln!("word-processor: bundled template {t:?} failed to import: {e}");
+        if !importer.replace_with_markdown(&mut state.doc, t.content().as_bytes()) {
+            eprintln!("word-processor: bundled template {t:?} failed to import");
         }
     }
     start_history_here(&mut state);
@@ -466,8 +456,8 @@ pub fn save_document(
     format: WpFormat,
     content: &dyn tilo_content::ContentSource,
 ) -> std::io::Result<()> {
-    let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
-    let dr = qdoc::DocRef {
+    let containers = tilo_doc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
+    let dr = tilo_doc::DocRef {
         doc: &state.doc,
         c: &containers,
     };
@@ -650,8 +640,8 @@ pub mod recovery {
     /// so this is what `WordProcessorWidget` writes regardless of the document's
     /// on-disk save format. Returns `None` only if the document has no schema yet.
     pub fn markdown_bytes(state: &ui::State) -> Option<Vec<u8>> {
-        let containers = qdoc::model::open(&state.doc, &state.root).ok()?;
-        let dr = qdoc::DocRef {
+        let containers = tilo_doc::model::open(&state.doc, &state.root).ok()?;
+        let dr = tilo_doc::DocRef {
             doc: &state.doc,
             c: &containers,
         };
@@ -664,9 +654,9 @@ pub mod recovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_codecs::{FormatProvider, MarkdownCodec};
+    use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
 
-    fn first_text(snap: &qdoc::DocSnapshot) -> Option<String> {
+    fn first_text(snap: &tilo_doc::DocSnapshot) -> Option<String> {
         snap.blocks.first().map(|b| b.text.clone())
     }
 
@@ -750,7 +740,7 @@ mod tests {
     )]
     fn export_formats_write_valid_files_and_refuse_unsupported_imports() {
         // Phase: save_document_to_pdf_writes_valid_pdf.
-        // Saving to a `*.pdf` path routes through `qdoc-pdf` and writes a valid PDF
+        // Saving to a `*.pdf` path routes through `tilo-doc-pdf` and writes a valid PDF
         // (the bytes start with the `%PDF` signature). PDF is export-only.
         {
             let mut s = ui::State::new();
@@ -788,9 +778,9 @@ mod tests {
         // PDF import is unsupported and surfaces a clear error.
         {
             let mut s = ui::State::new();
-            let containers = qdoc::model::init(&mut s.doc, &s.root);
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-            let mut dm = qdoc::DocMut {
+            let containers = tilo_doc::model::init(&mut s.doc, &s.root);
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &containers,
                 ids: &mut ids,
@@ -803,13 +793,13 @@ mod tests {
                 )
                 .unwrap_err();
             assert!(
-                matches!(err, qdoc_codecs::CodecError::Unsupported(_)),
+                matches!(err, tilo_doc_codecs::CodecError::Unsupported(_)),
                 "got {err:?}"
             );
         }
 
         // Phase: save_document_to_html_writes_html.
-        // Saving to a `*.html` path routes through `qdoc_codecs::export_html` and writes a complete
+        // Saving to a `*.html` path routes through `tilo_doc_codecs::export_html` and writes a complete
         // HTML document. HTML is export-only.
         {
             let mut s = ui::State::new();
@@ -847,7 +837,7 @@ mod tests {
         }
 
         // Phase: save_document_to_rtf_writes_rtf.
-        // Saving to a `*.rtf` path routes through `qdoc_codecs::export_rtf` and writes a valid RTF
+        // Saving to a `*.rtf` path routes through `tilo_doc_codecs::export_rtf` and writes a valid RTF
         // document (the bytes start with the `{\rtf` signature). RTF is export-only.
         {
             let mut s = ui::State::new();
@@ -882,7 +872,7 @@ mod tests {
         }
 
         // Phase: save_document_to_epub_writes_epub.
-        // Saving to a `*.epub` path routes through `qdoc_codecs::export_epub` and writes a valid
+        // Saving to a `*.epub` path routes through `tilo_doc_codecs::export_epub` and writes a valid
         // EPUB OCF container: the bytes are a ZIP archive (`PK` magic) whose first
         // entry is the literal `mimetype` member. EPUB is export-only.
         {
@@ -936,9 +926,9 @@ mod tests {
         // EPUB import is unsupported and surfaces a clear error.
         {
             let mut s = ui::State::new();
-            let containers = qdoc::model::init(&mut s.doc, &s.root);
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-            let mut dm = qdoc::DocMut {
+            let containers = tilo_doc::model::init(&mut s.doc, &s.root);
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &containers,
                 ids: &mut ids,
@@ -951,7 +941,7 @@ mod tests {
                 )
                 .unwrap_err();
             assert!(
-                matches!(err, qdoc_codecs::CodecError::Unsupported(_)),
+                matches!(err, tilo_doc_codecs::CodecError::Unsupported(_)),
                 "got {err:?}"
             );
         }
@@ -978,8 +968,8 @@ mod tests {
         let (state, _, format) =
             open_document(&path, tilo_content::ContentStore::memory()).unwrap();
         assert_eq!(format, WpFormat::Text);
-        let c = qdoc::model::open(&state.doc, &state.root).unwrap();
-        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let c = tilo_doc::model::open(&state.doc, &state.root).unwrap();
+        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
         let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(texts, lines);
         assert!(
@@ -1029,13 +1019,13 @@ mod tests {
 
         // Phase: html_import_opens_first_heading.
         // `WpFormat::Html.import` of a small HTML document produces the expected
-        // first heading (HTML import is now wired to `qdoc_codecs::HtmlCodec`).
+        // first heading (HTML import is now wired to `tilo_doc_codecs::HtmlCodec`).
         {
             let mut s = ui::State::new();
-            let containers = qdoc::model::init(&mut s.doc, &s.root);
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let containers = tilo_doc::model::init(&mut s.doc, &s.root);
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s.doc,
                     c: &containers,
                     ids: &mut ids,
@@ -1048,7 +1038,7 @@ mod tests {
                     )
                     .expect("html import succeeds");
             }
-            let snap = qdoc::model::materialize(&s.doc, &containers);
+            let snap = tilo_doc::model::materialize(&s.doc, &containers);
             let first = snap
                 .blocks
                 .first()
@@ -1062,13 +1052,13 @@ mod tests {
 
         // Phase: rtf_import_opens_a_paragraph.
         // `WpFormat::Rtf.import` of a small `.rtf` document produces the expected
-        // first paragraph (RTF import is wired to `qdoc_codecs::RtfCodec`).
+        // first paragraph (RTF import is wired to `tilo_doc_codecs::RtfCodec`).
         {
             let mut s = ui::State::new();
-            let containers = qdoc::model::init(&mut s.doc, &s.root);
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let containers = tilo_doc::model::init(&mut s.doc, &s.root);
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s.doc,
                     c: &containers,
                     ids: &mut ids,
@@ -1081,7 +1071,7 @@ mod tests {
                     )
                     .expect("rtf import succeeds");
             }
-            let snap = qdoc::model::materialize(&s.doc, &containers);
+            let snap = tilo_doc::model::materialize(&s.doc, &containers);
             let first = snap
                 .blocks
                 .first()
@@ -1093,7 +1083,7 @@ mod tests {
         }
 
         // Phase: rtf_export_then_import_roundtrips_text_and_bold.
-        // Full round-trip: render a Markdown-built document to `.rtf` via `qdoc_codecs::export_rtf`
+        // Full round-trip: render a Markdown-built document to `.rtf` via `tilo_doc_codecs::export_rtf`
         // (the export path), re-open it through `WpFormat::Rtf.import` (the new
         // import path), and assert the text and a bold run survive.
         {
@@ -1111,9 +1101,9 @@ mod tests {
                     .unwrap();
             }
 
-            // Export to RTF bytes via the editor's export path (`qdoc_codecs::export_rtf`).
-            let containers = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let dr = qdoc::DocRef {
+            // Export to RTF bytes via the editor's export path (`tilo_doc_codecs::export_rtf`).
+            let containers = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+            let dr = tilo_doc::DocRef {
                 doc: &s.doc,
                 c: &containers,
             };
@@ -1123,10 +1113,10 @@ mod tests {
 
             // Re-import those bytes into a fresh document via the import path.
             let mut s2 = ui::State::new();
-            let containers2 = qdoc::model::init(&mut s2.doc, &s2.root);
-            let mut ids2 = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
+            let containers2 = tilo_doc::model::init(&mut s2.doc, &s2.root);
+            let mut ids2 = tilo_doc::IdGen::new(s2.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s2.doc,
                     c: &containers2,
                     ids: &mut ids2,
@@ -1135,7 +1125,7 @@ mod tests {
                     .import(&rtf, &mut dm, &mut tilo_content::ContentInputs::new())
                     .expect("rtf import");
             }
-            let snap = qdoc::model::materialize(&s2.doc, &containers2);
+            let snap = tilo_doc::model::materialize(&s2.doc, &containers2);
             let p = snap
                 .blocks
                 .iter()
@@ -1186,11 +1176,11 @@ mod tests {
             assert!(vers.len() >= 2, "multiple authored changes");
             let last = vers.len() - 1;
             assert_eq!(
-                qdoc::snapshot::at(&mut s.doc, last).unwrap().blocks[0].text,
+                tilo_doc::snapshot::at(&mut s.doc, last).unwrap().blocks[0].text,
                 "hello world"
             );
             let saw_hello = (0..vers.len()).any(|i| {
-                qdoc::snapshot::at(&mut s.doc, i)
+                tilo_doc::snapshot::at(&mut s.doc, i)
                     .ok()
                     .and_then(|sn| sn.blocks.first().map(|b| b.text == "hello"))
                     .unwrap_or(false)
@@ -1212,9 +1202,9 @@ mod tests {
                 "templates are imported as Markdown"
             );
 
-            let containers = qdoc::model::open(&state.doc, &state.root)
+            let containers = tilo_doc::model::open(&state.doc, &state.root)
                 .expect("template-seeded state has the canonical schema");
-            let snap = qdoc::model::materialize(&state.doc, &containers);
+            let snap = tilo_doc::model::materialize(&state.doc, &containers);
             let first = snap
                 .blocks
                 .first()
@@ -1263,10 +1253,10 @@ mod tests {
 
                 // Import path mirrors `new_from_template` but asserts on each variant.
                 let mut s = ui::State::new();
-                let containers = qdoc::model::init(&mut s.doc, &s.root);
-                let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+                let containers = tilo_doc::model::init(&mut s.doc, &s.root);
+                let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
                 {
-                    let mut dm = qdoc::DocMut {
+                    let mut dm = tilo_doc::DocMut {
                         doc: &mut s.doc,
                         c: &containers,
                         ids: &mut ids,
@@ -1279,7 +1269,7 @@ mod tests {
                         )
                         .unwrap_or_else(|e| panic!("{t:?} imports cleanly: {e:?}"));
                 }
-                let snap = qdoc::model::materialize(&s.doc, &containers);
+                let snap = tilo_doc::model::materialize(&s.doc, &containers);
                 assert!(!snap.blocks.is_empty(), "{t:?} produces at least one block");
             }
         }
@@ -1291,8 +1281,8 @@ mod tests {
             for &t in Template::all() {
                 let (state, _widget, format) = new_from_template(t);
                 assert_eq!(format, WpFormat::Markdown);
-                let containers = qdoc::model::open(&state.doc, &state.root).unwrap();
-                let snap = qdoc::model::materialize(&state.doc, &containers);
+                let containers = tilo_doc::model::open(&state.doc, &state.root).unwrap();
+                let snap = tilo_doc::model::materialize(&state.doc, &containers);
                 assert!(!snap.blocks.is_empty(), "{t:?} yields a non-empty document");
             }
         }
@@ -1416,10 +1406,10 @@ mod tests {
             let md = recovery::markdown_bytes(&s).expect("render recovery markdown");
 
             let mut s2 = ui::State::new();
-            let containers = qdoc::model::init(&mut s2.doc, &s2.root);
-            let mut ids = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
+            let containers = tilo_doc::model::init(&mut s2.doc, &s2.root);
+            let mut ids = tilo_doc::IdGen::new(s2.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s2.doc,
                     c: &containers,
                     ids: &mut ids,
@@ -1428,7 +1418,7 @@ mod tests {
                     .import(&md, &mut dm, &mut tilo_content::ContentInputs::new())
                     .expect("re-import recovery markdown");
             }
-            let snap = qdoc::model::materialize(&s2.doc, &containers);
+            let snap = tilo_doc::model::materialize(&s2.doc, &containers);
             assert_eq!(
                 first_text(&snap).as_deref(),
                 Some("Draft Title"),
@@ -1443,7 +1433,7 @@ pub use component::definition;
 /// The kind of a Writer document record: the rich-text resource the native
 /// app, the workspace host and the browser all open. Records stamped with the
 /// former `document` read as this kind (see [`ui::RecordKind::new`]).
-pub const RECORD_KIND: &str = <qdoc_rich_text::RichText as tilo_resource::Resource>::KIND;
+pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
 
 /// Initialize a checked New record as an empty Writer document.
 ///

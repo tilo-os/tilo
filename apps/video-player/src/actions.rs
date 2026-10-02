@@ -126,6 +126,64 @@ impl PlayerOperation {
     }
 }
 
+/// A publication context with no open media — used by
+/// [`crate::resource::VideoPlayer`] for `local_operations` / `children` when
+/// the live decoder state is not available.
+pub fn empty_resource_ctx() -> PlayerResourceCtx<'static> {
+    PlayerResourceCtx {
+        title: "Video Player",
+        media: MediaAvailability {
+            has_media: false,
+            source_id: None,
+            media_ref: None,
+            can_control_transport: true,
+        },
+        settings: PlaybackSettingsState {
+            autoplay: true,
+            loop_enabled: false,
+            rate: 1.0,
+        },
+        audio_tracks: &[],
+        subtitle_tracks: &[],
+        chapters: &[],
+        library: LocalLibraryState::default(),
+    }
+}
+
+/// Seed a document with `state` so [`resources`] can rebuild the shared
+/// playlist / annotation subtree for `Resource::children`.
+pub fn doc_from_library(state: &crate::shared::SharedLibrary) -> AutoCommit {
+    use tilo_actions::Action;
+    let mut doc = AutoCommit::new();
+    for playlist in &state.playlists {
+        let _ = SharedAction::CreatePlaylist {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+        }
+        .apply(&mut doc);
+    }
+    for item in &state.items {
+        let _ = SharedAction::AddPlaylistItem {
+            id: item.id.clone(),
+            playlist_id: item.playlist_id.clone(),
+            media_ref: item.media_ref.clone(),
+            title: item.title.clone(),
+            position: item.position,
+        }
+        .apply(&mut doc);
+    }
+    for annotation in &state.annotations {
+        let _ = SharedAction::CreateAnnotation {
+            id: annotation.id.clone(),
+            media_ref: annotation.media_ref.clone(),
+            time_ms: annotation.time_ms,
+            text: annotation.text.clone(),
+        }
+        .apply(&mut doc);
+    }
+    doc
+}
+
 /// State captured while publishing the player resource tree.
 ///
 pub struct PlayerResourceCtx<'a> {
@@ -282,7 +340,10 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
     clippy::too_many_lines,
     reason = "the small resource tree is kept together so labels, contracts, and hierarchy cannot drift"
 )]
-pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+/// The presentation tree: transport, tracks, local queue, and the shared library.
+/// [`resources`] publishes this through [`VideoPlayer`](crate::resource::VideoPlayer)
+/// and keeps these children, which depend on the live decoder and this device.
+pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
         // A portal-granted path and its decoder/cache state are meaningful
@@ -983,6 +1044,86 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
         .with_child(recent)
         .with_child(shared);
     vec![app]
+}
+
+fn is_shared_library(resource: &Resource) -> bool {
+    resource.id.as_str() == "video-player.shared-library" || resource.kind == "media.shared-library"
+}
+
+/// Standalone / `--shots` door. The shared library stays the child
+/// [`tilo_resource::publish`] built. Decoder, queue, and recent videos are
+/// this device's live children.
+pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let state = crate::shared::read(doc);
+    let mut published = ui::tilo_resource::publish::<crate::resource::VideoPlayer>(
+        "video-player.application",
+        "Video Player",
+        &state,
+    );
+    let Some(live) = application_tree(ctx, doc).into_iter().next() else {
+        return vec![published];
+    };
+    // The shared library stays the child publish built from the document.
+    // Decoder, queue, and recent videos replace that same id when the live
+    // player has one. Any other published child stays.
+    let mut live_children = live.children;
+    let mut children = Vec::new();
+    for published_child in std::mem::take(&mut published.children) {
+        if is_shared_library(&published_child) {
+            // Prefer the live shared library so jump/create availability
+            // reflects the open media; document publish alone uses
+            // `empty_resource_ctx` and would mark every jump unavailable.
+            if let Some(index) = live_children
+                .iter()
+                .position(|child| child.id == published_child.id || is_shared_library(child))
+            {
+                children.push(live_children.remove(index));
+            } else {
+                children.push(published_child);
+            }
+            continue;
+        }
+        if let Some(index) = live_children
+            .iter()
+            .position(|child| child.id == published_child.id)
+        {
+            children.push(live_children.remove(index));
+        } else {
+            children.push(published_child);
+        }
+    }
+    children.extend(
+        live_children
+            .into_iter()
+            .filter(|child| !is_shared_library(child)),
+    );
+    published.children = children;
+    vec![published]
+}
+
+/// Live decoder track/chapter projection for the palette — not CRDT.
+///
+/// Standalone [`resources`] nests these under `media.video`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep audio/subtitle/chapter rows without a second
+/// application or shared-library root beside [`crate::resource::VideoPlayer`].
+pub fn live_track_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let Some(root) = application_tree(ctx, doc).into_iter().next() else {
+        return Vec::new();
+    };
+    let Some(media) = root
+        .children
+        .into_iter()
+        .find(|child| child.kind == "media.video")
+    else {
+        return Vec::new();
+    };
+    media
+        .children
+        .into_iter()
+        .filter(|child| child.kind == "media.tracks" || child.kind == "media.chapters")
+        .filter(|child| !child.children.is_empty() || !child.actions.is_empty())
+        .collect()
 }
 
 fn encode_shared(action: &SharedAction) -> EncodedAction {

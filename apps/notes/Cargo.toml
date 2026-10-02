@@ -37,8 +37,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 # Page bodies are rich text, edited in the SDK rich-text editor.
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
 # Content addressing everywhere; the device store where the launcher hands

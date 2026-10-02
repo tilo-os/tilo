@@ -764,7 +764,7 @@ impl BooksDoc {
 
     /// Write an annotation's text as rich text under [`TEXT`], replacing
     /// what it held.
-    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[qdoc_rich_text::ClipBlock]) {
+    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[tilo_document::ClipBlock]) {
         if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
             tracing::warn!(%error, "annotation text not written");
         }
@@ -786,7 +786,7 @@ impl BooksDoc {
             .find_map(|entry| tilo_rich_text::rich_text_at(doc, entry, TEXT))
         {
             return (
-                qdoc_rich_text::RichText::plain_text_under(doc, &root).unwrap_or_default(),
+                tilo_document::RichText::plain_text_under(doc, &root).unwrap_or_default(),
                 tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
             );
         }
