@@ -2126,7 +2126,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
-COPY os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf
+COPY os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf os/usr/lib/user-tmpfiles.d/tilo-fs.conf /usr/lib/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why

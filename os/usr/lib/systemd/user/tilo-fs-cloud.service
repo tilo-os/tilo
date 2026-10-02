@@ -16,12 +16,11 @@ Type=simple
 # credential on stdin. Per-account metadata, queued uploads and the content
 # cache live under the state dir: queued edits are not a cache and must
 # survive cache cleaning.
-# The sandbox below makes the home read-only; create the mounts root and
-# the accounts directory first. `-%E/tilo/accounts` is ignored when the
-# path does not exist, so create_dir_all then hits a read-only home and
-# the unit crash-loops on an unconfigured session.
-ExecStartPre=+/usr/bin/mkdir -p %h/Remote
-ExecStartPre=-/usr/bin/mkdir -p %E/tilo/accounts
+# The sandbox below makes the home read-only, so the mounts root comes from
+# user-tmpfiles.d/tilo-fs.conf and the accounts directory from
+# ConfigurationDirectory=. No ExecStartPre: under systemd 259 a user unit
+# with PrivateIPC=yes cannot start a second sandboxed process (its IPC
+# namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
 Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
 ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud
 Restart=on-failure
