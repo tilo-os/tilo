@@ -1,9 +1,9 @@
 //! Every web app over the real session: an agent (iroh, its own certified
-//! device and delegation) opens the app, makes a user-equivalent edit found
-//! without app knowledge, and a browser (HTTPS documents, WebTransport
-//! presence) receives the change authored by the agent, merges it into its
-//! own mount of the app, and sees the agent's cursor on that record.
-//! Finally a natural-language task goes through `ModelPlanner`.
+//! device and delegation) opens the app and makes a user-equivalent edit
+//! found without app knowledge; a natural-language task goes through
+//! `ModelPlanner`; a browser drives the agent's records over remote actions.
+//! The room has no channel keys, so none of the agent's edits leaves it in
+//! the clear: the host retains no document and the browser receives none.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -26,7 +26,6 @@ mod common;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
@@ -40,11 +39,10 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, Control, HostedApp, ModelPlanner,
-    ParticipantConfig, Seed, StepAction, record_provider,
+    ParticipantConfig, StepAction, record_provider,
 };
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
-use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{ROOM, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -129,40 +127,6 @@ fn body(app: &HostedApp) -> String {
         .unwrap()
 }
 
-/// The browser's copy of `route`: its own mount, seeded from every change
-/// it received.
-fn page(
-    catalogue: &tilo_agent_participant::AppCatalogue,
-    route: &DocumentRoute,
-    changes: &[Vec<u8>],
-) -> String {
-    // The room's own record (Chat's) is not mounted from a copy: its
-    // document is what the browser holds.
-    let Some(record) = ui::record::RecordId::parse(&route.record) else {
-        use tilo_automerge::ApplyIncoming as _;
-        let mut doc = automerge::AutoCommit::new();
-        for change in changes {
-            doc.load_incoming(change).unwrap();
-        }
-        return serde_json::to_string(&automerge::AutoSerde::from(&doc)).unwrap();
-    };
-    let app = HostedApp::open(
-        catalogue,
-        &route.app_id,
-        ROOM,
-        "ada",
-        false,
-        Seed::Existing {
-            record,
-            changes: changes.to_vec(),
-        },
-    )
-    .unwrap();
-    let text = body(&app);
-    app.close();
-    text
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
     common::isolate_device();
@@ -240,37 +204,13 @@ async fn every_web_app_over_the_session() {
     })
     .await;
 
-    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
-    browser
-        .live_grant_then(
-            workspace(),
-            Box::new(move |grant| {
-                let _ = grant_tx.send(grant);
-            }),
-        )
-        .unwrap();
-    let grant = grant_rx.await.unwrap().unwrap();
-    let url: url::Url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
-        .parse()
-        .unwrap();
-    let trust =
-        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
-    let own = tilo_moq::live::namespace_path(&grant.room, &grant.publisher).unwrap();
-    let live = tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, Some(&own))
-        .await
-        .unwrap();
-    let agent_namespace =
-        tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_key)).unwrap();
-    let mut track = None;
-
-    let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
-    let mut table = String::from(
-        "| App | Edit | Via | Browser merged agent's change | Agent cursor (focus, pointer) |\n|---|---|---|---|---|\n",
-    );
+    let mut table = String::from("| App | Edit | Via |\n|---|---|---|\n");
     let mut failures = Vec::new();
+    let mut opened = Vec::new();
     for definition in catalogue.iter() {
         let app_id = definition.app_id;
         let route = agent.open(app_id, None).unwrap();
+        opened.push(route.clone());
         let (edit, refused) = find_edit(
             &mut Agent {
                 agent: &mut agent,
@@ -282,158 +222,36 @@ async fn every_web_app_over_the_session() {
         if edit.is_none() && !local {
             failures.push(format!("{app_id}: no edit: {refused:#?}"));
         }
-        let expected = body(agent.app(&route).unwrap());
-
-        // The browser receives the agent's changes in host order and its
-        // own mount of the app merges them into the agent's state.
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let merged = loop {
-            agent.pump();
-            for event in browser_events.drain() {
-                if let PeerEvent::Document(document) = event {
-                    assert_eq!(document.author, agent_key, "only the agent edits here");
-                    if let Some(
-                        collab_types::DocumentMutation::Snapshot(bytes)
-                        | collab_types::DocumentMutation::Incremental(bytes),
-                    ) = document.mutation()
-                    {
-                        received
-                            .entry(document.route.clone())
-                            .or_default()
-                            .push(bytes);
-                    }
-                }
-            }
-            if let Some(changes) = received.get(&route)
-                && page(&catalogue, &route, changes) == expected
-            {
-                break true;
-            }
-            if Instant::now() > deadline {
-                break false;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
-        if !merged {
-            failures.push(format!(
-                "{app_id}: the browser never converged on the agent's record"
-            ));
-        }
-
-        // The browser sees the agent's cursor on this record: the latest
-        // frame after the first that focuses it (presence repeats every
-        // second, so one keepalive later it carries the final pointer).
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut latest: Option<(Instant, PresenceFrame)> = None;
-        let presence: Option<PresenceFrame> = loop {
-            if let Some((seen, frame)) = &latest
-                && seen.elapsed() > Duration::from_millis(1_500)
-            {
-                break Some(frame.clone());
-            }
-            if Instant::now() > deadline {
-                break latest.map(|(_, frame)| frame);
-            }
-            agent.pump();
-            let Some(subscribed) = track.as_mut() else {
-                if let Ok(Some(broadcast)) =
-                    tokio::time::timeout(Duration::from_millis(200), live.member(&agent_namespace))
-                        .await
-                {
-                    track = broadcast
-                        .track(tilo_moq::live::PRESENCE_TRACK)
-                        .unwrap()
-                        .subscribe(None)
-                        .await
-                        .ok();
-                }
-                continue;
-            };
-            if let Ok(Ok(Some(datagram))) =
-                tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
-                && let LiveFrame::Presence(presence) = LiveFrame::decode(&datagram.payload).unwrap()
-                && presence
-                    .focus
-                    .as_ref()
-                    .is_some_and(|focus| focus.app == app_id && focus.record == route.record)
-            {
-                let seen = latest.as_ref().map_or_else(Instant::now, |(seen, _)| *seen);
-                latest = Some((seen, presence));
-            }
-        };
-        let cursor = match &presence {
-            Some(presence) => {
-                let participant = presence.participant.as_ref().unwrap();
-                assert_eq!(participant.kind, ParticipantKind::Agent);
-                assert_eq!(participant.label, "Coverage agent");
-                format!(
-                    "yes, {}",
-                    presence.pointer.map_or_else(
-                        || "no pointer".to_owned(),
-                        |[x, y]| format!("({x:.0}, {y:.0})")
-                    )
-                )
-            }
-            None => {
-                failures.push(format!(
-                    "{app_id}: the browser never saw the agent's cursor"
-                ));
-                "no".to_owned()
-            }
-        };
         let (label, via) = edit.as_ref().map_or_else(
             || ("— (device-local state)".to_owned(), "—"),
             |edit| (format!("`{}`", edit.label), edit.path),
         );
-        let _ = writeln!(
-            table,
-            "| {app_id} | {label} | {via} | {} | {cursor} |",
-            if merged { "yes" } else { "no" }
-        );
+        let _ = writeln!(table, "| {app_id} | {label} | {via} |");
     }
     eprintln!("{table}");
 
-    // A task in plain words, planned by the model planner.
-    let scratchpad = agent
-        .known_records()
+    // A task in plain words, planned by the model planner, lands in the
+    // agent's own copy of the record.
+    let scratchpad = opened
         .into_iter()
-        .chain(received.keys().cloned())
         .find(|route| route.app_id == "so.tilo.scratchpad")
         .unwrap();
     control
         .message(r#"In the scratchpad, edit the note to say "Said in plain words""#)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "the plain-words task never landed: {:?}",
-            control.info().tasks
-        );
+    wait_for("the plain-words task to finish", || {
         agent.pump();
-        for event in browser_events.drain() {
-            if let PeerEvent::Document(document) = event
-                && let Some(
-                    collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes),
-                ) = document.mutation()
-            {
-                received
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push(bytes);
-            }
-        }
         let done = control.info().tasks.last().is_some_and(|task| {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
-        if done
-            && page(&catalogue, &scratchpad, &received[&scratchpad]).contains("said in plain words")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        async move { done.then_some(()) }
+    })
+    .await;
+    assert!(
+        body(agent.app(&scratchpad).unwrap())
+            .to_lowercase()
+            .contains("said in plain words")
+    );
     let task = control.info().tasks.last().cloned().unwrap();
     assert_eq!(task.state, TaskState::Completed);
     assert_eq!(task.steps[0].action, "edit");
@@ -500,36 +318,10 @@ async fn every_web_app_over_the_session() {
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "{receipt:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "the actionsV1 edit never reached the browser"
-        );
-        agent.pump();
-        for event in browser_events.drain() {
-            if let PeerEvent::Document(document) = event {
-                documents.push(*document);
-            }
-        }
-        for document in std::mem::take(&mut documents) {
-            if let Some(
-                collab_types::DocumentMutation::Snapshot(bytes)
-                | collab_types::DocumentMutation::Incremental(bytes),
-            ) = document.mutation()
-            {
-                received
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push(bytes);
-            }
-        }
-        if page(&catalogue, &scratchpad, &received[&scratchpad]).contains("Invoked over actionsV1")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    assert!(
+        body(agent.app(&scratchpad).unwrap()).contains("Invoked over actionsV1"),
+        "the invoked edit is in the agent's copy"
+    );
     // A retry reports the original receipt; another request under the same
     // id is a conflict.
     let RemoteActionMessage::Receipt(again) = ask(
@@ -624,13 +416,37 @@ async fn every_web_app_over_the_session() {
         }
     );
 
+    // The room has no channel keys: none of the agent's edits reached the
+    // host or the browser in the clear.
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    assert_eq!(
+        common::retained_documents(retained.into_iter().map(|kept| (kept.author, kept.body))),
+        (0, 0),
+        "the host retains no document"
+    );
+    agent.pump();
+    documents.extend(
+        browser_events
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::Document(document) => Some(*document),
+                _ => None,
+            }),
+    );
+    assert!(documents.is_empty(), "no document reaches the browser");
+
     assert!(
         failures.is_empty(),
         "session coverage:\n{}",
         failures.join("\n")
     );
     let _ = user;
-    drop(live);
     agent.close();
     browser.close();
     host.relay.shutdown().await;

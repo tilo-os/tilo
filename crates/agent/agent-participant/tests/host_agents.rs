@@ -6,11 +6,12 @@
 //! natively: HTTPS for documents and remote actions, WebTransport for
 //! presence) asks for a grant; a root-holding laptop approves the agent and
 //! signs its delegation in the same step; the browser spawns the agent with
-//! a plain-words task planned by the scripted model. The agent edits Notes
-//! and Sheets, the browser receives the edits and sees the agent's cursor
-//! move between the controls it uses. The host then restarts: the agent
-//! resumes and takes new work; a stopped agent stays stopped; a revoked
-//! grant ends its agent.
+//! a plain-words task planned by the scripted model. The room has no channel
+//! keys, so the agent's work on Notes and Sheets reaches neither the host
+//! nor the browser in the clear, while the browser still sees the agent's
+//! cursor move between the controls it uses. The host then restarts: the
+//! agent resumes and takes new work; a stopped agent stays stopped; a
+//! revoked grant ends its agent.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -54,9 +55,9 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
-    REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
-    agent_resource,
+    AGENTS_PROVIDER, AgentStatus, AgentTask, AgentsStatus, GrantState, MESSAGE_ACTION,
+    REQUEST_GRANT_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
+    SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{
@@ -337,68 +338,52 @@ impl Browser {
         }
     }
 
-    /// The document of every `app` record the browser received, as JSON,
-    /// merged from the changes `author` made.
-    fn bodies(&mut self, app: &str, author: [u8; 32]) -> Vec<String> {
-        self.pump();
-        let catalogue = common::catalogue();
-        self.documents
-            .iter()
-            .filter(|(route, _)| route.app_id == app)
-            .map(|(route, changes)| {
-                assert!(
-                    changes.iter().all(|(from, _)| *from == author),
-                    "only the agent edits {app} here"
-                );
-                // Until the change that sets the record up arrives, the app
-                // refuses to open what came before it.
-                let page = match HostedApp::open(
-                    &catalogue,
-                    app,
-                    ROOM,
-                    "ada",
-                    false,
-                    Seed::Existing {
-                        record: ui::record::RecordId::parse(&route.record).unwrap(),
-                        changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
-                    },
-                ) {
-                    Ok(page) => page,
-                    Err(error) => return format!("(does not open yet: {error})"),
-                };
-                let body = page
-                    .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-                    .unwrap();
-                page.close();
-                body
+    /// Wait until agent `grant`'s task asking for `asked` has finished, and
+    /// return it.
+    async fn until_task_done(&mut self, grant: &str, asked: &str) -> AgentTask {
+        let finished = |task: &AgentTask| {
+            task.text.contains(asked)
+                && task.state != TaskState::Queued
+                && task.state != TaskState::Running
+        };
+        let status = self
+            .until("the agent's task to finish", |status| {
+                status
+                    .agents
+                    .iter()
+                    .any(|agent| agent.id == grant && agent.tasks.iter().any(finished))
             })
-            .collect()
+            .await;
+        status
+            .agents
+            .iter()
+            .filter(|agent| agent.id == grant)
+            .flat_map(|agent| agent.tasks.iter())
+            .find(|task| finished(task))
+            .unwrap()
+            .clone()
     }
 
-    async fn until_edited(&mut self, app: &str, author: [u8; 32], text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !self
-            .bodies(app, author)
-            .iter()
-            .any(|body| body.contains(text))
-        {
-            if Instant::now() >= deadline {
-                let received: Vec<_> = self
-                    .documents
-                    .iter()
-                    .map(|(route, changes)| (route.record.clone(), changes.len()))
-                    .collect();
-                let bodies = self.bodies(app, author);
-                let status = self.status().await;
-                panic!(
-                    "the browser never saw {text:?} in {app}: received {received:?}, \
-                     bodies {bodies:?}, agents {:#?}, browser {:#?}",
-                    status.agents,
-                    self.peer.status()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    /// The room has no channel keys: the host retains no document and this
+    /// session received none, so nothing went out in the clear.
+    async fn assert_nothing_in_the_clear(&mut self, hosted: &Hosted) {
+        let retained = hosted
+            .relay
+            .room_records()
+            .retained(workspace())
+            .await
+            .unwrap();
+        assert_eq!(
+            common::retained_documents(retained.into_iter().map(|kept| (kept.author, kept.body))),
+            (0, 0),
+            "the host retains no document"
+        );
+        self.pump();
+        assert!(
+            self.documents.is_empty(),
+            "no document reaches the page: {:?}",
+            self.documents.keys().collect::<Vec<_>>()
+        );
     }
 
     /// The agent's presence track, over the browser's WebTransport session.
@@ -586,8 +571,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .map(|step| step.action.as_str())
         .collect();
     assert_eq!(steps, ["open", "new-page"]);
-    let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
-    browser.until_edited(NOTES, agent_key, "Groceries").await;
+    browser.assert_nothing_in_the_clear(&hosted).await;
     assert!(
         hosted.agents.profile_dir(&grant).is_dir(),
         "the agent's apps have a profile of their own"
@@ -625,11 +609,12 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         notes_pointer, sheets_pointer,
         "the cursor moved between controls"
     );
-    browser.until_edited(SHEETS, agent_key, "Budget").await;
+    browser.until_task_done(&grant, "Budget").await;
+    browser.assert_nothing_in_the_clear(&hosted).await;
     drop(presence);
 
     // 4. The host restarts. The agent resumes from the state directory and
-    // edits the room's existing sheet, not a new one.
+    // takes new work, still writing nothing in the clear.
     browser.peer.close();
     hosted.agents.flush();
     let saved = std::fs::read_to_string(hosted.agents.state_file()).unwrap();
@@ -654,7 +639,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .find(|agent| agent.id == grant)
         .unwrap();
     assert_eq!(info.tasks.len(), 2, "its task log survived");
-    let sheets_before = browser.bodies(SHEETS, agent_key).len();
     browser
         .call(
             &agent_resource(&grant),
@@ -663,18 +647,9 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         )
         .await
         .unwrap();
-    browser.until_edited(SHEETS, agent_key, "Forecast").await;
-    let bodies = browser.bodies(SHEETS, agent_key);
-    assert_eq!(
-        bodies.len(),
-        sheets_before.max(1),
-        "it reopened the room's sheet"
-    );
-    assert!(
-        bodies
-            .iter()
-            .any(|body| body.contains("Budget") && body.contains("Forecast"))
-    );
+    let forecast = browser.until_task_done(&grant, "Forecast").await;
+    assert_eq!(forecast.state, TaskState::Completed, "{forecast:?}");
+    browser.assert_nothing_in_the_clear(&hosted).await;
 
     // 5. Stopped stays stopped across a restart.
     browser
@@ -726,7 +701,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         )
         .await
         .unwrap();
-    browser.until_edited(NOTES, agent_key, "Later").await;
+    browser.until_task_done(&grant, "Later").await;
+    browser.assert_nothing_in_the_clear(&hosted).await;
     browser
         .call(&agent_resource(&grant), REVOKE_ACTION, InvokeArgument::None)
         .await
@@ -816,47 +792,6 @@ impl Page {
         }
     }
 
-    /// Open the record `creator` has open from another session, once its
-    /// content has arrived, as a second browser does, and publish what the
-    /// mount itself wrote.
-    async fn join(browser: &mut Browser, creator: &Self) -> Self {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            browser.pump();
-            if let Some(changes) = browser
-                .documents
-                .get(&creator.route)
-                .filter(|c| !c.is_empty())
-            {
-                let mut app = HostedApp::open(
-                    &common::catalogue(),
-                    SHEETS,
-                    ROOM,
-                    "bea",
-                    false,
-                    Seed::Existing {
-                        record: ui::record::RecordId::parse(&creator.route.record).unwrap(),
-                        changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
-                    },
-                )
-                .unwrap();
-                if let Some(own) = app.take_mutation() {
-                    browser.peer.publish(creator.route.clone(), &own).unwrap();
-                }
-                return Self {
-                    app,
-                    route: creator.route.clone(),
-                    merged: changes.len(),
-                };
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the record never reached the second session"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
     /// Merge the changes the session received since the last call.
     fn merge(&mut self, browser: &mut Browser) {
         browser.pump();
@@ -890,11 +825,11 @@ impl Page {
     }
 }
 
-/// An agent's later task edits the record people have open as live as its
-/// first one did, and a session that joins afterwards replays both edits
-/// once each.
+/// The room has no channel keys: a workbook a person opens stays with the
+/// page, and an agent's tasks on it write nothing in the clear, neither live
+/// nor for a session that joins afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
+async fn an_agents_tasks_beside_a_page_write_nothing_in_the_clear() {
     common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -907,35 +842,9 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
 
     // The person opens a workbook before any agent exists.
     let mut page = Page::create(&browser, SHEETS);
-    page.until_sheets(&mut browser, &["Sheet1"]).await;
+    let held = browser.peer.barrier().unwrap();
 
-    let requested = browser
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Writer",
-                    "rooms": [ROOM],
-                    "apps": [SHEETS],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    browser
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let grant = approved_grant(&mut browser, &[SHEETS]).await;
     browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -953,8 +862,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         )
         .await
         .unwrap();
-    page.until_sheets(&mut browser, &["Sheet1", "Budget"]).await;
-
+    browser.until_task_done(&grant, "Budget").await;
     browser
         .call(
             &agent_resource(&grant),
@@ -963,66 +871,25 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         )
         .await
         .unwrap();
-    page.until_sheets(&mut browser, &["Sheet1", "Budget", "Q4"])
-        .await;
-    browser
-        .until("both tasks to complete", |status| {
-            status.agents.iter().any(|agent| {
-                agent.id == grant
-                    && agent.tasks.len() == 2
-                    && agent
-                        .tasks
-                        .iter()
-                        .all(|task| task.state == TaskState::Completed)
-            })
-        })
-        .await;
+    browser.until_task_done(&grant, "Q4").await;
 
-    // A reload: a new session replays the room and rebuilds the workbook
-    // from what the host kept.
+    browser.assert_nothing_in_the_clear(&hosted).await;
+    assert!(held.try_recv().is_err(), "the page's workbook is held");
+    page.merge(&mut browser);
+    assert_eq!(sheet_names(&page.app), ["Sheet1"]);
+
+    // A session that joins afterwards replays nothing.
     let reloaded_device = enrol(&root, "browser, reloaded", DeviceCapabilities::member());
     let mut reloaded = Browser::open(&hosted, &reloaded_device, &host).await;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        reloaded.pump();
-        if let Some(changes) = reloaded
-            .documents
-            .get(&page.route)
-            .filter(|c| !c.is_empty())
-        {
-            let replayed = HostedApp::open(
-                &common::catalogue(),
-                SHEETS,
-                ROOM,
-                "ada",
-                false,
-                Seed::Existing {
-                    record: ui::record::RecordId::parse(&page.route.record).unwrap(),
-                    changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
-                },
-            );
-            if let Ok(replayed) = replayed {
-                if sheet_names(&replayed) == ["Sheet1", "Budget", "Q4"] {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "after a reload the page shows {:?}",
-                    sheet_names(&replayed)
-                );
-            }
-        }
-        assert!(Instant::now() < deadline, "the reload replayed nothing");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    reloaded.assert_nothing_in_the_clear(&hosted).await;
     hosted.stop().await;
 }
 
-/// The page that created a record and a page that joined it both see an
-/// agent's first and second task live: nothing the joined mount does may
-/// leave the creator behind a change it never received.
+/// Two sessions of the person, one holding a workbook it created, and an
+/// agent working on it: the room has no channel keys, so neither session
+/// receives anything from the other or the agent in the clear.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_creator_and_a_joined_page_both_see_every_task_live() {
+async fn two_pages_and_an_agent_exchange_nothing_in_the_clear() {
     common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -1035,38 +902,8 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
 
-    let mut creator = Page::create(&first, SHEETS);
-    creator.until_sheets(&mut first, &["Sheet1"]).await;
-    let mut joined = Page::join(&mut second, &creator).await;
-    joined.until_sheets(&mut second, &["Sheet1"]).await;
-
-    let requested = first
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Writer",
-                    "rooms": [ROOM],
-                    "apps": [SHEETS],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    first
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let _creator = Page::create(&first, SHEETS);
+    let grant = approved_grant(&mut first, &[SHEETS]).await;
     first
         .call(
             SUPERVISOR_RESOURCE,
@@ -1084,28 +921,44 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
         )
         .await
         .unwrap();
-    creator
-        .until_sheets(&mut first, &["Sheet1", "Budget"])
-        .await;
-    joined
-        .until_sheets(&mut second, &["Sheet1", "Budget"])
-        .await;
+    first.until_task_done(&grant, "Budget").await;
 
-    first
+    first.assert_nothing_in_the_clear(&hosted).await;
+    second.assert_nothing_in_the_clear(&hosted).await;
+    hosted.stop().await;
+}
+
+/// Ask for a grant covering `apps` in the room, and wait for the laptop to
+/// approve it.
+async fn approved_grant(browser: &mut Browser, apps: &[&str]) -> String {
+    let requested = browser
         .call(
-            &agent_resource(&grant),
-            MESSAGE_ACTION,
-            InvokeArgument::Text("Add a new sheet named \"Q4\"".into()),
+            SUPERVISOR_RESOURCE,
+            REQUEST_GRANT_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "label": "Writer",
+                    "rooms": [ROOM],
+                    "apps": apps,
+                    "expiresInSecs": 3600,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
         )
         .await
         .unwrap();
-    creator
-        .until_sheets(&mut first, &["Sheet1", "Budget", "Q4"])
+    let grant = requested["grant"].as_str().unwrap().to_owned();
+    browser
+        .until("the grant to be approved", |status| {
+            status
+                .grants
+                .iter()
+                .any(|g| g.id == grant && g.state == GrantState::Approved)
+        })
         .await;
-    joined
-        .until_sheets(&mut second, &["Sheet1", "Budget", "Q4"])
-        .await;
-    hosted.stop().await;
+    grant
 }
 
 /// POST `body` to `url` (plain HTTP on loopback) and return the answer body.
