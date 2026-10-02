@@ -108,6 +108,123 @@ fn caps_lock_label(stored: Option<&str>) -> &'static str {
         .find(|(_, value)| *value == stored)
         .map_or("Caps Lock", |(label, _)| label)
 }
+
+const COMPOSE_KEY_CHOICES: &[(&str, Option<&str>)] = &[
+    ("Disabled", None),
+    ("Right Alt", Some("ralt")),
+    ("Menu", Some("menu")),
+    ("Caps Lock", Some("caps")),
+    ("Right Super", Some("rwin")),
+    ("Left Super", Some("lwin")),
+];
+
+fn compose_ftl(english: &str) -> &'static str {
+    match english {
+        "Right Alt" => "input-compose-ralt",
+        "Menu" => "input-compose-menu",
+        "Caps Lock" => "input-compose-caps",
+        "Right Super" => "input-compose-rwin",
+        "Left Super" => "input-compose-lwin",
+        _ => "input-compose-disabled",
+    }
+}
+
+fn compose_shown(english: &str) -> String {
+    t(compose_ftl(english))
+}
+
+fn compose_english(stored: Option<&str>) -> &'static str {
+    COMPOSE_KEY_CHOICES
+        .iter()
+        .find(|(_, value)| *value == stored)
+        .map_or("Disabled", |(label, _)| label)
+}
+
+/// A matched keyboard-choice label: clear (stored `None`) or a concrete key id.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StoredKeyChoice {
+    Clear,
+    Key(&'static str),
+}
+
+impl StoredKeyChoice {
+    pub(crate) fn as_stored(self) -> Option<&'static str> {
+        match self {
+            Self::Clear => None,
+            Self::Key(key) => Some(key),
+        }
+    }
+
+    fn from_stored(stored: Option<&'static str>) -> Self {
+        match stored {
+            None => Self::Clear,
+            Some(key) => Self::Key(key),
+        }
+    }
+}
+
+pub(crate) fn compose_from_label(label: &str) -> Option<StoredKeyChoice> {
+    COMPOSE_KEY_CHOICES
+        .iter()
+        .find(|(english, _)| *english == label || compose_shown(english) == label)
+        .map(|(_, stored)| StoredKeyChoice::from_stored(*stored))
+}
+
+fn compose_options() -> Vec<String> {
+    COMPOSE_KEY_CHOICES
+        .iter()
+        .map(|(english, _)| compose_shown(english))
+        .collect()
+}
+
+fn caps_lock_ftl(english: &str) -> &'static str {
+    match english {
+        "Control" => "input-caps-lock-ctrl",
+        "Escape" => "input-caps-lock-esc",
+        "Backspace" => "input-caps-lock-backspace",
+        _ => "input-caps-lock-caps",
+    }
+}
+
+fn caps_lock_shown(english: &str) -> String {
+    t(caps_lock_ftl(english))
+}
+
+pub(crate) fn caps_lock_from_label(label: &str) -> Option<StoredKeyChoice> {
+    CAPS_LOCK_CHOICES
+        .iter()
+        .find(|(english, _)| *english == label || caps_lock_shown(english) == label)
+        .map(|(_, stored)| StoredKeyChoice::from_stored(*stored))
+}
+
+fn caps_lock_options() -> Vec<String> {
+    CAPS_LOCK_CHOICES
+        .iter()
+        .map(|(english, _)| caps_lock_shown(english))
+        .collect()
+}
+
+fn accel_shown(profile: &str) -> String {
+    if profile == "flat" || profile == "Flat" {
+        t("input-accel-flat")
+    } else {
+        t("input-accel-adaptive")
+    }
+}
+
+pub(crate) fn accel_from_label(label: &str) -> Option<&'static str> {
+    if label == "Flat" || label == t("input-accel-flat") {
+        Some("flat")
+    } else if label == "Adaptive" || label == t("input-accel-adaptive") {
+        Some("adaptive")
+    } else {
+        None
+    }
+}
+
+fn accel_options() -> Vec<String> {
+    vec![t("input-accel-adaptive"), t("input-accel-flat")]
+}
 pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
@@ -1013,22 +1130,12 @@ impl MouseKeyboardPane {
                     &t("input-acceleration"),
                     Box::new(
                         Dropdown::from_state(
-                            vec!["Adaptive".into(), "Flat".into()],
-                            &ui::LocalState::new(if self.last.accel_profile == "flat" {
-                                "Flat".into()
-                            } else {
-                                "Adaptive".into()
-                            }),
+                            accel_options(),
+                            &ui::LocalState::new(accel_shown(&self.last.accel_profile)),
                         )
                         .on_action(text_action("acceleration-profile"))
                         .with_id("input.accel_profile")
-                        .with_placeholder(
-                            if self.initial.accel_profile == "flat" {
-                                "Flat"
-                            } else {
-                                "Adaptive"
-                            },
-                        ),
+                        .with_placeholder(&accel_shown(&self.initial.accel_profile)),
                     ),
                 ),
                 setting_row_described(
@@ -1057,11 +1164,16 @@ impl MouseKeyboardPane {
             .collect();
         let repeat_value = self.key_repeat_slider_value();
         let repeat_description = self.key_repeat_description();
+        let compose_current = compose_shown(compose_english(self.last.compose_key.as_deref()));
+        let compose_placeholder =
+            compose_shown(compose_english(self.initial.compose_key.as_deref()));
+        let caps_current = caps_lock_shown(caps_lock_label(self.last.caps_lock.as_deref()));
+        let caps_placeholder = caps_lock_shown(caps_lock_label(self.initial.caps_lock.as_deref()));
         card(
-            "Keyboard",
+            &t("input-keyboard-title"),
             rows(vec![
                 choice_row(
-                    "Active input source",
+                    &t("input-active-source"),
                     Box::new(
                         Dropdown::from_state(
                             active_sources,
@@ -1073,7 +1185,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 setting_row_described(
-                    "Key repeat speed",
+                    &t("input-key-repeat"),
                     &repeat_description,
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(repeat_value))
@@ -1081,59 +1193,29 @@ impl MouseKeyboardPane {
                             .with_id("input.key_repeat"),
                     ),
                 ),
-                caption(
-                    "Changes apply to this user session through the compositor. With multiple sources, Super+Alt+Space switches to the next one and remembers it.",
-                ),
+                caption(&t("input-keyboard-caption")),
                 choice_row(
-                    "Compose key",
+                    &t("input-compose-key"),
                     Box::new(
                         Dropdown::from_state(
-                            vec![
-                                "Disabled".into(),
-                                "Right Alt".into(),
-                                "Menu".into(),
-                                "Caps Lock".into(),
-                                "Right Super".into(),
-                                "Left Super".into(),
-                            ],
-                            &ui::LocalState::new(match self.last.compose_key.as_deref() {
-                                Some("ralt") => "Right Alt".into(),
-                                Some("menu") => "Menu".into(),
-                                Some("caps") => "Caps Lock".into(),
-                                Some("rwin") => "Right Super".into(),
-                                Some("lwin") => "Left Super".into(),
-                                _ => "Disabled".into(),
-                            }),
+                            compose_options(),
+                            &ui::LocalState::new(compose_current),
                         )
                         .on_action(text_action("compose-key"))
                         .with_id("input.compose_key")
-                        .with_placeholder(
-                            match self.initial.compose_key.as_deref() {
-                                Some("ralt") => "Right Alt",
-                                Some("menu") => "Menu",
-                                Some("caps") => "Caps Lock",
-                                Some("rwin") => "Right Super",
-                                Some("lwin") => "Left Super",
-                                _ => "Disabled",
-                            },
-                        ),
+                        .with_placeholder(&compose_placeholder),
                     ),
                 ),
                 choice_row(
-                    "Caps Lock key",
+                    &t("input-caps-lock-key"),
                     Box::new(
                         Dropdown::from_state(
-                            CAPS_LOCK_CHOICES
-                                .iter()
-                                .map(|(label, _)| (*label).to_string())
-                                .collect(),
-                            &ui::LocalState::new(
-                                caps_lock_label(self.last.caps_lock.as_deref()).to_string(),
-                            ),
+                            caps_lock_options(),
+                            &ui::LocalState::new(caps_current),
                         )
                         .on_action(text_action("caps-lock"))
                         .with_id("input.caps_lock")
-                        .with_placeholder(caps_lock_label(self.initial.caps_lock.as_deref())),
+                        .with_placeholder(&caps_placeholder),
                     ),
                 ),
             ]),
@@ -1158,21 +1240,25 @@ impl MouseKeyboardPane {
 
     fn key_repeat_description(&self) -> String {
         match (self.last.key_repeat_delay_ms, self.last.key_repeat_rate_hz) {
-            (Some(_), Some(0)) => "Repeat is off — move the slider to turn it on".into(),
-            (Some(delay), Some(rate)) => {
-                format!("{rate} keys per second · starts after {delay} ms")
-            }
-            _ => "Faster repeat starts sooner".into(),
+            (Some(_), Some(0)) => t("input-key-repeat-off"),
+            (Some(delay), Some(rate)) => t_args(
+                "input-key-repeat-rate",
+                &[
+                    ("rate", ArgValue::from(i64::from(rate))),
+                    ("delay", ArgValue::from(i64::from(delay))),
+                ],
+            ),
+            _ => t("input-key-repeat-faster"),
         }
     }
 
     fn spell_checker_card(&self) -> Box<dyn Widget> {
         card(
-            "Spell checker",
+            &t("input-spell-title"),
             rows(vec![
                 setting_row_described(
-                    "Check spelling while typing",
-                    "Underline possible misspellings in natural-language fields",
+                    &t("input-spell-check"),
+                    &t("input-spell-check-desc"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.check_spelling))
                             .on_action(bool_action("spell-checking"))
@@ -1180,49 +1266,53 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 setting_row_described(
-                    "Auto-correct obvious misspellings",
-                    "Apply only high-confidence corrections after Space, punctuation, or Enter",
+                    &t("input-spell-auto"),
+                    &t("input-spell-auto-desc"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.auto_correct))
                             .on_action(bool_action("auto-correct"))
                             .with_id("text.auto_correct"),
                     ),
                 ),
-                caption(
-                    "Press Backspace immediately to restore the original word. Passwords are always excluded; other structured fields require an app to opt in.",
-                ),
+                caption(&t("input-spell-caption")),
             ]),
         )
     }
 
     fn input_sources_card(&self) -> Box<dyn Widget> {
+        let active_label = t("input-sources-active");
+        let remove_label = t("input-sources-remove");
+        let move_up = t("input-sources-move-up");
+        let move_down = t("input-sources-move-down");
+        let add_label = t("input-sources-add");
+        let choose = t("input-sources-choose");
         let mut source_rows = Vec::new();
         for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
             let mut row = Row::new()
                 .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
                 .push(Box::new(Spacer::new()));
             if id == &self.last.keyboard_layout {
-                row = row.push(Box::new(Text::new("Active").with_size(12.0)));
+                row = row.push(Box::new(Text::new(&active_label).with_size(12.0)));
             }
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
             let mut up_button = Button::new(&up, "↑", Some(&up))
                 .with_size(36.0, 34.0)
-                .with_accessible_name("Move input source up")
+                .with_accessible_name(&move_up)
                 .with_enabled(index > 0);
             if index > 0 {
                 up_button = up_button.on_action(source_action_binding(id, "move-up"));
             }
             let mut down_button = Button::new(&down, "↓", Some(&down))
                 .with_size(36.0, 34.0)
-                .with_accessible_name("Move input source down")
+                .with_accessible_name(&move_down)
                 .with_enabled(index + 1 < self.last.keyboard_layouts.len());
             if index + 1 < self.last.keyboard_layouts.len() {
                 down_button = down_button.on_action(source_action_binding(id, "move-down"));
             }
-            let mut remove_button = Button::new(&remove, "Remove", Some(&remove))
-                .with_size(84.0, 34.0)
+            let mut remove_button = Button::new(&remove, &remove_label, Some(&remove))
+                .content_sized()
                 .with_enabled(self.last.keyboard_layouts.len() > 1);
             if self.last.keyboard_layouts.len() > 1 {
                 remove_button = remove_button.on_action(source_action_binding(id, "remove"));
@@ -1244,7 +1334,7 @@ impl MouseKeyboardPane {
             .collect();
         if !available.is_empty() {
             source_rows.push(choice_row(
-                "Add a language, layout or input method",
+                &add_label,
                 Box::new(
                     Dropdown::from_state(
                         available.clone(),
@@ -1252,19 +1342,15 @@ impl MouseKeyboardPane {
                     )
                     .on_action(text_action("add-source"))
                     .with_id("input.source.add_picker")
-                    .with_placeholder("Choose a source"),
+                    .with_placeholder(&choose),
                 ),
             ));
         }
         if crate::input_sources::layouts_full(&self.last.keyboard_layouts) {
-            source_rows.push(caption(
-                "Up to four keyboard layouts can be active at once, matching the interoperable XKB group limit.",
-            ));
+            source_rows.push(caption(&t("input-sources-full")));
         }
-        source_rows.push(caption(
-            "Input methods (Rime, Anthy, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
-        ));
-        card("Input sources", rows(source_rows))
+        source_rows.push(caption(&t("input-sources-ime")));
+        card(&t("input-sources-title"), rows(source_rows))
     }
 
     fn tablet_config(
@@ -1526,23 +1612,17 @@ impl MouseKeyboardPane {
             let _ = state.put(
                 root,
                 ACCEL_PROFILE_KEY,
-                if self.initial.accel_profile == "flat" {
-                    "Flat"
-                } else {
-                    "Adaptive"
-                },
+                accel_shown(&self.initial.accel_profile),
             );
-            let compose = match self.initial.compose_key.as_deref() {
-                Some("ralt") => "Right Alt",
-                Some("menu") => "Menu",
-                Some("caps") => "Caps Lock",
-                _ => "Disabled",
-            };
-            let _ = state.put(root, COMPOSE_KEY, compose);
+            let _ = state.put(
+                root,
+                COMPOSE_KEY,
+                compose_shown(compose_english(self.initial.compose_key.as_deref())),
+            );
             let _ = state.put(
                 root,
                 CAPS_LOCK_KEY,
-                caps_lock_label(self.initial.caps_lock.as_deref()),
+                caps_lock_shown(caps_lock_label(self.initial.caps_lock.as_deref())),
             );
             let _ = state.put(
                 root,
@@ -1692,35 +1772,26 @@ impl MouseKeyboardPane {
     }
 
     fn sync_choice_fields(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(label) = read_str_or_text(state, root, ACCEL_PROFILE_KEY) {
-            let profile = if label == "Flat" { "flat" } else { "adaptive" };
-            if profile != self.last.accel_profile {
-                self.last.accel_profile = profile.into();
-                Self::persist_input(|i| i.accel_profile = profile.into());
-            }
+        if let Some(label) = read_str_or_text(state, root, ACCEL_PROFILE_KEY)
+            && let Some(profile) = accel_from_label(&label)
+            && profile != self.last.accel_profile
+        {
+            self.last.accel_profile = profile.into();
+            Self::persist_input(|i| i.accel_profile = profile.into());
         }
-        if let Some(label) = read_str_or_text(state, root, COMPOSE_KEY) {
-            let compose = match label.as_str() {
-                "Right Alt" => Some("ralt"),
-                "Menu" => Some("menu"),
-                "Caps Lock" => Some("caps"),
-                "Right Super" => Some("rwin"),
-                "Left Super" => Some("lwin"),
-                _ => None,
-            };
-            if compose != self.last.compose_key.as_deref() {
-                self.last.compose_key = compose.map(str::to_string);
-                let owned = self.last.compose_key.clone();
-                Self::persist_input(|i| i.compose_key = owned);
-            }
+        if let Some(label) = read_str_or_text(state, root, COMPOSE_KEY)
+            && let Some(compose) = compose_from_label(&label)
+            && compose.as_stored() != self.last.compose_key.as_deref()
+        {
+            self.last.compose_key = compose.as_stored().map(str::to_string);
+            let owned = self.last.compose_key.clone();
+            Self::persist_input(|i| i.compose_key = owned);
         }
         if let Some(label) = read_str_or_text(state, root, CAPS_LOCK_KEY)
-            && let Some((_, stored)) = CAPS_LOCK_CHOICES
-                .iter()
-                .find(|(choice, _)| *choice == label)
-            && *stored != self.last.caps_lock.as_deref()
+            && let Some(stored) = caps_lock_from_label(&label)
+            && stored.as_stored() != self.last.caps_lock.as_deref()
         {
-            self.last.caps_lock = stored.map(str::to_string);
+            self.last.caps_lock = stored.as_stored().map(str::to_string);
             let owned = self.last.caps_lock.clone();
             Self::persist_input(|i| i.caps_lock = owned);
         }
