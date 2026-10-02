@@ -70,8 +70,8 @@ jobs:
       - name: Use the native overlay disk-builder store
         run: |
           set -euo pipefail
-          ./os/dev/ci-prepare-disk-devices.sh --kata-job
-          ./os/dev/ci-native-podman-store.sh
+          bash os/dev/ci-prepare-disk-devices.sh --kata-job
+          bash os/dev/ci-native-podman-store.sh
       - name: Pull the published dev image and build its installer overlay
         run: |
           set -euo pipefail
