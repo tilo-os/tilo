@@ -9565,6 +9565,21 @@ impl ShellOverlayHost {
 
     /// Lays the room-activity sheet out (by hand, not taffy, like the
     /// other floating overlays) and re-derives its rows from the document.
+    fn apply_pending_history_action(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some(id) = chrome.borrow_mut().take_history_action_request() else {
+            return;
+        };
+        let st = chrome.borrow();
+        let records = st.records().clone();
+        let mut tree = st.tree_mut();
+        let _ = self
+            .room_activity
+            .apply_selection_history_action(&id, &mut *tree, Some(&records));
+    }
+
     fn refresh_room_activity(&mut self) {
         if let Some(viewport) = self.activity_window_rect() {
             self.room_activity.layout_window(viewport);
@@ -19836,6 +19851,7 @@ impl ShellOverlayHost {
         self.room_activity_was_open = visible;
         if visible {
             self.refresh_room_activity();
+            self.apply_pending_history_action();
             let ra_now = Instant::now();
             let openness = self.room_activity_transition.value(ra_now);
             draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
