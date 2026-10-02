@@ -75,6 +75,7 @@ containerfile="$repo/os/Containerfile"
 # filesystem services' roots, which their PrivateIPC sandbox cannot.
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
+# The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -82,7 +83,7 @@ containerfile="$repo/os/Containerfile"
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
-expected_contract=8cb6c8c67d15a5aea1acc735f30a2d85c2ec54784be7fc5cbe0813cedfcfccbf
+expected_contract=5daebbf50ef1a9303201d305885e8e5c0ca54e088860ecc82a1ab0bb9aee8765
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

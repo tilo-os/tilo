@@ -149,15 +149,17 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("control", dev)
             self.assertIn("vmd", dev)
             self.assertIn("shell", dev)
+            self.assertIn("native-runtime-host", dev)
             self.assertNotIn("control", production)
             self.assertNotIn("vmd", production)
             self.assertIn("shell", production)
+            self.assertIn("native-runtime-host", production)
         with self.subTest(phase='dev cargo plan adds dev features'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("dev-overrides", features)
-            self.assertEqual(set(bins), {"shell", "tilo-control", "tilo-vmd"})
+            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-control", "tilo-vmd"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertNotIn("dev-overrides", production_features)
         with self.subTest(phase='mixed dev and production layers are rejected'):
