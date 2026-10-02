@@ -3460,6 +3460,18 @@ impl Widget for PrintCentre {
     }
 }
 
+fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl ui::resources::PublishesResources for PrintCentre {
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
         if self.hosted {
@@ -3485,20 +3497,6 @@ impl ui::resources::PublishesResources for PrintCentre {
     }
 
     fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.hosted && id == "print-centre" {
-            return None;
-        }
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
             "print-centre",
             "Print Centre",
@@ -3515,7 +3513,11 @@ impl ui::resources::PublishesResources for PrintCentre {
                 root.children.extend(scanners.iter().map(scanner_resource));
             }
         }
-        find(&[root], id).or_else(|| find(&self.live_device_resources(), id))
+        if self.hosted && id == "print-centre" {
+            return None;
+        }
+        find_resource_tree(&[root], id)
+            .or_else(|| find_resource_tree(&self.live_device_resources(), id))
     }
 }
 

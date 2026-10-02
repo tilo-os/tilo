@@ -996,6 +996,18 @@ fn analyze_resource(label: &str, path: &std::path::Path) -> Option<Resource> {
     Some(resource)
 }
 
+fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl ui::resources::PublishesResources for DiskUsageApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if self.hosted {
@@ -1013,20 +1025,6 @@ impl ui::resources::PublishesResources for DiskUsageApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.hosted && id == "disk-usage:root" {
-            return None;
-        }
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
         let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
@@ -1035,7 +1033,10 @@ impl ui::resources::PublishesResources for DiskUsageApp {
             &state,
         );
         root.children.extend(self.live_analyze_extras());
-        find(&[root], id)
+        if self.hosted && id == "disk-usage:root" {
+            return None;
+        }
+        find_resource_tree(&[root], id)
     }
 }
 

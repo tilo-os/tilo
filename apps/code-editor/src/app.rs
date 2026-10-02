@@ -1208,6 +1208,17 @@ impl CodeApp {
             let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
             let disk_backed = self.session.project.disk_path_of(node).is_some();
             if has_text && (reconciled || !disk_backed) {
+                // Sample / scratch tabs are not disk-backed. Import can put text
+                // in the document before this loop takes a stamp; without adopting
+                // that text as `saved_text`, dirty stays true forever and clean
+                // closes raise a save prompt.
+                if !reconciled
+                    && let Some(buf) = self.session.open.get_mut(i)
+                    && buf.saved_text.is_empty()
+                {
+                    let current = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
+                    buf.mark_saved(current, None);
+                }
                 continue;
             }
             match self.session.project.file_seed(node) {
