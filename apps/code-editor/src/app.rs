@@ -1153,21 +1153,17 @@ impl CodeApp {
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        if self.actions.is_hosted() {
-            let action = actions::CodeEditorAction::EnsureProjectId {
-                id: self.project_id.clone(),
-            };
-            self.actions.dispatch_with_context(
-                doc,
-                actions::CODE_EDITOR_ACTION_TYPE,
-                &action,
-                actions::history_context(&action, "Project", &self.project_id),
-            );
-            if let Some(id) = EditorDoc::project_id(doc) {
-                self.project_id = id;
-            }
-        } else {
-            self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
+        let action = actions::CodeEditorAction::EnsureProjectId {
+            id: self.project_id.clone(),
+        };
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CODE_EDITOR_ACTION_TYPE,
+            &action,
+            actions::history_context(&action, "Project", &self.project_id),
+        );
+        if let Some(id) = EditorDoc::project_id(doc) {
+            self.project_id = id;
         }
         self.import_project_file_records(doc);
         self.sync_collaborative_files(doc);
@@ -1217,20 +1213,16 @@ impl CodeApp {
             match self.session.project.file_seed(node) {
                 Ok((text, stamp)) => {
                     if !has_text {
-                        if self.actions.is_hosted() {
-                            let action = actions::CodeEditorAction::EnsureBuffer {
-                                key: key.clone(),
-                                seed: text.clone(),
-                            };
-                            self.actions.dispatch_with_context(
-                                doc,
-                                actions::CODE_EDITOR_ACTION_TYPE,
-                                &action,
-                                actions::history_context(&action, "File", &self.project_id),
-                            );
-                        } else {
-                            EditorDoc::ensure_buffer_key(doc, &key, &text);
-                        }
+                        let action = actions::CodeEditorAction::EnsureBuffer {
+                            key: key.clone(),
+                            seed: text.clone(),
+                        };
+                        self.actions.dispatch_with_context(
+                            doc,
+                            actions::CODE_EDITOR_ACTION_TYPE,
+                            &action,
+                            actions::history_context(&action, "File", &self.project_id),
+                        );
                     }
                     let Some(buf) = self.session.open.get_mut(i) else {
                         continue;
