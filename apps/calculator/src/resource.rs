@@ -115,6 +115,10 @@ impl Resource for Calculator {
         ]
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "compile-time calculator action payloads always serialize"
+    )]
     fn bound_actions(state: &CalculatorState) -> Vec<ActionSpec> {
         let ids = state
             .history
@@ -135,6 +139,10 @@ impl Resource for Calculator {
         ]
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "compile-time calculator operation payloads always serialize"
+    )]
     fn local_operations() -> Vec<ActionSpec> {
         [
             (
@@ -168,6 +176,10 @@ impl Resource for Calculator {
         .collect()
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "compile-time calculator action payloads always serialize"
+    )]
     fn children(state: &CalculatorState) -> Vec<tilo_actions::Resource> {
         let mut children = Vec::new();
         for (id, entry) in &state.history {
@@ -271,6 +283,10 @@ fn graph_search(kind: GraphKind, id: &str, plot: &PlotFn) -> ui::tilo_resource::
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "compile-time calculator action payloads always serialize"
+)]
 fn graph_child(kind: GraphKind, id: &str, plot: &PlotFn) -> tilo_actions::Resource {
     let slug = match kind {
         GraphKind::Curve2d => "curve2d",

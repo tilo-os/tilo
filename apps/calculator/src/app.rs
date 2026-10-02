@@ -1947,9 +1947,6 @@ impl ui::resources::PublishesResources for CalculatorApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == crate::resource::Calculator::KIND {
-            return None;
-        }
         fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -1960,6 +1957,9 @@ impl ui::resources::PublishesResources for CalculatorApp {
                 }
             }
             None
+        }
+        if self.actions.is_hosted() && id == crate::resource::Calculator::KIND {
+            return None;
         }
         let state = crate::resource::Calculator::read(doc).unwrap_or_default();
         let root = ui::tilo_resource::publish::<crate::resource::Calculator>(

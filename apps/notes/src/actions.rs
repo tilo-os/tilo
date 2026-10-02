@@ -1552,6 +1552,10 @@ pub(crate) fn notebook_page_children(
         .collect()
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "empty rich-text document initialize/read cannot fail"
+)]
 fn page_body_child(page: &PageMeta) -> Resource {
     // Vocabulary door for the nested body. Live editor edits still wrap
     // through [`NotesAction::EditBody`] until a nested dispatcher can address
