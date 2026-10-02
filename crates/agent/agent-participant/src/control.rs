@@ -330,6 +330,7 @@ impl AgentControl {
                 state.status = AgentStatus::Waiting;
             }
         }
+        drop(state);
         Ok(())
     }
 
@@ -1462,22 +1463,24 @@ mod tests {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Result<serde_json::Value, ActionHostError> {
-        let PendingPoll::Ready(receipt) = host.invoke(caller, request).poll_ready() else {
-            panic!("agent control answers at once");
-        };
-        match receipt?.status {
-            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-            other => panic!("{other:?}"),
+        let receipt = match host.invoke(caller, request).poll_ready() {
+            PendingPoll::Ready(receipt) => Some(receipt),
+            _ => None,
         }
+        .expect("agent control answers at once")?;
+        let output = match receipt.status {
+            ReceiptStatus::Completed { output } => Some(output.value.unwrap_or_default()),
+            _ => None,
+        }
+        .expect("agent control returns a completed receipt");
+        Ok(output)
     }
 
     fn spawn_argument(task: &str) -> InvokeArgument {
-        let serde_json::Value::Object(arguments) =
-            serde_json::json!({"grant": "writer", "task": task})
-        else {
-            unreachable!()
-        };
-        InvokeArgument::Json(arguments)
+        InvokeArgument::Json(serde_json::Map::from_iter([
+            ("grant".into(), serde_json::Value::String("writer".into())),
+            ("task".into(), serde_json::Value::String(task.into())),
+        ]))
     }
 
     #[test]
