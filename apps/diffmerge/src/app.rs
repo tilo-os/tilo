@@ -451,20 +451,14 @@ impl DiffMergeApp {
         if self.shared_merge_fingerprint.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
-        if self.actions.is_hosted() {
-            let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
-            let action = crate::actions::DiffmergeAction::WriteSharedMerge { json };
-            self.actions.dispatch_with_context(
-                doc,
-                crate::actions::DIFFMERGE_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
-            );
-        } else {
-            // Standalone seeds write the projection beside the direct merged
-            // buffer so ActionHost's undo bracket stays free for user actions.
-            crate::doc::SharedMerge::write(doc, &shared);
-        }
+        let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
+        let action = crate::actions::DiffmergeAction::WriteSharedMerge { json };
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DIFFMERGE_ACTION_TYPE,
+            &action,
+            tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+        );
         self.shared_merge_fingerprint = Some(fingerprint);
         self.merge.acknowledge_content(doc);
     }
@@ -1818,6 +1812,27 @@ fn read_text(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+
+    /// A standalone three-way merge is published through the merge action.
+    #[test]
+    fn a_standalone_merge_is_published_through_the_action() {
+        let mut app = DiffMergeApp::new();
+        assert!(!app.is_hosted());
+        app.merge
+            .set_inputs("base", "a\n", "ours", "b\n", "theirs", "c\n");
+        let mut doc = automerge::AutoCommit::new();
+        app.publish_shared_merge_if_needed(&mut doc);
+        let recorded = app
+            .last_dispatched()
+            .expect("the shared merge is submitted through the action sink");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::DIFFMERGE_ACTION_TYPE
+        );
+        let shared = crate::doc::SharedMerge::read(&doc).expect("the document holds the merge");
+        assert_eq!(shared.ours, "b\n");
+        assert_eq!(shared.theirs, "c\n");
+    }
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
