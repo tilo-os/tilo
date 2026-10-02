@@ -429,8 +429,10 @@ To reinstall into an owned Windows raw VM source, stop its VM and run
 --source-raw RAW --confirm-source-disk-guid GUID`. Use the original template
 manifest and its disk GUID. The command validates the reviewed geometry and
 synthetic Windows preservation samples, acquires an exclusive Windows file
-handle, then restores only the template GPT. Existing payload bytes and allocated
-blocks remain available for the next install, avoiding a second large target.
+handle, clears the first and last MiB of each reviewed disposable Tilo extent
+to invalidate old filesystem headers, then restores the template GPT. Bulk
+payload bytes and allocated blocks remain for overwrite by the next install,
+avoiding a second large target. Synthetic Windows payload bytes stay unchanged.
 Previous installation proofs become obsolete for this source. This command is
 for file-backed VM sources only; it never opens a physical drive.
 

@@ -317,7 +317,7 @@ def exclusive_source(path):
 
 
 def reset_template(args):
-    """Reuse an owned VM disk's allocation while discarding its installed GPT entries."""
+    """Reuse an owned VM disk's allocation; invalidate its old Tilo headers and GPT."""
     plan = direct.load_plan(args.plan)
     manifest = direct.load_json(args.manifest)
     require(args.confirm_source_disk_guid == manifest.get('source_disk_guid'),
@@ -348,11 +348,21 @@ def reset_template(args):
             'installed GPT geometry changed before reset')
         require([preserved_sample(stream, row) for row in preserved] == manifest['preserved_samples'],
                 'preserved source content changed before reset')
+        # The guided installer correctly refuses stale filesystem signatures.
+        # Invalidate only the reviewed disposable Tilo extents' edges; retain
+        # the bulk allocation and never touch synthetic Windows content.
+        for row in plan['target_partitions']:
+            length = min(1024 * 1024, row['size_bytes'] // 2)
+            for offset in (row['offset_bytes'], row['offset_bytes'] + row['size_bytes'] - length):
+                stream.seek(offset)
+                stream.write(bytes(length))
+                stream.seek(offset)
+                require(stream.read(length) == bytes(length), 'Tilo header reset readback differs')
         write_template(stream, plan, rows=preserved, disk_guid=uuid.UUID(disk_guid))
         _, after = direct.read_gpt(stream, args.source_raw.stat().st_size)
         require(direct.same_gpt_content(after, preserved), 'reset GPT readback differs')
     verify_template(args)
-    print('Owned VM source reset; allocation reused, previous installed target is obsolete')
+    print('Owned VM source reset; Tilo headers invalidated, allocation reused, old proof obsolete')
 
 
 def verified_ci_image(image, key, children, kind, command_json=None, key_arg=None):

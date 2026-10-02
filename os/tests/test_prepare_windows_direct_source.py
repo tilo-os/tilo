@@ -62,9 +62,16 @@ class SourceTemplateTests(unittest.TestCase):
                 reset()
             after = raw.read_bytes()
             self.assertEqual(len(after), disk_size)
-            for row in plan['preserve_partitions'] + final:
+            for row in plan['preserve_partitions']:
                 start, size = row['offset_bytes'], row['size_bytes']
                 self.assertEqual(after[start:start + size], before[start:start + size])
+            for row in final:
+                start, size = row['offset_bytes'], row['size_bytes']
+                edge = min(1024 * 1024, size // 2)
+                self.assertEqual(after[start:start + edge], bytes(edge))
+                self.assertEqual(after[start + size - edge:start + size], bytes(edge))
+                self.assertEqual(after[start + edge:start + size - edge],
+                                 before[start + edge:start + size - edge])
             with raw.open('rb') as stream:
                 identity, actual = prep.direct.read_gpt(stream, disk_size)
             self.assertEqual(identity, manifest['source_disk_guid'])
