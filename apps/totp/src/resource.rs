@@ -156,8 +156,13 @@ impl ActionSink {
 
 /// Live launch with capture protection for one-time codes.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<TotpShell>().configure_app(|app| {
+    let spec = ui::framework::launch_spec::<TotpShell>();
+    // Windowed App knobs (title, capture protection) are native-only; the
+    // browser host mounts the definition without a live App runner.
+    #[cfg(not(target_arch = "wasm32"))]
+    let spec = spec.configure_app(|app| {
         app.set_window_title(Some("Authenticator".into()));
         app.set_capture_protected(true);
-    })
+    });
+    spec
 }

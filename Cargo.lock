@@ -19866,6 +19866,7 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
+ "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",

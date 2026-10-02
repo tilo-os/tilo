@@ -170,9 +170,14 @@ impl ActionSink {
 
 /// Live launch through the framework host.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<GitClientShell>().configure_app(|app| {
+    let spec = ui::framework::launch_spec::<GitClientShell>();
+    // Windowed App knobs (title, capture protection) are native-only; the
+    // browser host mounts the definition without a live App runner.
+    #[cfg(not(target_arch = "wasm32"))]
+    let spec = spec.configure_app(|app| {
         app.set_window_title(Some("Git Client".into()));
-    })
+    });
+    spec
 }
 
 #[cfg(test)]
