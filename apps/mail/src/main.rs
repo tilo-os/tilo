@@ -49,7 +49,25 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn main() {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<mail::MailShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.mail", mail::app_root)
             .shot_root(shot_root)

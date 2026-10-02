@@ -44,7 +44,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::curve::Curve;
@@ -1953,9 +1953,173 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     }
 }
 
+/// Playhead/mix-accurate conveniences — presentation state, not CRDT.
+///
+/// Standalone [`provide_resources`] nests these under `video.project`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep mark/split/trim-at-playhead (and mix trim)
+/// without a second project root beside [`crate::resource::VideoProject`].
+#[allow(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    reason = "playhead-bound payloads serialize only local serde enums; the clip loop mirrors the timeline tree"
+)]
+pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+    let p = &ctx.project;
+    let at = ctx.playhead;
+    let mut playhead = Resource::new(
+        "video.playhead",
+        "video.playhead",
+        format!("Playhead · {at:.2}s"),
+    );
+
+    let mut marked = p.clone();
+    marked.set_mark_in(at);
+    playhead = playhead.with_action(immediate(
+        "mark-in",
+        "Mark in at playhead",
+        &set_project_meta_action(&marked),
+    ));
+    let mut marked = p.clone();
+    marked.set_mark_out(at);
+    playhead = playhead.with_action(immediate(
+        "mark-out",
+        "Mark out at playhead",
+        &set_project_meta_action(&marked),
+    ));
+
+    if ctx.mix.clipped() {
+        let snap = p.clone();
+        let lanes = ctx.mix.measured_tracks();
+        let over = ctx.mix.worst_over_db();
+        let lane_words = match ctx.mix.clipped_tracks().len() {
+            0 => String::new(),
+            1 => ", 1 lane over on its own".to_string(),
+            n => format!(", {n} lanes over on their own"),
+        };
+        playhead = playhead.with_action(
+            ActionSpec::typed(
+                "trim-mix",
+                "Trim the mix to fit",
+                "0",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "headroom",
+                    ParamType::Number,
+                    "decibels to leave below full scale; 0 lands the measured \
+                     peak exactly at full scale",
+                )],
+                move |args: &ActionArgs| {
+                    let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
+                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
+                    encode(&upsert_tracks_and_clips_action(&next, &[]))
+                },
+            )
+            .with_description(format!(
+                "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
+                 every lane comes down by the same amount, so the balance is unchanged",
+                ctx.mix.overs.len(),
+                if ctx.mix.overs.len() == 1 { "" } else { "s" },
+            )),
+        );
+    }
+
+    playhead = playhead.with_action(ActionSpec::typed(
+        "add-marker",
+        "Add marker at playhead",
+        "Marker",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "what the marker is called; an empty name reads as “Marker”",
+        )],
+        move |args: &ActionArgs| {
+            let raw_name = args.text("name").unwrap_or("").trim();
+            let label = if raw_name.is_empty() {
+                "Marker"
+            } else {
+                raw_name
+            };
+            let project_marker = crate::model::Marker::new(at, label, 1);
+            encode(&VideoEditorAction::AddProjectMarker {
+                marker: project_marker,
+            })
+        },
+    ));
+    if let Some(m) = p.markers.iter().find(|m| (m.t - at).abs() < 0.25) {
+        playhead = playhead.with_action(immediate(
+            "remove-marker",
+            &format!("Remove marker \u{201c}{}\u{201d}", m.name),
+            &VideoEditorAction::RemoveProjectMarker {
+                marker: m.id.to_string(),
+            },
+        ));
+    }
+
+    for clip in &p.clips {
+        let cid = clip.id;
+        let group = p.link_group(cid);
+        // Distinct ids from timeline `video.clip:{id}` so the playhead slice
+        // can sit beside the document tree without a duplicate resource id.
+        let mut cr = Resource::new(
+            format!("video.playhead-clip:{cid}"),
+            "video.playhead-clip",
+            p.media(clip.media)
+                .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone()),
+        );
+
+        let mut split_project = p.clone();
+        let halves = split_project.split_linked(cid, at);
+        if !halves.is_empty() {
+            let written: Vec<Clip> = halves
+                .iter()
+                .flat_map(|(l, r)| [*l, *r])
+                .filter_map(|id| split_project.clip(id).cloned())
+                .collect();
+            let action = match written.as_slice() {
+                [left, right] => split_clip_action(left, right),
+                many => upsert_clips_action(many),
+            };
+            cr = cr.with_action(immediate("split", "Split at playhead", &action));
+        }
+
+        if clip.covers(at) {
+            let mut ti = p.clone();
+            let din = at - clip.start;
+            ti.trim_in_linked(cid, din);
+            if group.iter().any(|id| ti.clip(*id).is_some()) {
+                cr = cr.with_action(immediate(
+                    "trim-in",
+                    "Trim in to playhead",
+                    &patch_clips_fields_action(p, &ti, &group),
+                ));
+            }
+            let mut to = p.clone();
+            let dout = at - clip.end();
+            to.trim_out_linked(cid, dout);
+            if group.iter().any(|id| to.clip(*id).is_some()) {
+                cr = cr.with_action(immediate(
+                    "trim-out",
+                    "Trim out to playhead",
+                    &patch_clips_fields_action(p, &to, &group),
+                ));
+            }
+        }
+
+        if !cr.actions.is_empty() {
+            playhead = playhead.with_child(cr);
+        }
+    }
+
+    annotate_contracts(&mut playhead);
+    vec![playhead]
+}
+
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
-/// document-mutating operation exported as an action.
+/// document-mutating operation exported as an action. Playhead/mix conveniences
+/// ride [`live_playhead_resources`] under the project root.
 ///
 /// # Panics
 ///
@@ -1967,7 +2131,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     clippy::too_many_lines,
     reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
 )]
-pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+/// Timeline tree used by [`Resource::children`] and the root action split.
+/// Playhead rows are included here and stripped by the resource's children.
+pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
         "video.project".to_string(),
@@ -2161,26 +2327,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
     // Project-level: the render range. The export loop used to run the whole
     // timeline unconditionally, so checking a ten-second fix meant
-    // re-rendering everything.
+    // re-rendering everything. Playhead mark-in/out and mix trim ride
+    // [`live_playhead_resources`].
     {
-        let snap = p.clone();
-        let at = ctx.playhead;
-        let mut marked = snap.clone();
-        marked.set_mark_in(at);
-        root = root.with_action(immediate(
-            "mark-in",
-            "Mark in at playhead",
-            &set_project_meta_action(&marked),
-        ));
-        let mut marked = snap.clone();
-        marked.set_mark_out(at);
-        root = root.with_action(immediate(
-            "mark-out",
-            "Mark out at playhead",
-            &set_project_meta_action(&marked),
-        ));
         if p.has_marks() {
-            let mut cleared = snap;
+            let mut cleared = p.clone();
             cleared.clear_marks();
             root = root.with_action(immediate(
                 "clear-marks",
@@ -2220,90 +2371,6 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 encode(&set_project_meta_action(&next))
             },
         ));
-    }
-
-    // Project-level: bring a mix that went over back under full scale.
-    //
-    // Offered only once a mix has actually been measured over, because it is
-    // a report about a measurement — an editor that offered to "fix" levels
-    // nobody has listened to would be guessing, and it would be offering to
-    // quieten a mix that is fine.
-    //
-    // This is the one operation on the clipping warning that a caller with no
-    // screen could not otherwise reach. Seeing the warning is the
-    // accessibility tree's job and it does it (the master strip's node states
-    // how far over and where); *acting* on it meant reading the overshoot off
-    // a red chip, doing the arithmetic and then dragging every fader — none of
-    // which a script, an agent or a keyboard has.
-    if ctx.mix.clipped() {
-        let snap = p.clone();
-        let lanes = ctx.mix.measured_tracks();
-        let over = ctx.mix.worst_over_db();
-        let lane_words = match ctx.mix.clipped_tracks().len() {
-            0 => String::new(),
-            1 => ", 1 lane over on its own".to_string(),
-            n => format!(", {n} lanes over on their own"),
-        };
-        root = root.with_action(
-            ActionSpec::typed(
-                "trim-mix",
-                "Trim the mix to fit",
-                "0",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
-                    "headroom",
-                    ParamType::Number,
-                    "decibels to leave below full scale; 0 lands the measured \
-                     peak exactly at full scale",
-                )],
-                move |args: &ActionArgs| {
-                    // Negative headroom would be an instruction to trim it
-                    // back to *over* full scale, which is the state this
-                    // exists to leave. An unbound argument is the plain
-                    // "make it fit".
-                    let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
-                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
-                    encode(&upsert_tracks_and_clips_action(&next, &[]))
-                },
-            )
-            .with_description(format!(
-                "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
-                 every lane comes down by the same amount, so the balance is unchanged",
-                ctx.mix.overs.len(),
-                if ctx.mix.overs.len() == 1 { "" } else { "s" },
-            )),
-        );
-    }
-
-    // Project-level: a timeline marker at the playhead, named.
-    {
-        let at = ctx.playhead;
-        root = root.with_action(ActionSpec::typed(
-            "add-marker",
-            "Add marker at playhead",
-            "Marker",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required(
-                "name",
-                ParamType::Text,
-                "what the marker is called; an empty name reads as “Marker”",
-            )],
-            move |args: &ActionArgs| {
-                let name = args.text("name").unwrap_or("").trim();
-                let name = if name.is_empty() { "Marker" } else { name };
-                let marker = crate::model::Marker::new(at, name, 1);
-                encode(&VideoEditorAction::AddProjectMarker { marker })
-            },
-        ));
-        if let Some(m) = p.markers.iter().find(|m| (m.t - ctx.playhead).abs() < 0.25) {
-            root = root.with_action(immediate(
-                "remove-marker",
-                &format!("Remove marker \u{201c}{}\u{201d}", m.name),
-                &VideoEditorAction::RemoveProjectMarker {
-                    marker: m.id.to_string(),
-                },
-            ));
-        }
     }
 
     // Project-level: a title. It lands in the bin like any other source —
@@ -2608,51 +2675,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 &delete_clips_action(&removed, &moved),
             ));
 
-            // Split at the playhead — only when the playhead is strictly inside.
-            // A linked shot is cut on both lanes at once, and the two tails
-            // become a link group of their own (see `Project::split_linked`).
-            let mut split_project = p.clone();
-            let halves = split_project.split_linked(cid, ctx.playhead);
-            if !halves.is_empty() {
-                let written: Vec<Clip> = halves
-                    .iter()
-                    .flat_map(|(l, r)| [*l, *r])
-                    .filter_map(|id| split_project.clip(id).cloned())
-                    .collect();
-                // Two clips are still the split they always were on the wire;
-                // four is the pair being cut, which has no two-clip shape.
-                let action = match written.as_slice() {
-                    [left, right] => split_clip_action(left, right),
-                    many => upsert_clips_action(many),
-                };
-                cr = cr.with_action(immediate("split", "Split at playhead", &action));
-            }
-
-            // Trim in / out to the playhead — only when it lies within the span.
-            // The linked half takes the same trim, so the sound keeps covering
-            // the picture.
-            if clip.covers(ctx.playhead) {
-                let mut ti = p.clone();
-                let din = ctx.playhead - clip.start;
-                ti.trim_in_linked(cid, din);
-                if group.iter().any(|id| ti.clip(*id).is_some()) {
-                    cr = cr.with_action(immediate(
-                        "trim-in",
-                        "Trim in to playhead",
-                        &patch_clips_fields_action(p, &ti, &group),
-                    ));
-                }
-                let mut to = p.clone();
-                let dout = ctx.playhead - clip.end();
-                to.trim_out_linked(cid, dout);
-                if group.iter().any(|id| to.clip(*id).is_some()) {
-                    cr = cr.with_action(immediate(
-                        "trim-out",
-                        "Trim out to playhead",
-                        &patch_clips_fields_action(p, &to, &group),
-                    ));
-                }
-            }
+            // Split / trim-at-playhead ride [`live_playhead_resources`].
 
             // Colour grade — prompted `0..1` sliders folded into optimistic
             // clip-field patches.
@@ -2693,6 +2716,17 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // drag worked. An action and a click must not
                         // disagree about what they did.
                         next.set_param_at(field.param(), at, v);
+                        // If a curve still owns the playhead value, the
+                        // constant write was a no-op for playback — key the
+                        // authored instant so `param_at` and the picture agree.
+                        if (next.param_at(field.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                field.param(),
+                                at,
+                                v,
+                                next.key_interp_at(field.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
@@ -2729,6 +2763,14 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // As the inspector's slider does — see the grade
                         // actions above for why the constant is not enough.
                         next.set_param_at(axis.param(), at, v);
+                        if (next.param_at(axis.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                axis.param(),
+                                at,
+                                v,
+                                next.key_interp_at(axis.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
@@ -3711,8 +3753,26 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(mr);
     }
 
+    for extra in live_playhead_resources(ctx) {
+        root = root.with_child(extra);
+    }
+
     annotate_contracts(&mut root);
     vec![root]
+}
+
+/// The published project. Playhead and mix rows stay live extras on this tree
+/// so standalone callers still see them; the framework root adds them itself.
+pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+    // Standalone / palette / tests need the timeline at the *live* playhead
+    // (clip markers, keys, trim). `tilo_resource::publish` builds document
+    // children at playhead 0 and keeps playhead doors on the surface — that
+    // path stays for the framework root; this tree is the live editor door.
+    let mut roots = project_tree(ctx);
+    for root in &mut roots {
+        annotate_contracts(root);
+    }
+    roots
 }
 
 #[derive(Clone, Copy)]
@@ -3847,9 +3907,29 @@ fn parse_transition(s: &str) -> Transition {
     }
 }
 
-impl ResourceProvider for crate::app::VideoEditorApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.video_resource_ctx())
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::VideoEditorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let ctx = self.video_resource_ctx();
+        // The document is the project once it holds one. An unsynced editor
+        // still has the project only on the widget. Playhead and mix stay live.
+        let project = if VideoDoc::is_empty(doc) {
+            ctx.project.clone()
+        } else {
+            VideoDoc::load_project(doc)
+        };
+        let label = if project.name.is_empty() {
+            "Project".to_string()
+        } else {
+            project.name.clone()
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            "video.project",
+            &label,
+            &project,
+        );
+        root.children.extend(live_playhead_resources(&ctx));
+        vec![root]
     }
 }
 
@@ -4352,7 +4432,7 @@ mod tests {
             let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
-            assert_eq!(project.kind, "video.project");
+            assert_eq!(project.kind, "video_editor.project");
             let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
 

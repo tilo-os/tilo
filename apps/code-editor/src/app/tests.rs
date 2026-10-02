@@ -5,6 +5,65 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn a_standalone_project_import_is_submitted_through_the_action() {
+    let mut app = CodeApp::with_sample();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.import_project_file_records(&mut doc);
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("imported files are submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+    assert!(
+        !EditorDoc::files(&doc).is_empty(),
+        "the sample project is in the document"
+    );
+}
+
+#[test]
+fn a_standalone_project_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.ensure_buffers(&mut doc);
+    assert_eq!(
+        EditorDoc::project_id(&doc).as_deref(),
+        Some(app.project_id.as_str())
+    );
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the project is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
+fn a_standalone_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id));
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the terminal panel is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
+fn hosted_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    app.mark_hosted_for_test();
+    let mut doc = AutoCommit::new();
+    assert!(EditorDoc::terminal_panel(&doc).is_none());
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id.clone()));
+    assert_eq!(app.terminal_document_root(&mut doc), id);
+}
+
+#[test]
 fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
     // Each phase builds a fresh app and document.
     direct_open_is_accepted_then_reports_the_exact_failure();

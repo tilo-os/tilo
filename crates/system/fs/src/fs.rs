@@ -362,7 +362,7 @@ pub struct QuickFS {
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
     /// Codecs for recognized rich-text formats (odt/docx/md).
-    registry: Arc<qdoc_codecs::Registry>,
+    registry: Arc<tilo_doc_codecs::Registry>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -460,7 +460,7 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
-            Arc::new(qdoc_codecs::builtin_registry()),
+            Arc::new(tilo_doc_codecs::builtin_registry()),
         )
     }
 
@@ -468,7 +468,7 @@ impl QuickFS {
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
         heuristics: Arc<Heuristics>,
-        registry: Arc<qdoc_codecs::Registry>,
+        registry: Arc<tilo_doc_codecs::Registry>,
     ) -> Self {
         Self {
             namespace,
@@ -2244,7 +2244,7 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if qdoc::Document::load(&data).is_ok() {
+        if tilo_doc::Document::load(&data).is_ok() {
             return Err(libc::ENOTSUP);
         }
         let current_hash = self.ns().hash_for(ino);
@@ -2256,7 +2256,7 @@ impl QuickFS {
             let current =
                 tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
                     .map_err(|_| EIO)?;
-            if qdoc::Document::load(&current).is_ok() {
+            if tilo_doc::Document::load(&current).is_ok() {
                 return Err(libc::ENOTSUP);
             }
         }
@@ -2374,7 +2374,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2420,7 +2420,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let preflight = if extension == "qdoc" {
+        let preflight = if extension == "tilo-doc" {
             crate::conflict_merge::preflight_exact(first, second, None)
         } else {
             let base_id =
@@ -2689,7 +2689,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2754,7 +2754,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if extension == "qdoc" {
+        let merged = if matches!(extension.as_str(), "tilo-doc" | "qdoc") {
             let preflight = crate::conflict_merge::preflight_exact(first, second, None);
             let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
                 // A failed preflight is deliberately indistinguishable from

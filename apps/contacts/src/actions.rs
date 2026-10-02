@@ -40,7 +40,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -146,6 +146,18 @@ pub enum ContactsOperation {
     ImportConflictAsNew {
         token: String,
     },
+}
+
+fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    for child in resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -265,7 +277,16 @@ fn export_flow_contract() -> ActionContract {
     }
 }
 
-fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
+/// Book-level import / export Effects (no document delta). Published via
+/// [`crate::resource::Contacts::local_operations`].
+pub(crate) fn book_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        file_operation("import-vcard", "Import vCard", false),
+        file_operation("export-all-vcard", "Export all contacts", true),
+    ]
+}
+
+pub(crate) fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
     ActionSpec::typed_operation(
         id,
         label,
@@ -1425,7 +1446,7 @@ pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.
-fn split_name(name: &str) -> (String, String) {
+pub(crate) fn split_name(name: &str) -> (String, String) {
     let name = name.trim();
     match name.split_once(char::is_whitespace) {
         Some((first, rest)) => (first.trim().to_string(), rest.trim().to_string()),
@@ -1484,78 +1505,6 @@ fn patch_spec(contact: &Contact) -> ActionSpec {
             })
         },
     )
-}
-
-/// Build the resource tree Contacts currently has open: the book (with a "New
-/// contact" action) and each contact (typed field patch, rename, add-to-group,
-/// favourite, delete).
-/// Every document-mutating operation is exported as the same action the
-/// on-screen affordance dispatches.
-fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
-    let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
-    let mut import = file_operation("import-vcard", "Import vCard", false);
-    if ctx.import_busy {
-        import = import.unavailable("already_running", "A contact import is already in progress");
-    }
-    root = root.with_action(import);
-    let mut export = file_operation("export-all-vcard", "Export all contacts", true);
-    if ctx.contact_count == 0 {
-        export = export.unavailable("book_empty", "There are no contacts to export");
-    } else if ctx.export_busy {
-        export = export.unavailable("already_running", "A contact export is already in progress");
-    }
-    root = root.with_action(export);
-
-    // Book-level: create a contact from a typed name. The uuid is minted once
-    // when the argument is committed, then baked into the envelope, so replay
-    // stays deterministic.
-    root = root.with_action(ActionSpec::prompted(
-        "new-contact",
-        "New contact",
-        "Name",
-        "full name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let (first, last) = split_name(name);
-            let mut c = Contact::new(); // id minted HERE, once, at commit time
-            c.first = first;
-            c.last = last;
-            encode(&create_contact_action(&c))
-        },
-    ));
-
-    for conflict in &ctx.import_conflicts {
-        let mut child = Resource::new(
-            format!("contacts.import-conflict:{}", conflict.token),
-            "contacts.import-conflict",
-            format!("Import review: {}", conflict.incoming_name),
-        );
-        let keep = ContactsOperation::KeepImportConflict {
-            token: conflict.token.clone(),
-        };
-        let import_as_new = ContactsOperation::ImportConflictAsNew {
-            token: conflict.token.clone(),
-        };
-        if let Some(spec) = contact_operation(
-            "keep-existing",
-            "Keep existing contact",
-            OperationKind::Effect,
-            &keep,
-        ) {
-            child = child.with_action(spec);
-        }
-        if let Some(spec) = contact_operation(
-            "import-as-new",
-            "Import as new contact",
-            OperationKind::Effect,
-            &import_as_new,
-        ) {
-            child = child.with_action(spec);
-        }
-        root = root.with_child(child);
-    }
-
-    root
 }
 
 /// Resource and action catalogue for one stable contact identity. Kept
@@ -1759,23 +1708,122 @@ pub fn duplicate_resource(duplicate: &DuplicateResource) -> Resource {
 /// Build the contextual resource page the palette renders. Discovery stays
 /// bounded even for a very large shared book; direct resource lookup and the
 /// search provider retain complete reachability.
-pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = book_resource(ctx);
-    root = root.with_child(favorites_resource());
-    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
-        root = root.with_child(duplicate_resource(duplicate));
+fn overlay_transfer_availability(root: &mut Resource, ctx: &ContactsResourceCtx) {
+    if ctx.import_busy
+        && let Some(index) = root
+            .actions
+            .iter()
+            .position(|action| action.id == "import-vcard")
+    {
+        let spec = root.actions.remove(index);
+        root.actions.insert(
+            index,
+            spec.unavailable("already_running", "A contact import is already in progress"),
+        );
     }
-    // Defend the catalogue boundary here as well as in `ContactsApp`: other
-    // hosts can construct this context directly, and resource discovery must
-    // stay bounded regardless of which adapter supplied it.
-    for group in ctx.groups.iter().take(MAX_CONTEXT_GROUP_RESOURCES) {
-        root = root.with_child(group_resource(group));
+    if let Some(index) = root
+        .actions
+        .iter()
+        .position(|action| action.id == "export-all-vcard")
+    {
+        let spec = root.actions.remove(index);
+        let spec = if ctx.contact_count == 0 {
+            spec.unavailable("book_empty", "There are no contacts to export")
+        } else if ctx.export_busy {
+            spec.unavailable("already_running", "A contact export is already in progress")
+        } else {
+            spec
+        };
+        root.actions.insert(index, spec);
     }
-    for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
-        root = root.with_child(contact_resource(contact, ctx.export_busy));
-    }
+}
 
+/// The published address book for this page. Duplicate reviews stay children
+/// beside the document rows.
+pub fn provide_resources(ctx: &ContactsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // The address book is the document once the `contacts` map exists, including
+    // an empty book. Import conflicts and duplicate reviews stay live extras.
+    // A caller that has not written the map yet still publishes its context.
+    let has_book = automerge::ReadDoc::get(doc, &automerge::ROOT, "contacts")
+        .ok()
+        .flatten()
+        .is_some();
+    let state = if has_book {
+        <crate::resource::Contacts as ui::tilo_resource::Resource>::read(doc).unwrap_or(
+            crate::resource::ContactsState {
+                contacts: Vec::new(),
+            },
+        )
+    } else {
+        crate::resource::ContactsState {
+            contacts: ctx.contacts.clone(),
+        }
+    };
+    let mut root = ui::tilo_resource::publish::<crate::resource::Contacts>(
+        "contacts.book",
+        "Contacts",
+        &state,
+    );
+    overlay_transfer_availability(&mut root, ctx);
+    root.children.extend(live_presentation_extras(ctx));
     vec![root]
+}
+
+/// Document-derived children for [`tilo_resource::publish`]: favorites, groups,
+/// and contacts. Import conflicts and duplicate reviews stay live extras —
+/// they are not shared CRDT rows.
+pub(crate) fn publish_children(contacts: &[Contact]) -> Vec<Resource> {
+    let mut children = vec![favorites_resource()];
+    for group in ordered_groups(contacts)
+        .into_iter()
+        .take(MAX_CONTEXT_GROUP_RESOURCES)
+    {
+        children.push(group_resource(&group));
+    }
+    for contact in contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
+        children.push(contact_resource(contact, false));
+    }
+    children
+}
+
+/// Hosted-only extras that are not document state: in-flight import conflicts
+/// and pending duplicate-merge reviews.
+pub(crate) fn live_presentation_extras(ctx: &ContactsResourceCtx) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    for conflict in &ctx.import_conflicts {
+        let mut child = Resource::new(
+            format!("contacts.import-conflict:{}", conflict.token),
+            "contacts.import-conflict",
+            format!("Import review: {}", conflict.incoming_name),
+        );
+        let keep = ContactsOperation::KeepImportConflict {
+            token: conflict.token.clone(),
+        };
+        let import_as_new = ContactsOperation::ImportConflictAsNew {
+            token: conflict.token.clone(),
+        };
+        if let Some(spec) = contact_operation(
+            "keep-existing",
+            "Keep existing contact",
+            OperationKind::Effect,
+            &keep,
+        ) {
+            child = child.with_action(spec);
+        }
+        if let Some(spec) = contact_operation(
+            "import-as-new",
+            "Import as new contact",
+            OperationKind::Effect,
+            &import_as_new,
+        ) {
+            child = child.with_action(spec);
+        }
+        extras.push(child);
+    }
+    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
+        extras.push(duplicate_resource(duplicate));
+    }
+    extras
 }
 
 /// Resolve one resource from the complete current book without materialising
@@ -1784,7 +1832,11 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
 /// handler.
 pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
     if id == "contacts.book" {
-        return Some(book_resource(ctx));
+        let mut root = provide_resources(ctx, &automerge::AutoCommit::new())
+            .into_iter()
+            .next()?;
+        root.children.clear();
+        return Some(root);
     }
     if id == FAVORITES_RESOURCE_ID {
         return Some(favorites_resource());
@@ -1862,12 +1914,40 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
         .map(|contact| contact_resource(contact, ctx.export_busy))
 }
 
-impl ResourceProvider for crate::app::ContactsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ContactsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.contacts_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "contacts.book" {
+            // The published address book. The directory page does not walk
+            // every contact; those resolve by id.
+            let mut root = provide_resources(&self.contacts_resource_ctx(), doc)
+                .into_iter()
+                .next()?;
+            root.children.clear();
+            return Some(root);
+        }
+        if let Some(mut found) = provide_resources(&self.contacts_resource_ctx(), doc)
+            .into_iter()
+            .find_map(|root| find_resource(root, id))
+        {
+            if self.export_is_busy()
+                && let Some(action) = found
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.id == "export-contact")
+            {
+                *action = action
+                    .clone()
+                    .unavailable("already_running", "A contact export is already in progress");
+            }
+            return Some(found);
+        }
+        // A contact or group outside the eager page stays addressable from
+        // this device's store.
         self.exact_contacts_resource_ctx(id)
             .and_then(|ctx| resolve_resource(&ctx, id))
     }

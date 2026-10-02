@@ -62,6 +62,7 @@ pub mod engine_mysql;
 pub mod engine_pg;
 pub mod grid;
 pub mod model;
+pub mod resource;
 pub mod sample;
 pub mod schema_nav;
 pub mod search;
@@ -130,3 +131,4 @@ pub fn app_root_for_shot_confirm(width: f64) -> Box<dyn Widget> {
     app.arm_query_confirmation_for_shots();
     Box::new(app)
 }
+pub use resource::{DbClient, DbClientShell, launch_spec};

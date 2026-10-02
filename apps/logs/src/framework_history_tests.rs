@@ -109,7 +109,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     assert_ne!(returned, history);
 }
 
-fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
+fn invoke_effect(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
     let payload = serde_json::to_vec(&operation).unwrap();
     assert!(
         Widget::start_operation(
@@ -117,6 +117,26 @@ fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
             &ui::widget::ResourceOperation::local(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
+                crate::actions::LOGS_OPERATION_TYPE,
+                &payload
+            ),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT
+        )
+        .map(|started| started.is_some())
+        .unwrap()
+    );
+}
+
+fn invoke_select_view(app: &mut crate::LogsApp, entry_id: String) {
+    let payload =
+        serde_json::to_vec(&crate::actions::LogsOperation::SelectEntry { entry_id }).unwrap();
+    assert!(
+        Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::View,
                 crate::actions::LOGS_OPERATION_TYPE,
                 &payload
             ),
@@ -199,21 +219,17 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     services.files = picker.clone();
     let _host = ui::host::enter(&services);
     let mut app = crate::LogsApp::new(entries, true);
-    invoke(
-        &mut app,
-        &crate::actions::LogsOperation::SetPriority {
+    let mut doc = automerge::AutoCommit::new();
+    app.commit_view(
+        &mut doc,
+        &crate::resource::LogsAction::SetPriority {
             value: crate::Priority::Err.level(),
         },
     );
-    invoke(
-        &mut app,
-        &crate::actions::LogsOperation::SelectEntry {
-            entry_id: crate::actions::entry_resource_id(&selected),
-        },
-    );
+    invoke_select_view(&mut app, crate::actions::entry_resource_id(&selected));
     app.shots_show_detail();
-    invoke(&mut app, &crate::actions::LogsOperation::ExportFiltered);
-    invoke(&mut app, &crate::actions::LogsOperation::ClearFilters);
+    invoke_effect(&mut app, &crate::actions::LogsOperation::ExportFiltered);
+    app.commit_view(&mut doc, &crate::resource::LogsAction::ClearFilters);
 
     let requests = picker
         .requests()

@@ -578,7 +578,7 @@ pub struct ImagerApp {
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
     /// brackets the undo boundary and applies it through the executor so it
     /// records one Ctrl+Z step and replays byte-identically on peers.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for ImagerApp {
@@ -631,7 +631,7 @@ impl ImagerApp {
             keyboard_hit: None,
             customize: CustomizePanel::new(),
             write_setup: WriteSetupPanel::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.estimate_bands();
         app
@@ -669,7 +669,7 @@ impl ImagerApp {
         }
     }
 
-    fn target(&self) -> Option<&TargetDrive> {
+    pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
@@ -787,8 +787,58 @@ impl ImagerApp {
     /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
     /// test.
     #[doc(hidden)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the selected image and install profile the framework resource holds.
+    /// An empty projection does not wipe a selection that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ImagerState) {
+        if state.source.is_none() && self.source.is_some() {
+            return;
+        }
+        if state.source.is_some() {
+            self.source.clone_from(&state.source);
+        }
+        let profile_changed = state.profile.hostname != self.profile.hostname
+            || state.profile.keyboard != self.profile.keyboard
+            || state.profile.timezone != self.profile.timezone
+            || state.profile.locale != self.profile.locale
+            || state.profile.user.username != self.profile.user.username
+            || state.profile.user.full_name != self.profile.user.full_name
+            || state.profile.encrypt != self.profile.encrypt;
+        if profile_changed {
+            self.profile = state.profile.clone();
+            self.customize.sync(&self.profile);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Imager>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Whether startup has finished reconciling an in-flight write helper.
+    pub(crate) fn startup_write_reconciled(&self) -> bool {
+        self.startup_write_state_reconciled
+    }
+
+    /// Whether a write/verify worker channel is open on this surface.
+    pub(crate) fn job_active(&self) -> bool {
+        self.job_rx.is_some()
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -4848,7 +4898,13 @@ impl Widget for ImagerApp {
                 // "insert a drive" state — the imager never invents drives.
                 // Sample content is opt-in (`--demo` / `--shots`), which seeds
                 // the document *before* the first sync so this branch is skipped.
-                ImagerDoc::seed(state, &[]);
+                let action = crate::actions::ImagerAction::EnsureRecords;
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::IMAGER_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
+                );
             }
             if live_probe_enabled() {
                 self.targets = crate::probe::probe().unwrap_or_default();
@@ -5447,43 +5503,33 @@ impl Widget for ImagerApp {
 }
 
 impl ui::resources::PublishesResources for ImagerApp {
-    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the profile / write-plan door — keep only live extras (none today:
+    /// job status is a View on the resource, not a second published tree).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        let available = self.source.is_some() && self.target().is_some();
-        let mut job = crate::actions::operation_resource(
-            self.target().map(TargetDrive::dev_path).as_deref(),
-            available,
-            !self.startup_write_state_reconciled || self.job_rx.is_some(),
-            crate::write::write_available(),
-        );
-        job.actions.push(
-            crate::actions::operation_spec(
-                "export-config",
-                "Export headless configuration",
-                tilo_actions::OperationKind::View,
-                crate::actions::ImagerOperation::ExportConfig,
-            )
-            .with_contract(tilo_actions::ActionContract {
-                availability: if available {
-                    tilo_actions::Availability::Available
-                } else {
-                    tilo_actions::Availability::Unavailable {
-                        code: "incomplete_plan".into(),
-                        reason: "Select an image source and target drive first".into(),
-                    }
-                },
-                result: tilo_actions::ResultSpec::Json {
-                    schema: serde_json::json!({ "type": "string" }),
-                },
-                discovery: tilo_actions::DiscoveryScope::Launchable,
-                ..tilo_actions::ActionContract::view()
-            }),
-        );
-        resources.push(job);
-        resources
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "imager.sources" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
@@ -5926,11 +5972,11 @@ mod tests {
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
 
-            let job = ui::resources::resources(&app, &doc)
+            let root = ui::resources::resources(&app, &doc)
                 .into_iter()
-                .find(|resource| resource.kind == "imager.write-plan")
-                .expect("write operation resource");
-            let write = job
+                .find(|resource| resource.kind == "imager.sources")
+                .expect("imager sources resource owns the write Effect");
+            let write = root
                 .actions
                 .iter()
                 .find(|action| action.id == "write")

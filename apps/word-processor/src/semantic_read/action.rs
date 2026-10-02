@@ -46,8 +46,11 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "word_processor.document"
-        || resource.id.as_str() != "word-processor.document"
+    if resource.kind != "tilo.rich-text"
+        || !matches!(
+            resource.id.as_str(),
+            "word-processor.document" | "tilo.rich-text"
+        )
         || !(1..=64).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);
@@ -139,9 +142,9 @@ fn project(
         .map(serde_json::from_str::<super::Cursor>)
         .transpose()
         .map_err(|_| SemanticReadError::InvalidRequest)?;
-    let limits = qdoc::semantic_read::Limits {
+    let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
-        ..qdoc::semantic_read::Limits::default()
+        ..tilo_doc::semantic_read::Limits::default()
     };
     let page = super::read_text(document, heads, cursor.as_ref(), limits)
         .map_err(|error| super::read_error(&error))?;

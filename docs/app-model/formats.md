@@ -18,7 +18,7 @@ A provider does three things:
   disagreement between multiple providers claiming the same extension.
 - **`import`** — given the file bytes, return the **canonical CRDT
   bytes** the Tilo document layer speaks. For qdoc that is the
-  `automerge::save()` output of a `qdoc::Document`.
+  `automerge::save()` output of a `tilo_doc::Document`.
 - **`export`** — the inverse: canonical CRDT bytes back to the
   provider's on-disk format.
 
@@ -160,8 +160,8 @@ resource limits (memory, fuel) instead of Landlock.
 ## Building a provider: Markdown codec walkthrough
 
 The reference in-tree provider is
-`crates/doc/qdoc-codec-markdown-wasm/`. It delegates to the same Rust
-codec (`qdoc_codecs::MarkdownCodec`) that the editor uses in-process — one code
+`crates/doc/tilo-doc-codec-markdown-wasm/`. It delegates to the same Rust
+codec (`tilo_doc_codecs::MarkdownCodec`) that the editor uses in-process — one code
 path for host and WASM builds.
 
 ### Cargo.toml
@@ -172,13 +172,13 @@ for `wasm32-unknown-unknown`, not the host target:
 ```toml
 # Cargo.toml (workspace root)
 [workspace]
-exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
+exclude = ["crates/doc/tilo-doc-codec-markdown-wasm"]
 
-# crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
+# crates/doc/tilo-doc-codec-markdown-wasm/Cargo.toml
 [workspace]                    # empty table = "stop walking up"
 
 [package]
-name = "qdoc-codec-markdown-wasm"
+name = "tilo-doc-codec-markdown-wasm"
 version = "0.1.0"
 edition = "2024"
 
@@ -186,8 +186,8 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-qdoc = { path = "../qdoc" }
-qdoc-codecs = { path = "../qdoc-codecs", default-features = false, features = ["markdown"] }
+tilo-doc = { path = "../qdoc" }
+tilo-doc-codecs = { path = "../tilo-doc-codecs", default-features = false, features = ["markdown"] }
 format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
 ```
 
@@ -210,18 +210,18 @@ config.
 #[cfg(target_arch = "wasm32")]
 mod guest {
     use format_provider_abi::{CodecError, Confidence, Detected, Provider};
-    use qdoc::Document;
-    use qdoc_codecs::{FormatProvider, MarkdownCodec};
+    use tilo_doc::Document;
+    use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
 
     struct Markdown;
 
     impl Provider for Markdown {
         fn detect(head: &[u8]) -> Detected {
             let (tier, score) = match MarkdownCodec.detect(head) {
-                qdoc_codecs::Confidence::None => (0, 0.0),
-                qdoc_codecs::Confidence::Low => (0, 0.25),
-                qdoc_codecs::Confidence::Medium => (1, 0.5),
-                qdoc_codecs::Confidence::High => (2, 0.9),
+                tilo_doc_codecs::Confidence::None => (0, 0.0),
+                tilo_doc_codecs::Confidence::Low => (0, 0.25),
+                tilo_doc_codecs::Confidence::Medium => (1, 0.5),
+                tilo_doc_codecs::Confidence::High => (2, 0.9),
             };
             Detected {
                 confidence: Confidence { tier, score },
@@ -258,11 +258,11 @@ Cargo reads `.cargo/config.toml` from the working directory, so build from
 the crate directory:
 
 ```bash
-crates/doc/qdoc-codec-markdown-wasm/build.sh
+crates/doc/tilo-doc-codec-markdown-wasm/build.sh
 ```
 
 Output at
-`crates/doc/qdoc-codec-markdown-wasm/target/wasm32-unknown-unknown/release/qdoc_codec_markdown_wasm.wasm`.
+`crates/doc/tilo-doc-codec-markdown-wasm/target/wasm32-unknown-unknown/release/tilo_doc_codec_markdown_wasm.wasm`.
 `crates/doc/format-host/tests/run-provider-integration.sh` builds it and
 runs the host's end-to-end tests against it.
 
@@ -308,8 +308,8 @@ The format-host picks up the change via inotify — no restart needed.
 
 The "canonical CRDT bytes" contract is central. For qdoc-backed formats,
 the canonical form is the `automerge::save()` output of a
-`qdoc::Document`. The host round-trips those bytes opaquely; the editor
-and FS reload them via `qdoc::Document::load` to get a live CRDT back.
+`tilo_doc::Document`. The host round-trips those bytes opaquely; the editor
+and FS reload them via `tilo_doc::Document::load` to get a live CRDT back.
 Providers for non-qdoc content models will have their own canonical
 form; the ABI represents each canonical form as bytes.
 

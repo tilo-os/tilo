@@ -539,6 +539,18 @@ impl App {
         if binding.matches_broker_route(self.bound_broker_route()) {
             return Ok(());
         }
+        // Publication must not wait on the transport ack when the Hello already
+        // named this component's broker route: Ctrl+K / collect_resources already
+        // expose the surface, and owner-commit tests (and reconnecting workers)
+        // publish before the acknowledgement frame is observed again.
+        if self
+            .collaboration
+            .manager
+            .requested_primary_route()
+            .is_some_and(|route| binding.matches_route(route))
+        {
+            return Ok(());
+        }
         Err(tilo_actions::DoorError::Unavailable {
             code: "bound_broker_route_unavailable".into(),
             reason:

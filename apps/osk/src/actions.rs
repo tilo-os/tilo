@@ -1,5 +1,8 @@
-//! Granular, immediate local preference authoring through the canonical action door.
+//! Preference mutations and the nested preference children published by
+//! [`crate::resource::Osk`]. The palette door is [`tilo_resource::publish`];
+//! this module does not hand-build a second keyboard root.
 use crate::framework_history::{EMOJI_RECENTS, LAYOUT, PERSONALIZATION, SUGGESTIONS};
+use crate::resource::OskPreferences;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::{
@@ -8,6 +11,7 @@ use ui::tilo_actions::{
     RetryPolicy,
 };
 pub const TYPE_ID: &str = "osk.preference";
+pub const KEYBOARD_RESOURCE_ID: &str = "osk.keyboard";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Preference {
     Layout(String),
@@ -57,9 +61,9 @@ impl Preference {
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SetPreference {
-    pub value: Preference,
-    pub draft: Option<String>,
+pub struct SetPreference {
+    pub(crate) value: Preference,
+    pub(crate) draft: Option<String>,
 }
 impl Action for SetPreference {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
@@ -89,12 +93,20 @@ pub(crate) fn decode(encoded: &EncodedAction) -> Option<SetPreference> {
     }
     serde_json::from_slice(&encoded.payload).ok()
 }
+/// Nested preference resources for [`crate::resource::Osk::children`].
+/// Addresses (`osk.keyboard.layout` / `suggestions` / `emoji`) stay stable for
+/// drafts, history tests, and the palette.
 #[allow(
     clippy::too_many_lines,
     reason = "one catalogue for the preference fields and their existing named affordances"
 )]
-pub(crate) fn resources(layouts: Vec<String>, preferred: &str) -> Vec<Resource> {
-    let mut root = Resource::new("osk.keyboard", "osk.keyboard", "On-screen keyboard");
+pub(crate) fn preference_children(state: &OskPreferences) -> Vec<Resource> {
+    let preferred = state.layout.as_deref().unwrap_or("qwerty");
+    let layouts = if state.layout_choices.is_empty() {
+        vec!["qwerty".into(), "azerty".into()]
+    } else {
+        state.layout_choices.clone()
+    };
     let mut layout = Resource::new(
         "osk.keyboard.layout",
         "osk.layout",
@@ -215,8 +227,7 @@ pub(crate) fn resources(layouts: Vec<String>, preferred: &str) -> Vec<Resource> 
             )
         },
     ));
-    root.children = vec![layout, suggestions, emoji];
-    vec![root]
+    vec![layout, suggestions, emoji]
 }
 
 pub(crate) struct Draft {

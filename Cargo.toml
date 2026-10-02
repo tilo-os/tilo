@@ -1,12 +1,12 @@
 [workspace]
-# qdoc-codec-markdown-wasm is intentionally excluded from default `cargo build`
+# tilo-doc-codec-markdown-wasm is intentionally excluded from default `cargo build`
 # runs: it is a format-provider guest compiled for `wasm32-unknown-unknown`,
 # not a host-target library. Build it from its own directory so its
 # `.cargo/config.toml` applies:
-# `crates/doc/qdoc-codec-markdown-wasm/build.sh`.
+# `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
     "fuzz",
-    "crates/doc/qdoc-codec-markdown-wasm",
+    "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",
     "vendor/vello_shaders",
@@ -27,8 +27,8 @@ exclude = [
 # Default builds cover core crates. CI checks affected packages and runs
 # the full workspace nightly.
 default-members = [
-    "crates/doc/qdoc",
-    "crates/doc/qdoc-codecs",
+    "crates/doc/tilo-doc",
+    "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -162,10 +162,10 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
-    "crates/doc/qdoc",
-    "crates/doc/qdoc-codecs",
-    "crates/doc/qdoc-rich-text",
-    "crates/doc/qdoc-pdf",
+    "crates/doc/tilo-doc",
+    "crates/doc/tilo-doc-codecs",
+    "crates/doc/tilo-document",
+    "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
 

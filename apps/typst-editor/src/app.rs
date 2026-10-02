@@ -328,6 +328,15 @@ pub struct TypstApp {
     status_hover: (bool, bool),
     /// `--shots` forces both bubbles fully visible so a still frame captures them.
     shots_status: bool,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
+    /// Present once [`ResourceSurface::attach`] has run. Source setup and
+    /// whole-source replacement go through it so history records the action.
+    document_actions: Option<ui::framework::Dispatcher<crate::resource::TypstEditor>>,
+    /// Local host for standalone, `--shots`, and tests. The framework
+    /// dispatcher replaces it once the surface is attached.
+    local_actions: ui::ActionHost,
 }
 
 impl TypstApp {
@@ -431,7 +440,122 @@ impl TypstApp {
             last_right_label: String::new(),
             status_hover: (false, false),
             shots_status: false,
+            framework_hosted: false,
+            document_actions: None,
+            local_actions: ui::ActionHost::new(),
         }
+    }
+
+    /// Mark this editor as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only live diagnostics / preview-page extras beside the
+    /// framework door.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    pub(crate) fn attach_document_actions(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::TypstEditor>,
+    ) {
+        self.document_actions = Some(dispatcher);
+    }
+
+    /// Source setup and replacement go through the framework dispatcher when
+    /// the surface is attached, and through the local action host otherwise.
+    fn apply_source_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::TypstDocAction,
+    ) {
+        if let Some(dispatcher) = &self.document_actions {
+            let _ = dispatcher.apply_now(doc, action);
+            return;
+        }
+        let _ = self.local_actions.try_dispatch_with_context(
+            doc,
+            <crate::resource::TypstEditor as ui::tilo_resource::Resource>::ACTION_TYPE,
+            action,
+            ui::tilo_actions::ActionContext::for_action("so.tilo.typst-editor", "Typst", action),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_source_action_for_test(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local_actions.take_committed()
+    }
+
+    /// Live presentation inputs for the resource tree.
+    pub(crate) fn resource_ctx(&self) -> crate::actions::TypstResourceCtx<'_> {
+        crate::actions::TypstResourceCtx {
+            diagnostics: self.diagnostics.diags(),
+            page_count: self.preview.page_count(),
+        }
+    }
+
+    /// Test-only: stage Problems rows and preview pages for hosted extras.
+    #[cfg(test)]
+    pub(crate) fn stage_live_extras_for_test(
+        &mut self,
+        diags: Vec<crate::compile::Diagnostic>,
+        pages: &[crate::compile::PageImage],
+    ) {
+        self.diagnostics.set_diagnostics(diags);
+        self.preview.set_pages(pages);
+    }
+
+    /// Test-only: drop staged diagnostics and pages so hosted extras go empty.
+    #[cfg(test)]
+    pub(crate) fn clear_live_extras_for_test(&mut self) {
+        self.diagnostics.set_diagnostics(Vec::new());
+        self.preview.set_pages(&[]);
+    }
+
+    /// Test-only: live diagnostic count after staging.
+    #[cfg(test)]
+    pub(crate) fn live_diagnostic_count_for_test(&self) -> usize {
+        self.diagnostics.diags().len()
+    }
+
+    /// Test-only: live preview page count after staging.
+    #[cfg(test)]
+    pub(crate) fn live_page_count_for_test(&self) -> usize {
+        self.preview.page_count()
+    }
+
+    /// Test-only: replace the local document list with unpublished source.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_source_for_test(&mut self, name: &str, source: &str) {
+        self.documents = vec![Document {
+            name: name.into(),
+            source: source.into(),
+            from_disk: false,
+        }];
+        self.current = 0;
+        self.initialized = false;
+        self.source_id = None;
+    }
+
+    /// Test-only: local document names currently held on the surface.
+    #[cfg(test)]
+    pub(crate) fn local_document_names_for_test(&self) -> Vec<String> {
+        self.documents.iter().map(|doc| doc.name.clone()).collect()
+    }
+
+    /// Test-only: current local source body held on the surface.
+    #[cfg(test)]
+    pub(crate) fn local_source_for_test(&self) -> String {
+        self.documents
+            .get(self.current)
+            .map(|doc| doc.source.clone())
+            .unwrap_or_default()
     }
 
     /// Screenshot-only: pre-arrange a demo instance into a named state so the
@@ -475,25 +599,16 @@ impl TypstApp {
 
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
-    fn ensure_source_obj(&self, doc: &mut AutoCommit) -> ObjId {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") {
-            id
-        } else {
-            // `put_object` on the document root only errors for conditions
-            // this call never hits (a foreign actor id, or exceeding the
-            // object-nesting depth); fall back to `ROOT` itself rather than
-            // panicking — a caller that then fails to read/splice a "source"
-            // Text degrades to a no-op instead of crashing the app.
-            let id = doc
-                .put_object(&ROOT, "source", ObjType::Text)
-                .unwrap_or(ROOT);
-            let seed = self
-                .documents
-                .get(self.current)
-                .map(|d| d.source.clone())
-                .unwrap_or_default();
-            let _ = doc.splice_text(&id, 0, 0, &seed);
-            id
+    pub(crate) fn ensure_source_obj(&mut self, doc: &mut AutoCommit) -> ObjId {
+        let seed = self
+            .documents
+            .get(self.current)
+            .map(|d| d.source.clone())
+            .unwrap_or_default();
+        self.apply_source_action(doc, &crate::resource::TypstDocAction::EnsureSource { seed });
+        match doc.get(&ROOT, "source") {
+            Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            _ => ROOT,
         }
     }
 
@@ -519,11 +634,11 @@ impl TypstApp {
         };
         let src = entry.source.clone();
         let name = entry.name.clone();
-        if let Some(id) = self.source_id.clone() {
-            // Diff-splice only the changed span instead of delete+reinsert of
-            // the whole buffer — switching documents shares the common prefix/
-            // suffix rather than tombstoning the entire previous source.
-            ui::doc::splice_text_diffed(doc, &id, &src);
+        if self.source_id.is_some() {
+            self.apply_source_action(
+                doc,
+                &crate::resource::TypstDocAction::ReplaceSource { text: src },
+            );
         }
         self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
@@ -947,6 +1062,26 @@ impl TypstApp {
             }
             TypstOperation::ShowEditor => self.set_compact_view(CompactPane::Editor),
             TypstOperation::ShowPreview => self.set_compact_view(CompactPane::Preview),
+            TypstOperation::GoToDiagnostic { index } => {
+                if let Some(diag) = self.diagnostics.diags().get(index)
+                    && let Some(line) = diag.line
+                {
+                    let text = self.read_source(doc);
+                    self.editor.goto_line(&text, line);
+                    self.show_diagnostics = true;
+                    if self.compact {
+                        self.set_compact_view(CompactPane::Editor);
+                    } else {
+                        self.editor.focused = true;
+                    }
+                }
+            }
+            TypstOperation::GoToPage { page } => {
+                self.preview.scroll_to_page(page);
+                if self.compact {
+                    self.set_compact_view(CompactPane::Preview);
+                }
+            }
         }
     }
 
@@ -2289,8 +2424,13 @@ impl Widget for TypstApp {
                 true
             }
             ui::a11y::Action::SetValue(source) => {
+                self.apply_source_action(
+                    doc,
+                    &crate::resource::TypstDocAction::ReplaceSource {
+                        text: source.clone(),
+                    },
+                );
                 let source_id = self.ensure_source_obj(doc);
-                ui::doc::splice_text_diffed(doc, &source_id, source);
                 self.source_id = Some(source_id);
                 self.source_cache.clone_from(source);
                 self.editor.set_caret(source.len());
@@ -2368,8 +2508,29 @@ impl ui::undo::UndoPoints for TypstApp {
 }
 
 impl ui::resources::PublishesResources for TypstApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::resources(doc)
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let ctx = self.resource_ctx();
+        // [`tilo_resource::publish`] owns the workspace door on every path.
+        // Diagnostics and preview pages are live presentation only — hosted
+        // returns that slice alone, never a second workspace root.
+        if self.framework_hosted {
+            return crate::actions::live_extras(&ctx);
+        }
+        crate::actions::resources(&ctx)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.framework_hosted && id == "typst.workspace" {
+            return None;
+        }
+        let ctx = self.resource_ctx();
+        find_resource(&crate::actions::resources(&ctx), id).or_else(|| {
+            self.framework_hosted.then(|| {
+                crate::actions::live_extras(&ctx)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
@@ -2783,6 +2944,18 @@ fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
 fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::save_document(&dir, &name, bytes)
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

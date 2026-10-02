@@ -49,6 +49,7 @@ pub mod modal;
 pub mod model;
 pub mod opml;
 pub mod reader_theme;
+pub mod resource;
 pub mod sample;
 pub mod search_provider;
 
@@ -118,3 +119,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     }
     Box::new(app)
 }
+pub use resource::{Feeds, FeedsShell};

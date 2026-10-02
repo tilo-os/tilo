@@ -1541,6 +1541,11 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
 /// currently has open. The host collects the focused instance's tree
 /// each frame; `doc` lets a provider enumerate resources living *in* the
 /// document (e.g. a book's annotations).
+///
+/// Deprecated: apps must be a `tilo_app::ResourceApp` whose tree comes only
+/// from `tilo_resource::publish`. Do not hand-build a second
+/// `tilo_actions::Resource` tree for the same document state.
+#[deprecated(note = "use ResourceApp + tilo_resource::publish; do not hand-build Resource trees")]
 pub trait ResourceProvider {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource>;
 

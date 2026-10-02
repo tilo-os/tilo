@@ -22,6 +22,10 @@ use ui::{
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if !image_editor::standalone_launch() {
+        ui::framework::run::<image_editor::ImageEditorShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new("so.tilo.image-editor", image_editor::app_root)
             .open_state_with_args(open_state)

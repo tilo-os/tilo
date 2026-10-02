@@ -68,6 +68,7 @@ pub mod infer;
 mod interchange_tests;
 pub mod model;
 pub mod ods;
+pub mod resource;
 pub mod search_provider;
 pub mod settings;
 pub mod xlsx;
@@ -80,6 +81,8 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SheetsApp::new())
 }
+
+pub use resource::{SheetsShell, SheetsWorkbook};
 
 /// The app as every host mounts it: the live root and its actions.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

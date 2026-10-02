@@ -103,15 +103,32 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// Returns an error if `--shots` mode fails to render, or if the app fails
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ui::launch::run(
-        &LaunchSpec::from_definition(notes::definition())
-            .max_positionals(1)
-            .component_host(prepare_component)
-            .native_services()
-            .capture_scenario(capture_scenario)
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .scenarios(SHOT_SCENARIOS),
-    )?;
+    let args: Vec<String> = std::env::args().collect();
+    // Captures, native audit, headless drives and a positional open keep the
+    // component-host launcher; the default live window runs on the framework.
+    let standalone = args.iter().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    }) || args.iter().skip(1).any(|arg| !arg.starts_with('-'));
+    if standalone {
+        ui::launch::run(
+            &LaunchSpec::from_definition(notes::definition())
+                .max_positionals(1)
+                .component_host(prepare_component)
+                .native_services()
+                .capture_scenario(capture_scenario)
+                .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+                .scenarios(SHOT_SCENARIOS),
+        )?;
+    } else {
+        ui::framework::run::<notes::NotesShell>();
+    }
     Ok(())
 }
 

@@ -182,11 +182,37 @@ fn compact_content_rect(mode: ShowcaseMode, main: Rect) -> Rect {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum VaultFilter {
+pub(crate) enum VaultFilter {
     #[default]
     All,
     Favorites,
     Kind(SecretItemKind),
+}
+
+impl VaultFilter {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Favorites => "favorites",
+            Self::Kind(SecretItemKind::Login) => "login",
+            Self::Kind(SecretItemKind::ApiKey) => "api-key",
+            Self::Kind(SecretItemKind::SecureNote) => "note",
+            Self::Kind(SecretItemKind::Wifi) => "wifi",
+            Self::Kind(SecretItemKind::Other) => "other",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Self {
+        match value {
+            "favorites" => Self::Favorites,
+            "login" => Self::Kind(SecretItemKind::Login),
+            "api-key" => Self::Kind(SecretItemKind::ApiKey),
+            "note" => Self::Kind(SecretItemKind::SecureNote),
+            "wifi" => Self::Kind(SecretItemKind::Wifi),
+            "other" => Self::Kind(SecretItemKind::Other),
+            _ => Self::All,
+        }
+    }
 }
 
 pub struct PasswordsSurface {
@@ -241,6 +267,8 @@ pub struct PasswordsSurface {
     backup_confirmation: TextInput,
     backup_focus: usize,
     transfer_dialog: Option<TransferDialog>,
+    /// Document actions: local host standalone; framework dispatcher when hosted.
+    actions: crate::resource::ActionSink,
 }
 
 impl PasswordsSurface {
@@ -428,7 +456,7 @@ impl PasswordsSurface {
         }
     }
 
-    fn move_list_selection(&mut self, forward: bool) {
+    fn move_list_selection(&mut self, doc: &mut AutoCommit, forward: bool) {
         let visible = self.visible_indices();
         if visible.is_empty() {
             return;
@@ -444,19 +472,33 @@ impl PasswordsSurface {
             current.saturating_sub(1)
         };
         if let Some(selected) = visible.get(next).copied() {
-            self.selected = selected;
+            self.select_index(doc, selected);
         }
         self.ensure_selected_visible(self.current_list_rect());
     }
 
-    fn select_filter(&mut self, filter: VaultFilter) {
-        self.vault_filter = filter;
+    fn select_filter(&mut self, doc: &mut AutoCommit, filter: VaultFilter) {
+        self.commit_view(
+            doc,
+            &crate::resource::PasswordsAction::SetFilter {
+                filter: filter.as_str().into(),
+            },
+        );
         self.mode = ShowcaseMode::Vault;
         self.mobile_detail = false;
         self.list_scroll = 0;
         if let Some(first) = self.visible_indices().first().copied() {
-            self.selected = first;
+            self.select_index(doc, first);
         }
+    }
+
+    fn select_index(&mut self, doc: &mut AutoCommit, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        let id = item.id.0.clone();
+        self.selected = index;
+        self.commit_view(doc, &crate::resource::PasswordsAction::SelectItem { id });
     }
 
     fn toggle_favorite(&mut self, index: usize) {
@@ -543,6 +585,7 @@ impl PasswordsSurface {
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
             transfer_dialog: None,
+            actions: crate::resource::ActionSink::default(),
         }
         .loaded()
     }
@@ -635,6 +678,7 @@ impl PasswordsSurface {
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
             transfer_dialog,
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -715,6 +759,99 @@ impl PasswordsSurface {
         self.search_input.set_text(value);
         self.list_scroll = 0;
         self.refresh();
+    }
+
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Passwords>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local vault cache.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::VaultState) {
+        self.vault_filter = state.filter;
+        if self.query != state.search {
+            self.set_search_query(&state.search);
+        }
+        if let Some(id) = &state.selected_id
+            && let Some(index) = self.items.iter().position(|item| item.id.0 == *id)
+        {
+            self.selected = index;
+        }
+    }
+
+    pub(crate) fn commit_view(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::PasswordsAction,
+    ) {
+        self.apply_passwords_action_locally(action);
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn apply_passwords_action_locally(&mut self, action: &crate::resource::PasswordsAction) {
+        match action {
+            crate::resource::PasswordsAction::SetFilter { filter } => {
+                self.vault_filter = VaultFilter::parse(filter);
+            }
+            crate::resource::PasswordsAction::SetSearch { value } => {
+                self.set_search_query(value);
+            }
+            crate::resource::PasswordsAction::SelectItem { id } => {
+                if let Some(index) = self.items.iter().position(|item| item.id.0 == *id) {
+                    self.selected = index;
+                }
+            }
+        }
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live vault item children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Passwords::read(doc).unwrap_or_default();
+        actions::standalone_resources(&self.items, self.mode, &state)
+    }
+
+    /// Live vault item rows (and editor-session ops) without a vault root.
+    pub(crate) fn live_item_extras(&self) -> Vec<ui::tilo_actions::Resource> {
+        let mut extras = actions::live_item_resources(&self.items);
+        if matches!(
+            self.mode,
+            ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm
+        ) {
+            let mut session = ui::tilo_actions::Resource::new(
+                "passwords:session",
+                "passwords.session",
+                "Editing session",
+            );
+            for spec in actions::editor_session_specs() {
+                session = session.with_action(spec);
+            }
+            extras.insert(0, session);
+        }
+        extras
     }
 
     fn begin_add(&mut self) {
@@ -1805,7 +1942,7 @@ impl PasswordsSurface {
         Ok(items.len())
     }
 
-    fn activate_sidebar(&mut self, point: Point) -> bool {
+    fn activate_sidebar(&mut self, doc: &mut AutoCommit, point: Point) -> bool {
         if !self.drawer.sidebar_contains(point) {
             return false;
         }
@@ -1815,14 +1952,14 @@ impl PasswordsSurface {
         };
         match id.as_str() {
             "all" => {
-                self.select_filter(VaultFilter::All);
+                self.select_filter(doc, VaultFilter::All);
             }
-            "favorites" => self.select_filter(VaultFilter::Favorites),
-            "logins" => self.select_filter(VaultFilter::Kind(SecretItemKind::Login)),
-            "api-keys" => self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey)),
-            "notes" => self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote)),
-            "wifi" => self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi)),
-            "other" => self.select_filter(VaultFilter::Kind(SecretItemKind::Other)),
+            "favorites" => self.select_filter(doc, VaultFilter::Favorites),
+            "logins" => self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Login)),
+            "api-keys" => self.select_filter(doc, VaultFilter::Kind(SecretItemKind::ApiKey)),
+            "notes" => self.select_filter(doc, VaultFilter::Kind(SecretItemKind::SecureNote)),
+            "wifi" => self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Wifi)),
+            "other" => self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Other)),
             "review" => {
                 self.mode = ShowcaseMode::Health;
                 self.mobile_detail = false;
@@ -1978,7 +2115,7 @@ impl PasswordsSurface {
         clippy::too_many_lines,
         reason = "touch hit-testing mirrors every drawn control in paint order"
     )]
-    fn activate_touch(&mut self, point: Point) -> bool {
+    fn activate_touch(&mut self, doc: &mut AutoCommit, point: Point) -> bool {
         if self.transfer_dialog.is_some() {
             return self.activate_transfer(point);
         }
@@ -1996,7 +2133,7 @@ impl PasswordsSurface {
             self.drawer.toggle();
             return true;
         }
-        if self.activate_sidebar(point) {
+        if self.activate_sidebar(doc, point) {
             return true;
         }
         if self.drawer.press_dismisses(point) {
@@ -2070,7 +2207,7 @@ impl PasswordsSurface {
                         self.toggle_favorite(item_index);
                         return true;
                     }
-                    self.selected = item_index;
+                    self.select_index(doc, item_index);
                     if self.drawer.is_overlay() {
                         self.mobile_detail = true;
                     }
@@ -3730,7 +3867,7 @@ impl PasswordsSurface {
         _kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if type_id != "tilo.passwords.operation" {
@@ -3745,19 +3882,19 @@ impl PasswordsSurface {
             crate::actions::PasswordOperation::CancelDraft => self.cancel_edit(),
             crate::actions::PasswordOperation::Edit { id } => {
                 if let Some(index) = self.items.iter().position(|item| item.id.0 == id) {
-                    self.selected = index;
+                    self.select_index(doc, index);
                 }
                 self.begin_edit();
             }
             crate::actions::PasswordOperation::Copy { id } => {
                 if let Some(index) = self.items.iter().position(|item| item.id.0 == id) {
-                    self.selected = index;
+                    self.select_index(doc, index);
                 }
                 self.copy_selected();
             }
             crate::actions::PasswordOperation::Reveal { id } => {
                 if let Some(index) = self.items.iter().position(|item| item.id.0 == id) {
-                    self.selected = index;
+                    self.select_index(doc, index);
                 }
                 self.reveal_selected();
             }
@@ -3976,10 +4113,14 @@ impl Widget for PasswordsSurface {
             if self.search_input.is_focused() {
                 self.active_field = Some(ActiveField::Search);
             }
-            if let Some(value) = self.search_input.take_dirty() {
-                self.query = value;
+            if self.search_input.take_dirty().is_some() {
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                let query = self.search_input.value().to_owned();
+                self.commit_view(
+                    doc,
+                    &crate::resource::PasswordsAction::SetSearch { value: query },
+                );
                 self.list_scroll = 0;
-                self.refresh();
             }
             if search_handled {
                 *ctx.handled = true;
@@ -4126,7 +4267,8 @@ impl Widget for PasswordsSurface {
                     *ctx.handled = true;
                     return;
                 }
-                if self.activate_sidebar(self.last_pointer) {
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                if self.activate_sidebar(doc, self.last_pointer) {
                     *ctx.handled = true;
                     return;
                 }
@@ -4200,7 +4342,8 @@ impl Widget for PasswordsSurface {
                                 *ctx.handled = true;
                                 return;
                             }
-                            self.selected = item_index;
+                            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                            self.select_index(doc, item_index);
                             if self.drawer.is_overlay() {
                                 self.mobile_detail = true;
                             }
@@ -4566,7 +4709,8 @@ impl Widget for PasswordsSurface {
                     sidebar_scroll || list_scroll || editor_scroll || app_access_scroll;
                 if touch.phase == TouchPhase::Ended && !was_scroll {
                     self.last_pointer = point;
-                    if self.activate_touch(point) {
+                    let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                    if self.activate_touch(doc, point) {
                         *ctx.handled = true;
                     }
                 } else if was_scroll {
@@ -4649,11 +4793,13 @@ impl Widget for PasswordsSurface {
                     Key::Named(NamedKey::ArrowDown)
                         if self.active_field.is_none() && !self.items.is_empty() =>
                     {
-                        self.move_list_selection(true);
+                        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                        self.move_list_selection(doc, true);
                         *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) if self.active_field.is_none() => {
-                        self.move_list_selection(false);
+                        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                        self.move_list_selection(doc, false);
                         *ctx.handled = true;
                     }
                     Key::Character(text) if text == "/" => {
@@ -5115,31 +5261,32 @@ impl Widget for PasswordsSurface {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (doc, _) = ui::doc::document(state, path);
         match (target, action) {
             ("passwords.navigation.toggle", Action::Activate) => self.drawer.toggle(),
             ("passwords.add", Action::Activate) => self.begin_add(),
-            ("passwords.filter.all", Action::Activate) => self.select_filter(VaultFilter::All),
+            ("passwords.filter.all", Action::Activate) => self.select_filter(doc, VaultFilter::All),
             ("passwords.filter.favorites", Action::Activate) => {
-                self.select_filter(VaultFilter::Favorites);
+                self.select_filter(doc, VaultFilter::Favorites);
             }
             ("passwords.filter.logins", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Login));
+                self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Login));
             }
             ("passwords.filter.api-keys", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey));
+                self.select_filter(doc, VaultFilter::Kind(SecretItemKind::ApiKey));
             }
             ("passwords.filter.notes", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
+                self.select_filter(doc, VaultFilter::Kind(SecretItemKind::SecureNote));
             }
             ("passwords.filter.wifi", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi));
+                self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Wifi));
             }
             ("passwords.filter.other", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Other));
+                self.select_filter(doc, VaultFilter::Kind(SecretItemKind::Other));
             }
             (target, Action::Activate) if target.starts_with("passwords.favorite:") => {
                 let Some(index) = target
@@ -5228,7 +5375,12 @@ impl Widget for PasswordsSurface {
                 Widget::set_focus(&mut self.search_input, true);
             }
             ("passwords.search", Action::SetValue(value)) => {
-                self.set_search_query(value);
+                self.commit_view(
+                    doc,
+                    &crate::resource::PasswordsAction::SetSearch {
+                        value: value.clone(),
+                    },
+                );
             }
             ("passwords.generate", Action::Activate) => self.generate_password(),
             ("passwords.cancel", Action::Activate) => self.cancel_edit(),
@@ -5285,7 +5437,8 @@ impl Widget for PasswordsSurface {
                     .strip_prefix("passwords.select:")
                     .and_then(|value| value.parse::<usize>().ok())
                 {
-                    self.selected = index.min(self.items.len().saturating_sub(1));
+                    let index = index.min(self.items.len().saturating_sub(1));
+                    self.select_index(doc, index);
                     self.ensure_selected_visible(self.current_list_rect());
                 } else {
                     return false;
@@ -5298,7 +5451,7 @@ impl Widget for PasswordsSurface {
                 let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
                     return false;
                 };
-                self.selected = index;
+                self.select_index(doc, index);
                 self.begin_edit();
             }
             (_, Action::Activate) if target.starts_with("passwords.copy:") => {
@@ -5308,7 +5461,7 @@ impl Widget for PasswordsSurface {
                 let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
                     return false;
                 };
-                self.selected = index;
+                self.select_index(doc, index);
                 self.copy_selected();
             }
             (_, Action::Activate) if target.starts_with("passwords.copy-origin:") => {
@@ -5318,7 +5471,7 @@ impl Widget for PasswordsSurface {
                 let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
                     return false;
                 };
-                self.selected = index;
+                self.select_index(doc, index);
                 self.copy_origin_selected();
             }
             (_, Action::Activate) if target.starts_with("passwords.reveal:") => {
@@ -5328,7 +5481,7 @@ impl Widget for PasswordsSurface {
                 let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
                     return false;
                 };
-                self.selected = index;
+                self.select_index(doc, index);
                 self.reveal_selected();
             }
             _ => return false,
@@ -5372,10 +5525,21 @@ impl Widget for PasswordsSurface {
 }
 
 impl ui::resources::PublishesResources for PasswordsSurface {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
-        out.extend(self.items.iter().map(actions::item_resource));
-        out
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the vault door — keep only live item / session extras.
+    fn resources(&self, doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<ui::tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::actions::VAULT_RESOURCE_ID {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id)
     }
 }
 
@@ -5434,6 +5598,21 @@ fn demo_items() -> Vec<SecretItem> {
             item
         })
         .collect()
+}
+
+fn find_resource(
+    resources: &[ui::tilo_actions::Resource],
+    id: &str,
+) -> Option<ui::tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -5573,7 +5752,8 @@ mod tests {
             app.ensure_selected_visible(list);
             assert_eq!(app.list_scroll, 0);
 
-            app.select_filter(VaultFilter::Favorites);
+            let mut doc = AutoCommit::new();
+            app.select_filter(&mut doc, VaultFilter::Favorites);
             assert_eq!(
                 app.list_scroll, 0,
                 "changing views starts at the first result"
@@ -5732,9 +5912,10 @@ mod tests {
             let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
             app.drawer.resolve(content);
             let side = app.drawer.sidebar_rect();
-            assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 453.0)));
+            let mut doc = AutoCommit::new();
+            assert!(app.activate_sidebar(&mut doc, Point::new(side.x0 + 20.0, side.y0 + 453.0)));
             assert_eq!(app.mode, ShowcaseMode::Health);
-            assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 76.0)));
+            assert!(app.activate_sidebar(&mut doc, Point::new(side.x0 + 20.0, side.y0 + 76.0)));
             assert_eq!(app.mode, ShowcaseMode::Vault);
         }
 
@@ -5894,10 +6075,14 @@ mod tests {
                         format!("{} {} {}", resource.id.0, resource.kind, resource.label);
                     for action in &resource.actions {
                         description.push_str(&action.label);
-                        let encoded = action
-                            .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
-                            .unwrap();
-                        description.push_str(&String::from_utf8_lossy(&encoded.payload));
+                        // Prompted / required-param actions (set-filter) cannot
+                        // encode with an empty arg list; their labels alone
+                        // are enough to prove secrets are not published.
+                        if let Ok(encoded) =
+                            action.build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
+                        {
+                            description.push_str(&String::from_utf8_lossy(&encoded.payload));
+                        }
                     }
                     description
                 })
@@ -5936,7 +6121,8 @@ mod tests {
             let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
             app.model = Some(model);
             app.refresh();
-            app.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
+            let mut doc = AutoCommit::new();
+            app.select_filter(&mut doc, VaultFilter::Kind(SecretItemKind::SecureNote));
             assert_eq!(app.visible_indices().len(), 1);
             assert_eq!(app.items[app.visible_indices()[0]].title, "Codes");
 
@@ -5946,7 +6132,7 @@ mod tests {
                 .position(|item| item.id == login.id)
                 .unwrap();
             app.toggle_favorite(login_index);
-            app.select_filter(VaultFilter::Favorites);
+            app.select_filter(&mut doc, VaultFilter::Favorites);
             assert_eq!(app.visible_indices(), vec![login_index]);
             let reopened = crate::PasswordsModel::open_in(&root);
             assert!(

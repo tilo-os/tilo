@@ -172,7 +172,8 @@ pub fn bookmarks_from_doc(doc: &Doc) -> Option<Bookmarks> {
         let Some(tag) = key.strip_prefix(ADD_PREFIX) else {
             continue;
         };
-        if doc.get(&ROOT, remove_key(tag)).ok().flatten().is_some() {
+        let tag = tag.to_string();
+        if doc.get(&ROOT, remove_key(&tag)).ok().flatten().is_some() {
             continue;
         }
         let Some((Value::Object(ObjType::Map), add)) = doc.get(&ROOT, key).ok().flatten() else {
@@ -184,10 +185,26 @@ pub fn bookmarks_from_doc(doc: &Doc) -> Option<Bookmarks> {
         let Some(title) = read_string(doc, &add, TITLE) else {
             continue;
         };
-        rows.push(Bookmark { url, title });
+        rows.push(Bookmark {
+            url,
+            title,
+            tags: vec![tag],
+        });
     }
     rows.sort_by(|a, b| a.url.cmp(&b.url).then_with(|| a.title.cmp(&b.title)));
-    rows.dedup_by(|a, b| a.url == b.url);
+    let mut merged: Vec<Bookmark> = Vec::new();
+    for row in rows {
+        if let Some(last) = merged.last_mut()
+            && last.url == row.url
+        {
+            last.tags.extend(row.tags);
+            last.tags.sort();
+            last.tags.dedup();
+        } else {
+            merged.push(row);
+        }
+    }
+    rows = merged;
     rows.truncate(MAX_BOOKMARKS);
     Some(Bookmarks::from_entries(rows))
 }

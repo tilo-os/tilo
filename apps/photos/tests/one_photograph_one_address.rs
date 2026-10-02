@@ -42,8 +42,8 @@ use automerge::AutoCommit;
 use photos::PhotosApp;
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
+use tilo_actions::ActionRegistry;
 use tilo_actions::door::{self, ActionAddress};
-use tilo_actions::{ActionRegistry, ResourceProvider};
 
 /// The bytes of one photograph. Identical in every session below — that is the
 /// premise: one picture, staged more than once.
@@ -123,7 +123,7 @@ impl Session {
 
     /// The address of the open photograph, as this session publishes it.
     fn published_id(&self) -> String {
-        let published = PhotosResources.resources(&self.doc);
+        let published = PhotosResources.publish_resources(&self.doc);
         assert_eq!(
             published.len(),
             2,
@@ -140,7 +140,7 @@ impl Session {
         address: &ActionAddress,
         argument: Option<&str>,
     ) -> Result<(), door::DoorError> {
-        let resources = PhotosResources.resources(&self.doc);
+        let resources = PhotosResources.publish_resources(&self.doc);
         let encoded = door::encode(&resources, address, argument)?;
         let mut registry = ActionRegistry::new();
         register(&mut registry);
@@ -357,7 +357,7 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
         );
         PhotosDoc::set_image(&mut doc, Some(&old));
 
-        let published = PhotosResources.resources(&doc);
+        let published = PhotosResources.publish_resources(&doc);
         assert_eq!(
             published[0].id.0, "photos.image:/var/workspace/photos/harbour.png",
             "an older document's photograph lost the only address it had"

@@ -24,8 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::model::BufferEdit;
@@ -148,6 +147,36 @@ impl Action for HexEditorAction {
     }
 }
 
+/// Raw hex bytes stay on this device. [`HexEditorAction::apply`] refuses
+/// collaborative replay, so a hosted surface must not hand these variants to
+/// the framework dispatcher. A document variant this match does not name is
+/// replayable and uses [`crate::resource::ActionSink::dispatch_document`].
+pub(crate) const fn refuses_collaborative_replay(action: &HexEditorAction) -> bool {
+    match action {
+        HexEditorAction::InsertBytes { .. }
+        | HexEditorAction::DeleteBytes { .. }
+        | HexEditorAction::OverwriteBytes { .. } => true,
+    }
+}
+
+/// The legacy byte action corresponding to a local edit wire payload.
+pub(crate) fn action_from_wire(edit: &BufferEditWire) -> HexEditorAction {
+    match edit {
+        BufferEditWire::Insert { offset, bytes } => HexEditorAction::InsertBytes {
+            offset: *offset,
+            bytes: bytes.clone(),
+        },
+        BufferEditWire::Delete { offset, len } => HexEditorAction::DeleteBytes {
+            offset: *offset,
+            len: *len,
+        },
+        BufferEditWire::Overwrite { offset, bytes } => HexEditorAction::OverwriteBytes {
+            offset: *offset,
+            bytes: bytes.clone(),
+        },
+    }
+}
+
 /// Register the legacy decoder so stale envelopes fail with the action's
 /// explicit local-only refusal rather than being misinterpreted.
 pub fn register(registry: &mut ActionRegistry) {
@@ -245,23 +274,36 @@ fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec
     }
 }
 
-/// Build the resource tree the editor currently has open: the buffer as one
-/// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
-/// selection. Palette effects and local keyboard input use the same compact
-/// edit shape, but neither path replicates raw bytes.
+/// Open / save / undo / redo / search / goto — View and Effect ops that ride
+/// [`crate::resource::HexEditor::local_operations`] through
+/// `tilo_resource::publish`. Live cursor targeting stays on
+/// [`live_buffer_extras`].
 #[allow(
-    clippy::too_many_lines,
     clippy::expect_used,
     clippy::missing_panics_doc,
-    reason = "the resource surface is one auditable declaration; serialization cannot fail for these serde-only values"
+    reason = "HexOperation always serializes; these builders feed ActionSpec closures"
 )]
-pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
-    let mut root = Resource::new(
-        "hex_editor.document",
-        "hex_editor.document",
-        ctx.label.clone(),
-    );
+pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
+    // Offer the door without an empty-projection `unavailable` gate: invoke
+    // time refuses save/search/goto when no buffer is open, and undo/redo when
+    // the local journal is empty.
+    root_palette_specs(&HexResourceCtx {
+        label: "Untitled".into(),
+        cursor: 0,
+        len: 0,
+        selection: None,
+        has_file: true,
+        can_undo: true,
+        can_redo: true,
+    })
+}
 
+#[allow(
+    clippy::expect_used,
+    reason = "HexOperation always serializes (serde-only payloads)"
+)]
+fn root_palette_specs(ctx: &HexResourceCtx) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     let open = ActionSpec::typed_operation(
         "open",
         "Open file",
@@ -289,7 +331,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     .destructive()
     .execution(ExecutionMode::Background { cancellable: true })
     .returns(ResultSpec::Job);
-    root = root.with_action(open);
+    specs.push(open);
     let save = ActionSpec::typed_operation(
         "save",
         "Save file",
@@ -317,7 +359,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     .destructive()
     .execution(ExecutionMode::Background { cancellable: true })
     .returns(ResultSpec::Job);
-    root = root.with_action(if ctx.has_file {
+    specs.push(if ctx.has_file {
         save
     } else {
         save.unavailable("no_file", "Open a file first")
@@ -334,7 +376,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
             &value,
         )
         .expect("HexOperation serializes");
-        root = root.with_action(if available {
+        specs.push(if available {
             spec
         } else {
             spec.unavailable("no_local_history", "No local edit available")
@@ -344,28 +386,59 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
         ("search", "Search bytes", HexOperation::Search),
         ("goto-offset", "Go to offset", HexOperation::GotoOffset),
     ] {
-        let kind = OperationKind::View;
-        let mut spec = ActionSpec::operation(id, label, kind, HEX_EDITOR_OPERATION_TYPE, &value)
-            .expect("HexOperation is always serializable");
-        if kind == OperationKind::View {
-            spec = spec.with_contract(ActionContract::view());
-        } else {
-            spec = spec.destructive().retry_policy(RetryPolicy::AtMostOnce);
-        }
+        let mut spec = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            HEX_EDITOR_OPERATION_TYPE,
+            &value,
+        )
+        .expect("HexOperation is always serializable")
+        .with_contract(ActionContract::view());
         if !ctx.has_file {
             spec = spec.unavailable("no_file", "Open a file first");
         }
-        root = root.with_action(spec);
+        specs.push(spec);
     }
+    specs
+}
 
+/// Cursor / selection byte edits — live extras, not document state.
+///
+/// Hosted [`PublishesResources`](ui::resources::PublishesResources) returns
+/// this slice alone so agents keep insert/overwrite/delete without a second
+/// `hex_editor.document` root beside [`crate::resource::HexEditor`].
+#[allow(clippy::expect_used, reason = "local edit operations always serialize")]
+pub fn live_buffer_extras(ctx: &HexResourceCtx) -> Vec<Resource> {
     if !ctx.has_file {
-        return vec![root];
+        return Vec::new();
     }
+    let specs = byte_edit_specs(ctx);
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let label = if let Some((lo, hi)) = ctx.selection {
+        format!("Selection 0x{lo:X}..=0x{hi:X}")
+    } else {
+        format!("Cursor at 0x{:X}", ctx.cursor)
+    };
+    let mut cursor = Resource::new("hex_editor.cursor", "hex_editor.cursor", label);
+    for spec in specs {
+        cursor = cursor.with_action(spec);
+    }
+    vec![cursor]
+}
 
+#[allow(clippy::expect_used, reason = "local edit operations always serialize")]
+fn byte_edit_specs(ctx: &HexResourceCtx) -> Vec<ActionSpec> {
+    if !ctx.has_file {
+        return Vec::new();
+    }
+    let mut specs = Vec::new();
     // Insert a byte at the cursor — a prompted hex value. The offset is the
     // clamped cursor so it is valid even for an append cursor / empty buffer.
     let at = ctx.cursor.min(ctx.len);
-    root = root.with_action(ActionSpec::prompted_operation(
+    specs.push(ActionSpec::prompted_operation(
         "insert-byte",
         "Insert byte",
         "Byte (hex)",
@@ -389,7 +462,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     // Overwrite the byte under the cursor — only when the cursor is on a byte.
     if ctx.cursor < ctx.len {
         let at = ctx.cursor;
-        root = root.with_action(ActionSpec::prompted_operation(
+        specs.push(ActionSpec::prompted_operation(
             "overwrite-byte",
             "Overwrite byte",
             "Byte (hex)",
@@ -411,25 +484,35 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
 
     // Delete — the active selection, else the single byte at the cursor.
     if let Some((lo, hi)) = ctx.selection {
-        root = root.with_action(immediate_spec(
+        specs.push(immediate_spec(
             "delete-selection",
             "Delete selection",
             &delete_bytes_action(lo, hi - lo + 1),
         ));
     } else if ctx.cursor < ctx.len {
-        root = root.with_action(immediate_spec(
+        specs.push(immediate_spec(
             "delete-byte",
             "Delete byte",
             &delete_bytes_action(ctx.cursor, 1),
         ));
     }
-
-    vec![root]
+    specs
 }
 
-impl ResourceProvider for crate::view::HexView {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.hex_resource_ctx())
+// Inherent resource publication (was ResourceProvider)
+impl crate::view::HexView {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let ctx = self.hex_resource_ctx();
+        let state = crate::resource::HexState {
+            label: ctx.label.clone(),
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::HexEditor>(
+            "hex_editor.document",
+            &ctx.label,
+            &state,
+        );
+        root.children.extend(live_buffer_extras(&ctx));
+        vec![root]
     }
 }
 
@@ -464,13 +547,12 @@ mod tests {
         view
     }
 
-    // The bytes are device-local: the editor publishes only local effect and
-    // view operations, never a document action, so its surface carries no
-    // collaborative registry and the sweep checks surface and protocol only.
+    // Byte edits are device-local effects. The published door also carries
+    // apply/group for the resource; the sweep checks the surface protocol.
     ui::action_contract_tests! {
         seed: open_view(&[0x00, 0x11, 0x22, 0x33]).1,
         registry: ActionRegistry::new(),
-        resources: |doc| ResourceProvider::resources(&view_on_second_byte(), doc),
+        resources: |doc| view_on_second_byte().publish_resources(doc),
         palette: ["Insert byte", "Overwrite byte", "Delete byte"],
     }
 
@@ -479,17 +561,16 @@ mod tests {
     #[test]
     fn document_resource_actions_follow_buffer_state() {
         // Open and save publish direct paths as confirmed jobs.
-        let resources = provide_resources(&HexResourceCtx {
+        let state = crate::resource::HexState {
             label: "x.bin".into(),
-            cursor: 0,
-            len: 1,
-            selection: None,
-            has_file: true,
-            can_undo: false,
-            can_redo: false,
-        });
+        };
+        let root = ui::tilo_resource::publish::<crate::resource::HexEditor>(
+            "hex_editor.document",
+            "x.bin",
+            &state,
+        );
         for id in ["open", "save"] {
-            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            let spec = root.actions.iter().find(|a| a.id == id).unwrap();
             assert_eq!(spec.params()[0].name, "path", "case {id}");
             assert!(
                 matches!(
@@ -522,21 +603,26 @@ mod tests {
             );
         }
 
-        // Ctrl+K on the editor yields one `hex_editor.document` root exporting
-        // the byte-edit actions at the cursor. Drives the real resource hook.
+        // Ctrl+K yields the document door plus the cursor slice. Byte edits
+        // stay on the cursor, not on the document root.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(1, false);
         let resources = ui::resources::resources(&view, &doc);
         assert_eq!(resources.len(), 1, "one open buffer");
         let root = &resources[0];
         assert_eq!(root.kind, "hex_editor.document");
-        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+        let cursor = root
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice");
+        let ids: Vec<&str> = cursor.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"insert-byte"), "{ids:?}");
         assert!(ids.contains(&"overwrite-byte"), "{ids:?}");
         assert!(ids.contains(&"delete-byte"), "{ids:?}");
 
-        // The empty state still publishes the file-open effect, while
-        // buffer-only commands remain explicitly unavailable.
+        // The empty document still publishes open and save. Invoke time refuses
+        // save when no buffer is open; the door itself stays available.
         let view = HexView::empty();
         let doc = AutoCommit::new();
         let resources = ui::resources::resources(&view, &doc);
@@ -552,7 +638,7 @@ mod tests {
                 .actions
                 .iter()
                 .find(|action| action.id == "save")
-                .is_some_and(|action| !action.contract.availability.is_available())
+                .is_some_and(|action| action.contract.availability.is_available())
         );
 
         // A selection swaps the single-byte delete for a whole-range one.
@@ -560,7 +646,12 @@ mod tests {
         view.model_mut().move_to(2, false);
         view.model_mut().move_to(5, true); // select 2..=5
         let resources = ui::resources::resources(&view, &doc);
-        let ids: Vec<&str> = resources[0].actions.iter().map(|a| a.id.as_str()).collect();
+        let cursor = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("selection slice");
+        let ids: Vec<&str> = cursor.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"delete-selection"), "{ids:?}");
         assert!(
             !ids.contains(&"delete-byte"),
@@ -608,6 +699,10 @@ mod tests {
         // The palette's "Delete byte" spec.
         let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice")
             .actions
             .iter()
             .find(|a| a.id == "delete-byte")
@@ -632,6 +727,10 @@ mod tests {
         view.model_mut().move_to(1, false);
         let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice")
             .actions
             .iter()
             .find(|a| a.id == "overwrite-byte")

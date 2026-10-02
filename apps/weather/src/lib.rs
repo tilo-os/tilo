@@ -81,6 +81,7 @@ pub mod net;
 pub mod panes;
 mod presentation;
 pub mod region;
+pub mod resource;
 pub mod sample;
 pub mod search_provider;
 pub mod units;
@@ -112,3 +113,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+pub use resource::{Weather, WeatherShell};

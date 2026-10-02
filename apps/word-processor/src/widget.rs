@@ -20,8 +20,8 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use qdoc::model::Region;
-use qdoc::snapshot::{AttrVal, BlockView, NoteView};
+use tilo_doc::model::Region;
+use tilo_doc::snapshot::{AttrVal, BlockView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -995,8 +995,8 @@ struct CopiedParts {
     header: Copied<Vec<BlockView>>,
     footer: Copied<Vec<BlockView>>,
     notes: Copied<Vec<NoteView>>,
-    comments: Copied<Vec<qdoc::CommentView>>,
-    changes: Copied<Vec<qdoc::ChangeView>>,
+    comments: Copied<Vec<tilo_doc::CommentView>>,
+    changes: Copied<Vec<tilo_doc::ChangeView>>,
     content: Copied<std::collections::BTreeSet<String>>,
 }
 
@@ -1008,7 +1008,7 @@ struct PartsUpdate {
     notes: Option<Vec<NoteView>>,
     /// The document's set of content addresses changed: fetch what is new.
     content: bool,
-    review: Option<(Vec<qdoc::CommentView>, Vec<qdoc::ChangeView>)>,
+    review: Option<(Vec<tilo_doc::CommentView>, Vec<tilo_doc::ChangeView>)>,
 }
 
 /// The collaboration presence key for a document block, keyed by its **stable
@@ -1034,7 +1034,7 @@ struct PartsUpdate {
 fn block_presence_key(hosted: bool, block_id: &str) -> PresenceKey {
     if hosted {
         return ui::framework::ResourceSelection::Item(block_id.to_owned())
-            .presence::<qdoc_rich_text::RichText>(
+            .presence::<tilo_document::RichText>(
                 <crate::framework::WordProcessorApp as ui::framework::ResourceApp>::ID,
             )
             .0;
@@ -1060,14 +1060,14 @@ fn participant_presence_payload(
     doc: &AutoCommit,
 ) -> Option<ui::PresencePayload> {
     let ctx = view.ctx(doc)?;
-    let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-    let obj = qdoc::model::region_block_obj(
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let obj = tilo_doc::model::region_block_obj(
         doc,
         &containers,
         view.region.to_region(),
         &view.caret.block,
     )?;
-    let text = qdoc::model::block_text_on(doc, &obj).unwrap_or_default();
+    let text = tilo_doc::model::block_text_on(doc, &obj).unwrap_or_default();
     if let Some(span) = ctx
         .format_spans
         .iter()
@@ -1317,6 +1317,9 @@ pub struct WordProcessorWidget {
     /// Where the document is read from: the framework's live state when
     /// hosted, the editor's own incremental reader when standalone.
     source: crate::framework::StateSource,
+    /// Test-only: treat resource lookup as framework-hosted without a live record.
+    #[cfg(test)]
+    resource_hosted: bool,
     /// The kept state changed in a sync made mid-edit, and the views have
     /// not yet been refreshed from it.
     source_unseen: bool,
@@ -1342,7 +1345,7 @@ pub struct WordProcessorWidget {
     /// Canonical body order for a large document. This is intentionally ids
     /// only: offscreen rich text/marks/attrs stay in qdoc until its viewport
     /// window asks for them.
-    body_order: std::rc::Rc<qdoc_rich_text::BodyOrder>,
+    body_order: std::rc::Rc<tilo_document::BodyOrder>,
     /// Start offset into `body_order` represented by `blocks`.
     body_window_start: usize,
     /// Heads for which the body order and non-body snapshot data were loaded.
@@ -1473,7 +1476,7 @@ pub struct WordProcessorWidget {
     thread_comment: Option<String>,
     /// A materialized snapshot supplied only by the headless visual scenario.
     /// Interactive threads always resolve their current value from `review`.
-    thread_snapshot: Option<qdoc::snapshot::CommentView>,
+    thread_snapshot: Option<tilo_doc::snapshot::CommentView>,
     /// The reply being written, in the SDK editor: Ctrl+Enter sends it,
     /// Escape closes the thread.
     thread_reply: Embedded<RichTextSurface<Draft>>,
@@ -1608,6 +1611,8 @@ impl WordProcessorWidget {
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
+            #[cfg(test)]
+            resource_hosted: false,
             source_unseen: false,
             copied: CopiedParts::default(),
             direct_writes: 0,
@@ -1738,8 +1743,8 @@ impl WordProcessorWidget {
     /// submit edits through its dispatcher.
     pub(crate) fn attach_framework(
         &mut self,
-        live: ui::framework::Live<qdoc_rich_text::RichText>,
-        dispatcher: ui::framework::Dispatcher<qdoc_rich_text::RichText>,
+        live: ui::framework::Live<crate::framework::Document>,
+        dispatcher: ui::framework::Dispatcher<crate::framework::Document>,
     ) {
         self.source = crate::framework::StateSource::Hosted(live);
         self.actions.attach(dispatcher);
@@ -1785,7 +1790,26 @@ impl WordProcessorWidget {
     /// Hosted by the framework, the document is a durable record: no
     /// crash-recovery copies, no separate file identity.
     pub(crate) fn hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.resource_hosted {
+            return true;
+        }
         self.source.hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_resource_hosted_for_test(&mut self) {
+        self.resource_hosted = true;
+    }
+
+    /// Where the hyperlink prompt is addressed. A hosted window does not
+    /// publish the document root, so the prompt rides the caret actions.
+    pub(crate) fn hyperlink_palette_resource(&self) -> &'static str {
+        if self.hosted() {
+            "word-processor.caret"
+        } else {
+            "word-processor.document"
+        }
     }
 
     // ---- Tilo action dispatch ------------------------------------------------
@@ -1795,13 +1819,27 @@ impl WordProcessorWidget {
     /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::RichTextAction) {
+        let _ = self.try_perform_action(state, action);
+    }
+
+    /// Submit one document action. `false` when the host refuses it, so a
+    /// caller can leave the document and caret as they were.
+    fn try_perform_action(
+        &mut self,
+        state: &mut AutoCommit,
+        action: &crate::actions::RichTextAction,
+    ) -> bool {
         let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
-        if let Err(error) = self.actions.dispatch(state, action, context) {
-            if self.actions.read_only() {
-                self.toast = Some((t("toast-view-only"), ToastKind::Error));
-                self.lifecycle.dirty = true;
+        match self.actions.dispatch(state, action, context) {
+            Ok(()) => true,
+            Err(error) => {
+                if self.actions.read_only() {
+                    self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                    self.lifecycle.dirty = true;
+                }
+                eprintln!("word-processor: edit refused: {error}");
+                false
             }
-            eprintln!("word-processor: edit refused: {error}");
         }
     }
 
@@ -1819,10 +1857,10 @@ impl WordProcessorWidget {
                     continue;
                 }
                 let value = match value {
-                    qdoc::AttrVal::Bool(value) => crate::actions::AttrVal::Bool(value),
-                    qdoc::AttrVal::Int(value) => crate::actions::AttrVal::Int(value),
-                    qdoc::AttrVal::Float(value) => crate::actions::AttrVal::Float(value),
-                    qdoc::AttrVal::Str(value) => crate::actions::AttrVal::Str(value),
+                    tilo_doc::AttrVal::Bool(value) => crate::actions::AttrVal::Bool(value),
+                    tilo_doc::AttrVal::Int(value) => crate::actions::AttrVal::Int(value),
+                    tilo_doc::AttrVal::Float(value) => crate::actions::AttrVal::Float(value),
+                    tilo_doc::AttrVal::Str(value) => crate::actions::AttrVal::Str(value),
                 };
                 self.perform_action(
                     state,
@@ -1837,9 +1875,9 @@ impl WordProcessorWidget {
             .cloned()
             .collect();
         if !removed.is_empty()
-            && let Ok(containers) = qdoc::model::open(state, &automerge::ROOT)
+            && let Ok(containers) = tilo_doc::model::open(state, &automerge::ROOT)
         {
-            let snapshot = qdoc::model::materialize(state, &containers);
+            let snapshot = tilo_doc::model::materialize(state, &containers);
             for style in removed {
                 let instances = snapshot
                     .blocks
@@ -1941,7 +1979,7 @@ impl WordProcessorWidget {
     }
 
     /// The kept body order, once there is kept state.
-    fn kept_body(&self) -> Option<std::rc::Rc<qdoc_rich_text::BodyOrder>> {
+    fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
         self.source.with(|s| std::rc::Rc::clone(s.body()))
     }
 
@@ -2549,7 +2587,7 @@ impl WordProcessorWidget {
     }
 
     /// The resource tree as `participant` sees it. `None` is this window
-    /// (the ordinary [`tilo_actions::ResourceProvider::resources`]); any
+    /// (the ordinary [`::resources`]); any
     /// other participant gets the tree built from its own view only, so no
     /// other participant's caret, selection or Find hits leak into it.
     pub fn participant_resources(
@@ -2558,7 +2596,7 @@ impl WordProcessorWidget {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
         let Some(participant) = participant else {
-            return <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+            return Self::publish_resources(self, doc);
         };
         self.participants.note_resolution(participant, doc);
         let Some(mut ctx) = self
@@ -2639,6 +2677,7 @@ impl WordProcessorWidget {
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -2830,7 +2869,7 @@ impl WordProcessorWidget {
         // The first cell of the freshly-created table = the new `cell` block at
         // (row 0, col 0). Seat the caret there so typing continues in the table.
         if let Some(c) = self.inner.containers.clone() {
-            let snap = qdoc::model::materialize(state, &c);
+            let snap = tilo_doc::model::materialize(state, &c);
             let first = snap
                 .blocks
                 .iter()
@@ -2937,7 +2976,7 @@ impl WordProcessorWidget {
     /// The ids of every `cell` block currently in the body.
     fn body_cell_ids(&self, state: &AutoCommit) -> std::collections::HashSet<String> {
         match self.inner.containers.clone() {
-            Some(c) => qdoc::model::materialize(state, &c)
+            Some(c) => tilo_doc::model::materialize(state, &c)
                 .blocks
                 .into_iter()
                 .filter(|b| b.kind == "cell")
@@ -3074,7 +3113,7 @@ impl WordProcessorWidget {
     /// Open one materialized durable comment thread for visual/a11y review.
     /// The screenshot path still uses the ordinary production panel rather
     /// than a fixture-only rendering branch.
-    pub fn stage_comment_thread_for_shot(&mut self, comment: qdoc::snapshot::CommentView) {
+    pub fn stage_comment_thread_for_shot(&mut self, comment: tilo_doc::snapshot::CommentView) {
         self.thread_comment = Some(comment.id.clone());
         self.thread_snapshot = Some(comment);
         self.focus_thread_reply(true);
@@ -3105,9 +3144,9 @@ impl WordProcessorWidget {
         image_cache: &mut std::collections::HashMap<String, Option<ui::widget::Image>>,
         content: &tilo_content::ContentStore,
         state: &AutoCommit,
-        c: &qdoc::Containers,
+        c: &tilo_doc::Containers,
     ) {
-        for hash in qdoc::model::blob_hashes(state, c) {
+        for hash in tilo_doc::model::blob_hashes(state, c) {
             if blobs.contains_key(&hash) {
                 continue;
             }
@@ -3431,7 +3470,8 @@ impl WordProcessorWidget {
             let mut admitted = AutoCommit::new();
             history.install_into(&mut admitted)?;
             // Validate both graphs before changing the outgoing document.
-            qdoc::model::open(&admitted, &automerge::ROOT).map_err(|error| error.to_string())?;
+            tilo_doc::model::open(&admitted, &automerge::ROOT)
+                .map_err(|error| error.to_string())?;
             let content = self.inner.content_store().clone();
             native_file_choice::same_file_content_with(&admitted, &bytes, format, &content)?;
             admitted.set_actor(state.get_actor().clone());
@@ -3448,11 +3488,17 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
             return Ok(());
         }
-        if !self.inner.replace_with_format(state, &bytes, format) {
+        let Some(action) = self.inner.stage_replacement(state, &bytes, format) else {
+            self.toast = Some((t("toast-open-failed"), ToastKind::Error));
+            self.lifecycle.dirty = true;
+            return Err(format!("could not parse {}", path.display()));
+        };
+        if !self.try_perform_action(state, &action) {
             self.toast = Some((t("toast-open-failed"), ToastKind::Error));
             self.lifecycle.dirty = true;
             return Err(format!("could not parse {}", path.display()));
         }
+        self.inner.seat_after_replacement(state);
         self.set_file(path.to_path_buf(), format);
         self.refresh_blocks(state);
         // The whole body changed; per-block caches keyed by id/text are stale.
@@ -3514,7 +3560,7 @@ impl WordProcessorWidget {
     ) -> Result<(), String> {
         self.lifecycle.dirty = true;
         if let Some(c) = self.inner.containers.as_ref() {
-            let dr = qdoc::DocRef { doc: state, c };
+            let dr = tilo_doc::DocRef { doc: state, c };
             match format.export(dr, self.inner.content_store()) {
                 Ok(bytes) => {
                     if let Some(scope) = scope {
@@ -3641,7 +3687,7 @@ impl WordProcessorWidget {
         let Some(containers) = self.inner.containers.as_ref() else {
             return Err("Writer document is not initialized".into());
         };
-        let Some(text) = qdoc::model::block_text(state, containers, block) else {
+        let Some(text) = tilo_doc::model::block_text(state, containers, block) else {
             return Err("the requested document range no longer exists".into());
         };
         let len = text.chars().count();
@@ -3880,7 +3926,7 @@ impl WordProcessorWidget {
         self.inner
             .containers
             .as_ref()
-            .map_or_else(Vec::new, |c| qdoc::model::materialize(state, c).blocks)
+            .map_or_else(Vec::new, |c| tilo_doc::model::materialize(state, c).blocks)
     }
 
     /// The running region (if any) whose reference-page band contains content-
@@ -6148,9 +6194,9 @@ fn review_action_target(action: &ReviewAction) -> String {
 
 fn review_action_a11y_label(
     action: &ReviewAction,
-    changes: &[qdoc::snapshot::ChangeView],
+    changes: &[tilo_doc::snapshot::ChangeView],
 ) -> String {
-    use qdoc::snapshot::ChangeKind;
+    use tilo_doc::snapshot::ChangeKind;
     match action {
         ReviewAction::AcceptChange(id) => match changes.iter().find(|change| change.id == *id) {
             Some(change) if change.kind == ChangeKind::Del => t("review-accept-deletion"),
@@ -8620,7 +8666,7 @@ impl WordProcessorWidget {
             // (they belong at the document end, not per page).
             let mut num_to_note: HashMap<usize, String> = HashMap::new();
             for n in &self.notes {
-                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE
+                if n.kind == tilo_doc::schema::NOTE_KIND_FOOTNOTE
                     && let Some(&num) = note_nums.get(&n.id)
                 {
                     num_to_note.insert(num, note_text(n));
@@ -10172,6 +10218,11 @@ impl WordProcessorWidget {
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
+        // Resource view openers (editor / compact) from RichText::local_operations.
+        // The editing surface is already this window; accept without further work.
+        if type_id == "tilo.rich-text.view" {
+            return Ok(true);
+        }
         // A delivered invocation by a participant (an agent task) moves only
         // that participant's view: its own `move-caret`/`select-*`/
         // `find-text`, and `go-to` on its own search hits, cells or comments.
@@ -10335,6 +10386,8 @@ impl Widget for WordProcessorWidget {
         &[
             crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
             crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE,
+            // Published via tilo_document::RichText::local_operations (editor/compact).
+            "tilo.rich-text.view",
         ]
     }
 
@@ -11340,7 +11393,7 @@ impl ui::undo::UndoPoints for WordProcessorWidget {
             tilo_actions::ActionContext::for_resource(
                 "Edit document",
                 resource_id,
-                "word_processor.document",
+                "tilo.rich-text",
                 resource_label,
             )
             .with_app("org.tilo.Writer", "Writer")
@@ -11474,7 +11527,7 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`PublishesResources`](ui::resources::PublishesResources) impl in
     /// [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         // While a delivered invocation by a participant (an agent task) is
@@ -11490,15 +11543,67 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if let Some(invoker) = ui::invocation_scope::current_invoker() {
             return match invoker.participant {
                 Some(participant) => self.participant_resources(Some(&participant), doc),
-                None => <Self as tilo_actions::ResourceProvider>::resources(self, doc),
+                None => Self::publish_resources(self, doc),
             };
         }
         // Publication on a headless host worker (no local person): the
         // participant-independent schema, not the worker caret's snapshot.
         if self.participant_host {
-            return <Self as tilo_actions::ResourceProvider>::catalogue_schema(self, doc);
+            return Self::publish_catalogue_schema(self, doc);
         }
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        // The framework root already publishes this document through
+        // `tilo_resource::publish`. Keep only caret-bound extras.
+        if self.hosted() {
+            if let Some(resource) = self.file_choice_resource() {
+                return vec![resource];
+            }
+            let Some(ctx) = self.wp_resource_ctx(doc) else {
+                return Vec::new();
+            };
+            let body = self.kept_body();
+            return crate::actions::live_presentation_resources(&ctx, doc, body.as_deref());
+        }
+        Self::publish_resources(self, doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if let Some(invoker) = ui::invocation_scope::current_invoker() {
+            let tree = match invoker.participant {
+                Some(participant) => self.participant_resources(Some(&participant), doc),
+                None => Self::publish_resources(self, doc),
+            };
+            return find(&tree, id);
+        }
+        if self.participant_host {
+            return find(&Self::publish_catalogue_schema(self, doc), id);
+        }
+        if self.hosted() && id == "word-processor.document" {
+            return None;
+        }
+        if let Some(found) = find(&Self::publish_resources(self, doc), id) {
+            return Some(found);
+        }
+        if self.hosted()
+            && let Some(ctx) = self.wp_resource_ctx(doc)
+        {
+            let body = self.kept_body();
+            return find(
+                &crate::actions::live_presentation_resources(&ctx, doc, body.as_deref()),
+                id,
+            );
+        }
+        None
     }
     fn action_directory_invocation_domain(
         &self,
@@ -12024,7 +12129,7 @@ impl WordProcessorWidget {
     /// the caret/selection overlays use, so all three can't drift apart.
     ///
     /// This is the *ephemeral* half of authorship — the durable half ("this
-    /// paragraph is hers") is `qdoc::author_runs`, already fed to
+    /// paragraph is hers") is `tilo_doc::author_runs`, already fed to
     /// [`ui::presence::PresenceCtx::draw_peer_authorship`] by
     /// [`ui::widget::block_editor`]; this widget doesn't call it yet.
     pub(crate) fn remote_typing_overlays(
@@ -12130,7 +12235,7 @@ impl WordProcessorWidget {
             ToolAction::Hyperlink => {
                 if !self.selection_blocks_cached().is_empty() {
                     self.action_palette_request = Some(tilo_actions::ActionAddress::new(
-                        "word-processor.document",
+                        self.hyperlink_palette_resource(),
                         "set-hyperlink",
                     ));
                 }
@@ -12974,8 +13079,8 @@ impl WordProcessorWidget {
                 let Some(id) = m.value.as_str().map(std::string::ToString::to_string) else {
                     continue;
                 };
-                if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
-                    let is_ins = m.name == qdoc::schema::MARK_INS;
+                if m.name == tilo_doc::schema::MARK_INS || m.name == tilo_doc::schema::MARK_DEL {
+                    let is_ins = m.name == tilo_doc::schema::MARK_INS;
                     let accept_key = if is_ins {
                         "review-accept-insertion"
                     } else {
@@ -12995,7 +13100,7 @@ impl WordProcessorWidget {
                         id.clone(),
                     ))));
                     review_rows = true;
-                } else if m.name == qdoc::schema::MARK_COMMENT {
+                } else if m.name == tilo_doc::schema::MARK_COMMENT {
                     menu.push(MenuItem::action(t("review-reply"), || {}));
                     actions.push(Some(CtxAction::Review(ReviewAction::OpenCommentThread(
                         id.clone(),
@@ -13365,14 +13470,14 @@ impl WordProcessorWidget {
                         .zip(body_order.all())
                         .all(|(block, id)| block.id == id)
                 {
-                    Some(qdoc_codecs::markdown::export_views(
-                        &qdoc::model::doc_props(state, c),
+                    Some(tilo_doc_codecs::markdown::export_views(
+                        &tilo_doc::model::doc_props(state, c),
                         blocks,
                         notes,
                     ))
                 } else {
                     WpFormat::Markdown
-                        .export(qdoc::DocRef { doc: state, c }, &tilo_content::NoContent)
+                        .export(tilo_doc::DocRef { doc: state, c }, &tilo_content::NoContent)
                         .ok()
                 }
             })

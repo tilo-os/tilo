@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub mod actions;
 pub mod app;
 mod native_timers;
+pub mod resource;
 pub use app::ClocksApp;
 
 #[must_use]
@@ -534,6 +535,8 @@ fn next_alarm_in_timezone<Tz: TimeZone>(
     }
     None
 }
+
+pub use resource::{Clocks, ClocksShell};
 
 #[cfg(test)]
 mod tests {

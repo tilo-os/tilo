@@ -44,6 +44,7 @@ pub mod doc;
 pub mod highlight;
 pub mod merge_view;
 pub mod model;
+pub mod resource;
 pub mod samples;
 mod web_file;
 
@@ -82,7 +83,9 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Diff & Merge")
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Diffmerge, DiffmergeShell, launch_spec};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

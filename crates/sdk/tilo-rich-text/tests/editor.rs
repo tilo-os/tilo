@@ -10,7 +10,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use qdoc_rich_text::{RichText, RichTextAction};
+use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
 use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
@@ -65,8 +65,8 @@ fn open_as<A: ResourceApp<Resource = RichText>>() -> TestApp<A> {
 }
 
 fn paragraphs_of(doc: &ui::tilo_resource::Doc) -> Vec<String> {
-    let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-    qdoc::model::materialize(doc, &c)
+    let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+    tilo_doc::model::materialize(doc, &c)
         .blocks
         .into_iter()
         .map(|block| block.text)
@@ -79,19 +79,19 @@ fn paragraphs<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<Stri
 
 fn authors<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<(usize, usize, String)> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
-            .flat_map(|block| qdoc::author_runs(&block.marks))
+            .flat_map(|block| tilo_doc::author_runs(&block.marks))
             .collect()
     })
 }
 
 fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .flat_map(|block| block.marks)
@@ -114,7 +114,7 @@ fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
             .resource
             .as_ref()
             .map(|resource| resource.kind.as_str()),
-        Some("qdoc.rich-text")
+        Some("tilo.rich-text")
     );
 
     assert!(app.undo());
@@ -249,14 +249,14 @@ fn a_collaborator_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
     let mut app = open();
     app.harness().type_text("world");
     let mut peer = app.peer_document();
-    let block = qdoc::model::blocks_in_order(
+    let block = tilo_doc::model::blocks_in_order(
         &peer,
-        &qdoc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
+        &tilo_doc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
     )[0]
     .clone();
     // While I keep typing, the collaborator types at the start.
     RichTextAction::SpliceText {
-        region: qdoc_rich_text::action::RegionKind::Body,
+        region: tilo_document::action::RegionKind::Body,
         block,
         at: 0,
         del: 0,
@@ -284,9 +284,9 @@ fn a_collaborators_new_paragraph_appears_without_moving_me() {
     let mut app = open();
     app.harness().type_text("draft");
     let mut peer = app.peer_document();
-    let first = qdoc::model::blocks_in_order(
+    let first = tilo_doc::model::blocks_in_order(
         &peer,
-        &qdoc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
+        &tilo_doc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
     )[0]
     .clone();
     RichTextAction::InsertParagraph {
@@ -308,12 +308,15 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     let mut app = open();
     app.harness().type_text("typed");
     let block = app.read_document(|doc| {
-        qdoc::model::blocks_in_order(doc, &qdoc::model::open(doc, &ui::automerge::ROOT).unwrap())[0]
-            .clone()
+        tilo_doc::model::blocks_in_order(
+            doc,
+            &tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap(),
+        )[0]
+        .clone()
     });
     app.invoke(
         ui::tilo_resource::Invoke::<RichText>::apply(&RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+            region: tilo_document::action::RegionKind::Body,
             block,
             at: 5,
             del: 0,

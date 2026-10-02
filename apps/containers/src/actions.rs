@@ -26,43 +26,29 @@
 //! then calls the widget's operation handler. No container control shells out
 //! before that authority boundary.
 //!
-//! ## What is in the shared document — and why none of it is an action
+//! ## What is in the shared document
 //!
-//! The only thing Containers writes to its Automerge document is **view state**
-//! (see [`crate::doc`]), and it falls into exactly the two non-action categories
-//! the recipe names:
+//! Containers writes **view preferences** to its Automerge document (see
+//! [`crate::doc`] and [`crate::resource::ContainersAction`]):
 //!
-//! - **Navigation / selection is presentation.** `view.section` (which section is
-//!   showing), `view.selected` (which container is selected) and `view.tab`
-//!   (which detail tab is active) are scalar strings. The recipe lists "which
-//!   book is open, the current selection, an overlay being open" as presentation
-//!   that must *never* be an action — "dispatching it as an action would be
-//!   wrong". Containers deliberately keeps this view state in the CRDT so two
-//!   peers can navigate the same manager together, but replicating a cursor does
-//!   not make it a document mutation to encode.
-//!
+//! - **Section / selection / detail tab** are document Actions
+//!   (`set-section`, `select-container`, `set-tab`) so the palette and agents
+//!   share one door with the UI through [`tilo_resource::publish`].
 //! - **The search box and the create-container draft are native collaborative
-//!   `Text`.** `view.search` and the six `view.create.*` fields (name / image /
-//!   ports / env / volumes / command) are Automerge `Text` objects, edited by
-//!   `splice_text_diffed` on the toolkit's CRDT-native text path — the same path
-//!   the recipe says a flowing text body must take *instead of* the action
-//!   executor. Two peers typing into the create form converge and undo through
-//!   through the `Text` object; re-encoding a keystroke as an action would
-//!   duplicate what the text path already gives. The create draft is transient:
-//!   submitting it shells out to `podman run` (external) and clears the draft.
+//!   `Text`.** `view.search` and the six `view.create.*` fields are Automerge
+//!   `Text` objects on the toolkit's CRDT-native text path. The create draft is
+//!   transient: submitting it shells out to `podman run` (external) and clears.
 //!
-//! There is no user-authored *structural* record to hang an action off: no saved
-//! run-configs or compose definitions, no favourites / pins, no custom groupings,
-//! no saved-session list. The document holds one `view` map and nothing else.
+//! There is no saved compose / favourites collection yet. Live engine inventory
+//! (containers, images, volumes, distroboxes) stays host-local and is published
+//! as live extras when hosted — never a second `containers.engine` root beside
+//! `ResourceRoot`.
 //!
 //! ## Consequence
 //!
-//! Containers publishes the transient engine objects (including nested log
-//! resources) as stable session resources with typed view/effect operations.
-//! In demo/offline mode effects remain enumerable but carry an explicit
-//! `engine_offline` availability reason. Effects appear in durable activity
-//! history but never create a document undo boundary; view/navigation state
-//! continues through the collaborative Automerge document.
+//! Document ops and `create` live on [`tilo_resource::publish`]. Standalone /
+//! `--shots` overlay engine children on that one root; hosted surfaces keep only
+//! live engine rows (and an in-flight pull). Lifecycle Effects remain Effects.
 
 #[cfg(test)]
 mod tests {
@@ -78,12 +64,16 @@ mod tests {
     use crate::model::ContainerStatus;
     use crate::podman::Action as Lifecycle;
 
-    // Containers publishes only view and effect operations: the host engine
-    // is not a document, so the registry decodes nothing and the sweep checks
-    // the published surface itself.
+    // Document view Actions register on Containers; engine lifecycle Effects
+    // are checked on the published standalone surface.
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        registry: {
+            use ui::tilo_resource::Resource as _;
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            crate::resource::Containers::register(&mut registry);
+            registry
+        },
         resources: |doc| ui::resources::resources(&ContainersApp::new(false), doc),
         palette: ["Open web-frontend", "Open postgres"],
     }
@@ -252,7 +242,7 @@ mod tests {
                 "precondition: replicas share a base"
             );
 
-            // Real keystroke → create_modal_key → ViewDoc::set_create_field (a splice).
+            // Real keystroke → create_modal_key → SetCreateField (a splice).
             send(&mut app, &mut doc, &char_event("w"));
             doc.commit();
             assert_eq!(

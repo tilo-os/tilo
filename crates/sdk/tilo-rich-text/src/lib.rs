@@ -1,7 +1,7 @@
 //! # Rich text in a Tilo app
 //!
 //! One document model and one editor across the OS: qdoc's rich text
-//! ([`qdoc_rich_text::RichText`]) is the resource, and the toolkit's block
+//! ([`tilo_document::RichText`]) is the resource, and the toolkit's block
 //! editor is the view of it. An app that shows rich text writes one line:
 //!
 //! ```ignore
@@ -9,7 +9,7 @@
 //!
 //! struct Doc;
 //! impl ResourceApp for Doc {
-//!     type Resource = qdoc_rich_text::RichText;
+//!     type Resource = tilo_document::RichText;
 //!     const ID: &'static str = "example.doc";
 //!     const TITLE: &'static str = "Document";
 //!     fn view(cx: &mut ViewCx<RichText>) -> Element {
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! and gets, from the framework and without writing any of it: every edit as
-//! a replayable [`RichTextAction`](qdoc_rich_text::RichTextAction) (the same
+//! a replayable [`RichTextAction`](tilo_document::RichTextAction) (the same
 //! vocabulary the palette, agents and scripts use), permission checks (a
 //! viewer's keystrokes never reach the document), per-author undo with
 //! typing grouped a word at a time, attributed history with History mode
@@ -49,7 +49,7 @@ mod source;
 mod surface;
 mod view;
 
-use qdoc_rich_text::{RichText, RichTextAction};
+use tilo_document::{RichText, RichTextAction};
 use ui::automerge::ObjId;
 use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};

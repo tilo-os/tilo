@@ -490,7 +490,7 @@ pub struct CodeApp {
     /// a buffer (New file); it is dispatched through this host so it brackets one
     /// undo boundary and replays byte-identically on peers, the same path a
     /// Ctrl+K palette dispatch takes. See [`crate::actions`].
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Command selected through an exported resource action. Resource
     /// operations intentionally receive an immutable document snapshot; the
     /// next sync applies the command with mutable CRDT access.
@@ -902,7 +902,7 @@ impl CodeApp {
             panel: BottomPanel::new(),
             panel_toggle,
             palette: CommandPalette::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_resource_command: None,
             project_id,
             next_new_file_id,
@@ -1131,10 +1131,44 @@ impl CodeApp {
         }
     }
 
+    /// The embedded terminal's document map. Missing panels are created by
+    /// [`CodeEditorAction::EnsureTerminalPanel`](actions::CodeEditorAction::EnsureTerminalPanel)
+    /// through the action sink, hosted or standalone.
+    fn terminal_document_root(&mut self, doc: &mut AutoCommit) -> ObjId {
+        if EditorDoc::terminal_panel(doc).is_none() {
+            let action = actions::CodeEditorAction::EnsureTerminalPanel;
+            self.actions.dispatch_with_context(
+                doc,
+                actions::CODE_EDITOR_ACTION_TYPE,
+                &action,
+                actions::history_context(&action, "Terminal", &self.project_id),
+            );
+        }
+        if let Some(id) = EditorDoc::terminal_panel(doc) {
+            return id;
+        }
+        EditorDoc::terminal_root(doc)
+    }
+
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "buffer seed, project id, and active Text binding stay one sync path"
+    )]
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
+        let action = actions::CodeEditorAction::EnsureProjectId {
+            id: self.project_id.clone(),
+        };
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CODE_EDITOR_ACTION_TYPE,
+            &action,
+            actions::history_context(&action, "Project", &self.project_id),
+        );
+        if let Some(id) = EditorDoc::project_id(doc) {
+            self.project_id = id;
+        }
         self.import_project_file_records(doc);
         self.sync_collaborative_files(doc);
         // A Ctrl+K resource action can create the captured UUID without going
@@ -1178,11 +1212,33 @@ impl CodeApp {
             let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
             let disk_backed = self.session.project.disk_path_of(node).is_some();
             if has_text && (reconciled || !disk_backed) {
+                // Sample / scratch tabs are not disk-backed. Import can put text
+                // in the document before this loop takes a stamp; without adopting
+                // that text as `saved_text`, dirty stays true forever and clean
+                // closes raise a save prompt.
+                if !reconciled
+                    && let Some(buf) = self.session.open.get_mut(i)
+                    && buf.saved_text.is_empty()
+                {
+                    let current = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
+                    buf.mark_saved(current, None);
+                }
                 continue;
             }
             match self.session.project.file_seed(node) {
                 Ok((text, stamp)) => {
-                    EditorDoc::ensure_buffer_key(doc, &key, &text);
+                    if !has_text {
+                        let action = actions::CodeEditorAction::EnsureBuffer {
+                            key: key.clone(),
+                            seed: text.clone(),
+                        };
+                        self.actions.dispatch_with_context(
+                            doc,
+                            actions::CODE_EDITOR_ACTION_TYPE,
+                            &action,
+                            actions::history_context(&action, "File", &self.project_id),
+                        );
+                    }
                     let Some(buf) = self.session.open.get_mut(i) else {
                         continue;
                     };
@@ -1244,12 +1300,12 @@ impl CodeApp {
         }
     }
 
-    /// Project opening is an external filesystem import, not a user/agent
-    /// mutation. Project it once into durable records so every existing file,
-    /// not only newly-created scratch files, has an addressable resource and a
-    /// validated action target. IDs are UUIDs persisted in the shared document;
-    /// absolute disk locations stay solely in `disk_path` local provenance.
-    fn import_project_file_records(&self, doc: &mut AutoCommit) {
+    /// Project opening imports the filesystem once into durable records so
+    /// every existing file, not only newly-created scratch files, has an
+    /// addressable resource. Each record is a `CreateFile` or `CreateFolder`
+    /// action. IDs are UUIDs persisted in the shared document; absolute disk
+    /// locations stay solely in `disk_path` local provenance.
+    fn import_project_file_records(&mut self, doc: &mut AutoCommit) {
         let records: Vec<_> = self
             .session
             .project
@@ -1297,9 +1353,38 @@ impl CodeApp {
             })
             .collect();
         for record in records {
-            if EditorDoc::file(doc, &record.id).is_none() {
-                EditorDoc::create_file_record(doc, &record);
+            if EditorDoc::file(doc, &record.id).is_some() {
+                continue;
             }
+            let action = if record.kind == "folder" {
+                actions::CodeEditorAction::CreateFolder {
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                    parent: record.parent.clone(),
+                    order: record.order,
+                }
+            } else {
+                let seed = self
+                    .session
+                    .project
+                    .node_for_resource(&record.id)
+                    .and_then(|node| self.session.project.file_seed(node).ok())
+                    .map(|(text, _stamp)| text)
+                    .unwrap_or_default();
+                actions::create_file_action(
+                    record.id.clone(),
+                    record.name.clone(),
+                    record.parent.clone(),
+                    record.order,
+                    seed,
+                )
+            };
+            self.actions.dispatch_with_context(
+                doc,
+                actions::CODE_EDITOR_ACTION_TYPE,
+                &action,
+                actions::history_context(&action, &record.name, &self.project_id),
+            );
         }
     }
 
@@ -1310,6 +1395,50 @@ impl CodeApp {
     fn sync_collaborative_files(&mut self, doc: &AutoCommit) {
         let mut files = EditorDoc::files(doc);
         files.sort_by_key(|file| file.path.matches('/').count());
+        self.project_files(files);
+    }
+
+    /// Project durable file records into the local tree. An empty list does not
+    /// wipe a project that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ProjectState) {
+        if state.files.is_empty() && !self.session.project.nodes.is_empty() {
+            return;
+        }
+        if let Some(id) = &state.project_id
+            && self.project_id.is_empty()
+        {
+            self.project_id.clone_from(id);
+        }
+        if !state.files.is_empty() {
+            let mut files = state.files.clone();
+            files.sort_by_key(|file| file.path.matches('/').count());
+            self.project_files(files);
+        }
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_node_count(&self) -> usize {
+        self.session.project.nodes.len()
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
         let ordering: Vec<_> = files
             .iter()
             .filter(|file| !file.deleted)
@@ -3269,7 +3398,7 @@ impl CodeApp {
         if !(term_active && self.terminal_focused) {
             return false;
         }
-        let tr = EditorDoc::terminal_root(state);
+        let tr = self.terminal_document_root(state);
         if let Some(t) = self.terminal.as_mut() {
             let mut th = false;
             let mut tf = None;
@@ -3562,7 +3691,7 @@ impl Widget for CodeApp {
         // reflects it into the grid (the plain `ui::App` loop never calls
         // `update`, so pumping happens here — see `TerminalWidget::sync`).
         if self.terminal.is_some() {
-            let tr = EditorDoc::terminal_root(state);
+            let tr = self.terminal_document_root(state);
             if let Some(t) = self.terminal.as_mut() {
                 t.sync(state, &tr);
             }
@@ -4228,22 +4357,25 @@ impl ui::search::capability::SearchSource for CodeApp {
 }
 
 impl ui::resources::PublishesResources for CodeApp {
-    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
-    /// palette. Any omitted file/symbol/result resolves lazily below through
-    /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` publishes the project. When hosted, file
+    /// Document ops ride [`tilo_resource::publish`]; this returns only live
+    /// extras (save / symbols / search) — never a second project root.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the project. The directory page
+        // keeps the same live extras as `resources`, never a second root.
         let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::project_root(&self.code_resource_ctx())]
+            self.resources(doc)
         } else {
             Vec::new()
         };
@@ -4257,7 +4389,11 @@ impl ui::resources::PublishesResources for CodeApp {
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        // The framework root already owns the project door.
+        if self.is_hosted() && id == crate::actions::project_resource_id(&self.project_id) {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

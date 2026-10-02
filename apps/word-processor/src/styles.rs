@@ -5,13 +5,13 @@
 //! document (qdoc meta) so it round-trips and survives reopen.
 
 use crate::num;
-use qdoc::AttrVal;
-use qdoc::schema::{
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use tilo_doc::AttrVal;
+use tilo_doc::schema::{
     STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
     STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// `[r,g,b]` → `#rrggbb`.
 pub fn color_to_hex(c: [u8; 3]) -> String {
@@ -62,7 +62,7 @@ pub struct StyleProps {
 
 impl StyleProps {
     /// Serialize into the CRDT styles container's scalar shape (the
-    /// `qdoc::schema::STYLE_*` keys). Color is a `#rrggbb` hex string; sizes /
+    /// `tilo_doc::schema::STYLE_*` keys). Color is a `#rrggbb` hex string; sizes /
     /// spacing are floats.
     pub fn to_attrs(&self) -> BTreeMap<String, AttrVal> {
         let mut m = BTreeMap::new();
@@ -186,7 +186,7 @@ impl Default for StyleSheet {
 
 /// The built-in style ids. Everything else in a document's sheet is a
 /// user-defined ("custom") style, which — unlike a built-in — can be deleted.
-pub use qdoc_rich_text::BUILTIN_STYLES;
+pub use tilo_document::BUILTIN_STYLES;
 
 impl StyleSheet {
     /// Resolve a style, falling back to Body for unknown ids.

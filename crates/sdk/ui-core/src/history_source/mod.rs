@@ -9,7 +9,7 @@
 //! both an app's scrubber and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
-//! materialises the window with [`qdoc::snapshot::series`] and
+//! materialises the window with [`tilo_doc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
 //! documents carrying the `qdoc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
 use collab_types::{ArtifactKind, OpClass};
-use qdoc::snapshot::DocSnapshot;
+use tilo_doc::snapshot::DocSnapshot;
 
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -110,10 +110,10 @@ pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
 pub fn materialize_entry(
     doc: &mut AutoCommit,
     id: &HistoryEntryId,
-) -> Result<Option<DocSnapshot>, qdoc::DocError> {
+) -> Result<Option<DocSnapshot>, tilo_doc::DocError> {
     with_committed_history(doc, |doc| {
         version_index_for_entry(doc, id)
-            .map(|version| qdoc::snapshot::at(doc, version))
+            .map(|version| tilo_doc::snapshot::at(doc, version))
             .transpose()
     })
 }
@@ -223,7 +223,7 @@ impl HistorySource {
             .into_iter()
             .chain(start..versions.len())
             .collect();
-        let mut snapshots = qdoc::snapshot::series(doc, &indices).into_iter();
+        let mut snapshots = tilo_doc::snapshot::series(doc, &indices).into_iter();
         let mut prev_snapshot: Option<DocSnapshot> = match before_window {
             None => Some(DocSnapshot::default()),
             Some(_) => snapshots.next().flatten(),
@@ -249,7 +249,7 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            if qdoc::model::is_schema_genesis(v) {
+            if tilo_doc::model::is_schema_genesis(v) {
                 continue;
             }
             // A record's genesis is the same kind of change; so is a
@@ -431,31 +431,31 @@ fn structural_summary(
     prev: &DocSnapshot,
     cur: &DocSnapshot,
 ) -> (String, OpClass, Option<(usize, usize)>) {
-    let diff = qdoc::diff_snapshots(prev, cur);
+    let diff = tilo_doc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
     let mut deleted = 0usize;
     let mut formatting = 0usize;
     for b in &diff.blocks {
         match b.op {
-            qdoc::BlockOp::Added => {
+            tilo_doc::BlockOp::Added => {
                 inserted =
                     inserted.saturating_add(b.new_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Removed => {
+            tilo_doc::BlockOp::Removed => {
                 deleted =
                     deleted.saturating_add(b.old_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
+            tilo_doc::BlockOp::Changed | tilo_doc::BlockOp::Equal => {
                 for r in &b.runs {
                     match r.op {
-                        qdoc::RunOp::Insert => {
+                        tilo_doc::RunOp::Insert => {
                             inserted = inserted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Delete => {
+                        tilo_doc::RunOp::Delete => {
                             deleted = deleted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Equal => {}
+                        tilo_doc::RunOp::Equal => {}
                     }
                 }
             }

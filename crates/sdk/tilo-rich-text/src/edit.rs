@@ -19,9 +19,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use qdoc::snapshot::BlockView;
-use qdoc_rich_text::action::{MarkVal, RegionKind, Span};
-use qdoc_rich_text::{RichTextAction, RichTextState};
+use tilo_doc::snapshot::BlockView;
+use tilo_document::action::{MarkVal, RegionKind, Span};
+use tilo_document::{RichTextAction, RichTextState};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
 use ui::widget::marks::{self, MarkSpan};
@@ -55,7 +55,7 @@ pub(crate) fn authorship(block: String, start: usize, len: usize, author: &str) 
             start,
             end: start.saturating_add(len),
         }],
-        name: qdoc::schema::MARK_AUTHOR.to_owned(),
+        name: tilo_doc::schema::MARK_AUTHOR.to_owned(),
         value: Some(MarkVal::Str(author.to_owned())),
         also_clear: Vec::new(),
     }
@@ -670,7 +670,7 @@ pub(crate) fn commit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_rich_text::RichText;
+    use tilo_document::RichText;
     use ui::tilo_actions::Action;
     use ui::tilo_resource::{Demand, Reader, Resource};
     use ui::widget::marks::Mark;

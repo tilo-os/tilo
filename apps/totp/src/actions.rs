@@ -33,8 +33,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourcePresentation, ResourceProvider, RetryPolicy,
-    RiskLevel,
+    PermissionRequirement, Resource, ResourcePresentation, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -377,29 +376,18 @@ fn account_label(a: &Account) -> String {
     }
 }
 
-/// Build the resource tree the Authenticator currently has open: the vault and,
-/// nested under it, one resource per account — every document-mutating
-/// operation exported as an action. Read straight from the document so the tree
-/// is a level-triggered value, recomputed each frame.
-/// Build only the vault root for the initial palette snapshot.
-pub fn provide_contextual_resources(_accounts: &[Account]) -> Vec<Resource> {
-    let mut root = Resource::new("totp.vault", "totp.vault", "Accounts");
-
-    // Adding a secret opens the local, protected form. A setup URI is never
-    // accepted as a generic resource/action argument because resource payloads
-    // are inspectable and durable; the form stores the secret directly in the
-    // encrypted local vault and dispatches only its metadata action afterward.
-    root = root.with_action(
-        account_operation(
-            "add-account",
-            "Add account",
-            OperationKind::View,
-            &TotpOperation::OpenAddAccount,
-        )
-        .with_contract(ActionContract::view()),
-    );
-
-    vec![root]
+/// Adding a secret opens the local, protected form. A setup URI is never
+/// accepted as a generic resource/action argument because resource payloads
+/// are inspectable and durable; the form stores the secret directly in the
+/// encrypted local vault and dispatches only its metadata action afterward.
+pub(crate) fn add_account_view() -> ActionSpec {
+    account_operation(
+        "add-account",
+        "Add account",
+        OperationKind::View,
+        &TotpOperation::OpenAddAccount,
+    )
+    .with_contract(ActionContract::view())
 }
 
 /// Materialise one account after search names its stable resource id.
@@ -576,36 +564,70 @@ pub fn provide_account_resource(
     child
 }
 
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let accounts = AuthDoc::list_accounts(doc);
-    let mut root = provide_contextual_resources(&accounts)
-        .pop()
-        .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
-    let account_count = accounts.len();
-    for (index, acc) in accounts.iter().enumerate() {
-        root = root.with_child(provide_account_resource(acc, index, account_count, false));
+/// Write this device's secret availability onto a published account. The
+/// account row itself stays the one [`tilo_resource::publish`] built.
+pub(crate) fn overlay_local_secret(account: &mut Resource, ready: bool) {
+    if let Some(presentation) = account.presentation.as_mut() {
+        presentation.detail = Some(
+            if ready {
+                "Codes available on this device"
+            } else {
+                "Local setup required to generate codes"
+            }
+            .into(),
+        );
+        presentation.badge = Some(if ready { "Ready" } else { "Set up" }.into());
     }
-
-    vec![root]
+    if let Some(copy) = account
+        .actions
+        .iter_mut()
+        .find(|action| action.id == "copy-code")
+    {
+        copy.contract.availability = if ready {
+            Availability::Available
+        } else {
+            Availability::Unavailable {
+                code: "local_secret_required".into(),
+                reason: "Set up this account on this device before copying a code".into(),
+            }
+        };
+    }
+    if ready {
+        account
+            .actions
+            .retain(|action| action.id.as_str() != "set-up-local");
+    }
 }
 
-impl ResourceProvider for crate::app::AuthenticatorApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let accounts = AuthDoc::list_accounts(doc);
-        let mut root = provide_contextual_resources(&accounts)
-            .pop()
-            .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
-        let count = accounts.len();
-        for (index, account) in accounts.iter().enumerate() {
-            let has_local_secret = self.has_local_secret(account.id);
-            root = root.with_child(provide_account_resource(
-                account,
-                index,
-                count,
-                has_local_secret,
-            ));
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let accounts = AuthDoc::list_accounts(doc);
+    vec![ui::tilo_resource::publish::<crate::resource::Totp>(
+        "totp.vault",
+        "Accounts",
+        &accounts,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::AuthenticatorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut roots = provide_resources(doc);
+        let Some(root) = roots.first_mut() else {
+            return roots;
+        };
+        for child in &mut root.children {
+            if child.kind != "totp.account" {
+                continue;
+            }
+            let Some(raw) = child.id.as_str().strip_prefix("totp.account:") else {
+                continue;
+            };
+            let Ok(id) = raw.parse() else {
+                continue;
+            };
+            overlay_local_secret(child, self.has_local_secret(id));
         }
-        vec![root]
+        roots
     }
 }
 
@@ -798,8 +820,11 @@ mod tests {
             assert_eq!(add.kind, OperationKind::View);
             assert!(add.params().is_empty());
             assert!(
-                vault.children.is_empty(),
-                "the contextual root stays bounded"
+                vault
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "totp.account"),
+                "accounts ride the vault door"
             );
             let account = AuthDoc::list_accounts(&state.doc)
                 .into_iter()

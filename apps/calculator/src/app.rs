@@ -20,6 +20,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tilo_resource::Resource;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
 use crate::draw::{self, Align};
@@ -113,12 +114,10 @@ pub struct CalculatorApp {
     node: Option<NodeId>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`CalculatorAction`] through this: the host brackets the undo boundary,
-    /// applies the action through the executor (so it replays byte-identically on
-    /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove an affordance and its [`ActionSpec`](tilo_actions::ActionSpec)
-    /// build the identical action.
-    actions: ui::ActionHost,
+    /// [`CalculatorAction`] through this: hosted via [`crate::resource::ActionSink`]
+    /// (framework [`Dispatcher`](ui::framework::Dispatcher)), standalone via the
+    /// local action host for tests and benches.
+    actions: crate::resource::ActionSink,
 }
 
 /// How long editing must pause before a burst of keystrokes is sealed into one
@@ -131,6 +130,11 @@ impl CalculatorApp {
     /// is adopted from the CRDT on the first [`Widget::sync`].
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// Project an already admitted Calculator record without authoring schema
@@ -192,8 +196,35 @@ impl CalculatorApp {
             synced: None,
             last_edit_time: None,
             node: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
+    }
+
+    /// Adopt durable history and graph rows from the framework resource state.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::CalculatorState) {
+        self.model.history = state.history.iter().map(|(_, e)| e.clone()).collect();
+        self.model.funcs = state.funcs.iter().map(|(_, f)| f.clone()).collect();
+        self.model.surfaces = state.surfaces.iter().map(|(_, f)| f.clone()).collect();
+        self.model.active_fn = self
+            .model
+            .active_fn
+            .min(self.model.funcs.len().saturating_sub(1));
+        self.model.active_surface = self
+            .model
+            .active_surface
+            .min(self.model.surfaces.len().saturating_sub(1));
+        self.seeded = true;
+        self.model_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Calculator>,
+    ) {
+        self.actions.attach(dispatcher);
+        self.seeded = true;
     }
 
     /// Recompute the header geometry from `self.area`. The mode switcher and the
@@ -323,16 +354,13 @@ impl CalculatorApp {
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
         // Unit/headless callers can invoke controls before the first widget
         // sync. Bootstrap their current shared artifacts once, then continue
-        // through the same canonical action path as a live window.
-        if !crate::doc::is_seeded(doc) {
+        // through the same canonical action path as a live window. Hosted
+        // surfaces never write the document outside Action::apply — the
+        // framework already initialized the record.
+        if !self.actions.is_hosted() && !crate::doc::is_seeded(doc) {
             crate::doc::store(doc, &self.model);
         }
-        self.actions.dispatch_with_context(
-            doc,
-            actions::CALCULATOR_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.calculator", "Calculator", action),
-        );
+        self.actions.dispatch(doc, action);
         // Re-adopt only durable resources. This makes a keyed action visible
         // immediately without ever copying another window's presentation.
         let _ = crate::doc::load_into(doc, &mut self.model);
@@ -390,7 +418,7 @@ impl CalculatorApp {
     /// Ctrl+K, rather than smuggling it into the CRDT in a later wholesale
     /// store. This matters for undo, activity history, and collaborators.
     fn set_mode_in_document(&mut self, m: Mode, doc: &mut AutoCommit) {
-        if !crate::doc::is_seeded(doc) {
+        if !self.actions.is_hosted() && !crate::doc::is_seeded(doc) {
             crate::doc::store(doc, &self.model);
         }
         let funcs_before = self.model.funcs.len();
@@ -1287,6 +1315,9 @@ impl Widget for CalculatorApp {
         if !self.seeded {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
+            } else if self.actions.is_hosted() {
+                // Framework hosts initialize via Resource::initialize; never
+                // write the shared document from the surface.
             } else {
                 // Keep standalone native and checked component roots on the
                 // same schema initializer. The explicit model preserves the
@@ -1902,7 +1933,41 @@ impl ui::resources::PublishesResources for CalculatorApp {
     /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
     /// impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        // The framework root publishes this document. The widget tree would
+        // be a second door.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
+        let state = crate::resource::Calculator::read(doc).unwrap_or_default();
+        vec![ui::tilo_resource::publish::<crate::resource::Calculator>(
+            crate::resource::Calculator::KIND,
+            "Calculator",
+            &state,
+        )]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.actions.is_hosted() && id == crate::resource::Calculator::KIND {
+            return None;
+        }
+        let state = crate::resource::Calculator::read(doc).unwrap_or_default();
+        let root = ui::tilo_resource::publish::<crate::resource::Calculator>(
+            crate::resource::Calculator::KIND,
+            "Calculator",
+            &state,
+        );
+        find(&[root], id)
     }
 }
 

@@ -136,6 +136,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_bench_scroll(frames, watch, loaded);
     }
 
+    if !tube::standalone_launch() {
+        ui::framework::run::<tube::TubeShell>();
+        return Ok(());
+    }
+
     ui::launch::run(
         &LaunchSpec::new("so.tilo.tube", live_root)
             .shot_root(shot_root)

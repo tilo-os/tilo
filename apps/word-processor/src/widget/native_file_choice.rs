@@ -21,16 +21,19 @@ pub(super) fn same_file_content_with(
     format: WpFormat,
     content: &dyn tilo_content::ContentSource,
 ) -> Result<bool, String> {
-    fn normalize(bytes: &[u8], format: WpFormat) -> Result<qdoc::snapshot::DocSnapshot, String> {
+    fn normalize(
+        bytes: &[u8],
+        format: WpFormat,
+    ) -> Result<tilo_doc::snapshot::DocSnapshot, String> {
         let mut parsed = AutoCommit::new();
-        let containers = qdoc::model::init(&mut parsed, &automerge::ROOT);
-        let mut ids = qdoc::IdGen::new("selected-file-comparison".into());
+        let containers = tilo_doc::model::init(&mut parsed, &automerge::ROOT);
+        let mut ids = tilo_doc::IdGen::new("selected-file-comparison".into());
         // Embedded content is compared by the address the document names.
         let mut inputs = tilo_content::ContentInputs::new();
         format
             .import(
                 bytes,
-                &mut qdoc::DocMut {
+                &mut tilo_doc::DocMut {
                     doc: &mut parsed,
                     c: &containers,
                     ids: &mut ids,
@@ -38,13 +41,13 @@ pub(super) fn same_file_content_with(
                 &mut inputs,
             )
             .map_err(|error| error.to_string())?;
-        Ok(qdoc::model::materialize(&parsed, &containers))
+        Ok(tilo_doc::model::materialize(&parsed, &containers))
     }
     let containers =
-        qdoc::model::open(document, &automerge::ROOT).map_err(|error| error.to_string())?;
+        tilo_doc::model::open(document, &automerge::ROOT).map_err(|error| error.to_string())?;
     let projected = format
         .export(
-            qdoc::DocRef {
+            tilo_doc::DocRef {
                 doc: document,
                 c: &containers,
             },
@@ -192,14 +195,16 @@ impl WordProcessorWidget {
             .as_ref()
             .filter(|offer| offer.generation == generation)
             .ok_or("selected file choice is no longer current")?;
-        if use_selected
-            && !self
-                .inner
-                .replace_with_format(state, &offer.bytes, offer.format)
-        {
-            return Err(format!("could not parse {}", offer.path.display()));
-        }
-        if use_selected {
+        let selected =
+            use_selected.then(|| (offer.bytes.clone(), offer.format, offer.path.clone()));
+        if let Some((bytes, format, path)) = selected {
+            let Some(action) = self.inner.stage_replacement(state, &bytes, format) else {
+                return Err(format!("could not parse {}", path.display()));
+            };
+            if !self.try_perform_action(state, &action) {
+                return Err(format!("could not parse {}", path.display()));
+            }
+            self.inner.seat_after_replacement(state);
             self.remember_saved_document(state);
             self.save_status = DocumentSaveStatus::Clean;
             self.lifecycle.needs_commit = true;
@@ -375,12 +380,12 @@ mod tests {
     use crate::widget::{ReadDoc, Widget};
     fn markdown(bytes: &[u8]) -> AutoCommit {
         let mut document = AutoCommit::new();
-        let containers = qdoc::model::init(&mut document, &automerge::ROOT);
-        let mut ids = qdoc::IdGen::new("original-file-history".into());
+        let containers = tilo_doc::model::init(&mut document, &automerge::ROOT);
+        let mut ids = tilo_doc::IdGen::new("original-file-history".into());
         WpFormat::Markdown
             .import(
                 bytes,
-                &mut qdoc::DocMut {
+                &mut tilo_doc::DocMut {
                     doc: &mut document,
                     c: &containers,
                     ids: &mut ids,

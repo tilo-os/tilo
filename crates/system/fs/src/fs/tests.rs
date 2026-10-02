@@ -2957,7 +2957,7 @@ mod record_publisher_integration_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdoc_merge_recovers_after_history_crash_and_replays_idempotently() {
-        let mut base = qdoc::Document::new();
+        let mut base = tilo_doc::Document::new();
         let block = base.insert_block(None, "paragraph");
         base.splice_text(&block, 0, 0, "base");
         let base_bytes = base.save();

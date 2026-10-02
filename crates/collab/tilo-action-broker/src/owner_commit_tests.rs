@@ -217,7 +217,18 @@ mod owner_commit_tests {
             true
         }
         fn send(&mut self, request: ui::collaboration::CollabRequest) -> Result<(), String> {
-            if matches!(request, ui::collaboration::CollabRequest::Hello { .. }) {
+            if let ui::collaboration::CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } = &request
+            {
+                self.route = ui::collaboration::RouteSpec {
+                    app_id: app_id.clone(),
+                    cluster_id: *cluster_id,
+                    record: record.clone(),
+                };
                 self.ack = true;
             }
             self.sent.borrow_mut().push(request);

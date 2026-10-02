@@ -24,7 +24,7 @@ use ui::theme::Theme;
 use ui::widget::{CodeEditor, Language, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
-use crate::doc::MergeDoc;
+use crate::doc::{MergeDoc, SharedMerge};
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use ui::paint::{PaintCtx, with_alpha};
@@ -181,6 +181,8 @@ struct ActionHit {
 /// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
+    /// Last three-way inputs loaded locally (projected into the document).
+    shared: Option<SharedMerge>,
     base_label: String,
     ours_label: String,
     theirs_label: String,
@@ -204,6 +206,10 @@ pub struct MergeView {
     /// merged buffer (a projection of the external inputs, not a replayable
     /// action) and clears any stale per-hunk resolutions.
     pending_seed: bool,
+    /// When the framework hosts this view, seed writes are queued here instead
+    /// of being written into the document directly.
+    hosted: bool,
+    seed_request: Option<String>,
     expected_content: Option<crate::doc::AuthoredSnapshot>,
     merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
@@ -227,6 +233,7 @@ impl MergeView {
     pub fn new() -> Self {
         Self {
             model: MergeModel::default(),
+            shared: None,
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
@@ -241,6 +248,8 @@ impl MergeView {
             cursor: Point::ZERO,
             dirty: true,
             pending_seed: false,
+            hosted: false,
+            seed_request: None,
             expected_content: None,
             merged_output: String::new(),
             pending_action: None,
@@ -256,6 +265,23 @@ impl MergeView {
             .as_ref()
             .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
     }
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+    }
+
+    /// The provisional buffer a hosted view wants written as [`DiffmergeAction::SeedMerge`].
+    pub(crate) fn take_seed_request(&mut self) -> Option<String> {
+        self.seed_request.take()
+    }
+
+    /// Show the merged buffer the framework resource already holds.
+    pub(crate) fn adopt_merged(&mut self, merged: &str) {
+        if self.merged_output != merged {
+            self.merged_output = merged.to_string();
+        }
+    }
+
     pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
         self.expected_content = Some(crate::doc::authored_snapshot(doc));
         self.merged_output = MergeDoc::merged_text(doc);
@@ -263,19 +289,74 @@ impl MergeView {
     /// Historical/remote content cannot identify the unsaved original input hunks.
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
-            self.model = MergeModel::default();
-            self.base_label.clear();
-            self.ours_label.clear();
-            self.theirs_label.clear();
-            self.source_spans.clear();
-            self.pending_action = None;
-            self.action_hits.clear();
-            self.hunk_spans.clear();
-            self.active_hunk = None;
-            self.expected_content = None;
-            self.dirty = true;
+            let adoptable = SharedMerge::read(doc).filter(|shared| {
+                let mut model = shared.into_model();
+                crate::doc::apply_resolutions(&mut model, doc);
+                model.merged_text() == MergeDoc::merged_text(doc)
+            });
+            if let Some(shared) = adoptable {
+                self.adopt_shared(&shared, doc);
+            } else {
+                // Missing shared projection, or a restored merged buffer that no
+                // longer matches the three-way compose — drop actionable hunks
+                // so a queued ResolveHunk cannot overwrite the restored output.
+                self.model = MergeModel::default();
+                self.shared = None;
+                self.base_label.clear();
+                self.ours_label.clear();
+                self.theirs_label.clear();
+                self.source_spans.clear();
+                self.pending_action = None;
+                self.action_hits.clear();
+                self.hunk_spans.clear();
+                self.active_hunk = None;
+                self.expected_content = None;
+                self.dirty = true;
+            }
         }
         self.merged_output = MergeDoc::merged_text(doc);
+    }
+
+    /// Adopt a shared three-way projection from the document (or present).
+    pub(crate) fn adopt_shared_model(&mut self, title: &str, model: &MergeModel) {
+        let _ = title;
+        if self.model.hunks.is_empty() && !model.hunks.is_empty() {
+            self.model = model.clone();
+            self.source_spans = HunkSpans::for_model(
+                &self.model,
+                [&self.base_label, &self.ours_label, &self.theirs_label],
+            );
+            self.recompute_spans();
+            self.active_hunk = self
+                .first_conflict()
+                .or_else(|| self.model.change_indices().first().copied());
+            self.dirty = true;
+        }
+    }
+
+    fn adopt_shared(&mut self, shared: &SharedMerge, doc: &AutoCommit) {
+        self.base_label.clone_from(&shared.base_label);
+        self.ours_label.clone_from(&shared.ours_label);
+        self.theirs_label.clone_from(&shared.theirs_label);
+        self.shared = Some(shared.clone());
+        self.model = shared.into_model();
+        crate::doc::apply_resolutions(&mut self.model, doc);
+        self.source_spans = HunkSpans::for_model(
+            &self.model,
+            [&self.base_label, &self.ours_label, &self.theirs_label],
+        );
+        self.recompute_spans();
+        self.active_hunk = self
+            .first_conflict()
+            .or_else(|| self.model.change_indices().first().copied());
+        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+        self.pending_action = None;
+        self.action_hits.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn shared_merge(&self) -> Option<&SharedMerge> {
+        self.shared.as_ref()
     }
 
     /// Place the panel at `rect` directly (the parent app owns the toolbar
@@ -314,6 +395,14 @@ impl MergeView {
         theirs_label: &str,
         theirs: &str,
     ) {
+        self.shared = Some(SharedMerge {
+            base: base.to_string(),
+            ours: ours.to_string(),
+            theirs: theirs.to_string(),
+            base_label: base_label.to_string(),
+            ours_label: ours_label.to_string(),
+            theirs_label: theirs_label.to_string(),
+        });
         self.model = MergeModel::compute(base, ours, theirs);
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();
@@ -1018,10 +1107,20 @@ impl MergeView {
 impl Widget for MergeView {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output (a projection of
-            // the external inputs, not a replayable action) and drop any stale
-            // per-hunk resolutions whose indices no longer correspond.
+        if self.hosted {
+            if self.pending_seed {
+                self.seed_request = Some(self.model.merged_text());
+                self.pending_seed = false;
+            } else {
+                self.reconcile_content(state);
+                if !MergeDoc::has_merged(state) {
+                    self.seed_request = Some(self.model.merged_text());
+                }
+            }
+        } else if self.pending_seed {
+            // Fresh inputs: seed the provisional merged output and drop any
+            // stale per-hunk resolutions whose indices no longer correspond.
+            // The hosted path queues this as `SeedMerge` instead.
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
@@ -1029,8 +1128,7 @@ impl Widget for MergeView {
         } else {
             self.reconcile_content(state);
         }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
+        if !self.hosted && !MergeDoc::has_merged(state) {
             MergeDoc::set_merged(state, &self.model.merged_text());
         }
         let merged = MergeDoc::merged_text_obj(state);

@@ -58,6 +58,7 @@ mod overview_grid;
 pub mod pptx;
 mod presentation;
 pub mod render;
+pub mod resource;
 pub mod search_provider;
 pub mod strings;
 mod toolbar_tools;
@@ -88,6 +89,9 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(SlidesApp::demo(scenario))
 }
+
+pub use actions::SlidesDeck;
+pub use resource::SlidesShell;
 
 #[cfg(test)]
 mod deck_operations_tests;

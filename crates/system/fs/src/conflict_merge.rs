@@ -247,8 +247,8 @@ pub fn merge_exact(
 fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMergeError> {
     // Loading through qdoc first rejects arbitrary Automerge documents that do
     // not implement the canonical document schema.
-    qdoc::Document::load(first).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
-    qdoc::Document::load(second).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::load(first).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::load(second).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
     let mut left = Automerge::load(first).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     let mut right = Automerge::load(second).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     left.merge(&mut right)
@@ -257,7 +257,7 @@ fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMerge
     if bytes.len() > MAX_MERGE_INPUT_BYTES {
         return Err(DeterministicMergeError::OutputTooLarge);
     }
-    qdoc::Document::load(&bytes).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
+    tilo_doc::Document::load(&bytes).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     Ok(bytes)
 }
 
@@ -316,7 +316,7 @@ pub enum DeterministicMergeError {
 mod tests {
     use super::*;
     use collab_types::{ContentHash, FileActor, FileProvenance, FileRecordId};
-    use qdoc::Document;
+    use tilo_doc::Document;
 
     fn version(value: u128) -> FileVersionId {
         FileVersionId(uuid::Uuid::from_u128(value))

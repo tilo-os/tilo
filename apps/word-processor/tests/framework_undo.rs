@@ -2,16 +2,15 @@
 //! door a model, a script or the palette uses — restores the document as it
 //! was, formatting included.
 
-use qdoc_rich_text::RichText;
-use qdoc_rich_text::action::{MarkVal, RegionKind, RichTextAction, Span};
+use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
-use word_processor::framework::WordProcessorApp;
+use word_processor::framework::{Document, WordProcessorApp};
 
-fn snapshot(app: &TestApp<WordProcessorApp>) -> qdoc::DocSnapshot {
+fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
     })
 }
 
@@ -30,7 +29,7 @@ fn open_with(markdown: &str) -> TestApp<WordProcessorApp> {
     let load = RichTextAction::ReplaceBody {
         markdown: markdown.to_owned(),
     };
-    app.invoke_confirmed(Invoke::<RichText>::apply(&load).unwrap())
+    app.invoke_confirmed(Invoke::<Document>::apply(&load).unwrap())
         .unwrap();
     app
 }
@@ -48,7 +47,7 @@ fn block(app: &TestApp<WordProcessorApp>, prefix: &str) -> String {
 fn group(app: &mut TestApp<WordProcessorApp>, actions: &[RichTextAction]) {
     let members = actions
         .iter()
-        .map(|action| Invoke::<RichText>::apply(action).unwrap());
+        .map(|action| Invoke::<Document>::apply(action).unwrap());
     app.invoke_confirmed(Invoke::group(members)).unwrap();
 }
 

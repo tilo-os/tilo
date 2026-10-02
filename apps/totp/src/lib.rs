@@ -63,6 +63,7 @@ pub mod i18n;
 pub mod list;
 pub mod model;
 pub mod qr;
+pub mod resource;
 pub mod ring;
 pub mod search_provider;
 pub mod storage;
@@ -149,3 +150,4 @@ pub fn app_root_persistence_error() -> Box<dyn Widget> {
 pub fn app_root_missing_secret() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::demo_missing_secret())
 }
+pub use resource::{Totp, TotpShell, launch_spec};

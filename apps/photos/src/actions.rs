@@ -39,8 +39,8 @@ use automerge::AutoCommit;
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::doc::PhotosDoc;
@@ -1652,27 +1652,24 @@ pub fn parse_crop_arg(arg: &str) -> Option<Rect01> {
 /// never touches the file on disk.
 pub struct PhotosResources;
 
-impl ResourceProvider for PhotosResources {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Nothing open: there is no addressed photograph yet. The shell's app
-        // launcher remains the entry point for opening the first one.
-        let Some(image) = PhotosDoc::image(doc) else {
-            return library_resources(doc);
-        };
-        let mut resources = vec![open_image_resource(doc, &image)];
-        resources.extend(library_resources(doc));
-        resources
+// Inherent resource publication (was ResourceProvider)
+impl PhotosResources {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        library_resources(doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id.chars().take(MAX_RESOURCE_ID_CHARS + 1).count() > MAX_RESOURCE_ID_CHARS {
             return None;
         }
+        if let Some(found) = find_photo(&library_resources(doc), id) {
+            return Some(found);
+        }
         if let Some(image) = PhotosDoc::image(doc).filter(|image| resource_id(image) == id) {
-            return Some(open_image_resource(doc, &image));
+            return Some(open_image_resource(&image, &PhotosDoc::edits(doc)));
         }
         if id == "photos.library" {
-            return Some(library_root_resource());
+            return library_resources(doc).into_iter().next();
         }
         if id == "photos.timeline" {
             return Some(timeline_resource(&PhotosDoc::library(doc)));
@@ -1738,8 +1735,8 @@ impl ResourceProvider for PhotosResources {
     }
 }
 
-fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
-    let edits = PhotosDoc::edits(doc);
+pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource {
+    let edits = *edits;
     let (w, h) = image.edited_size(&edits);
     let id = resource_id(image);
     let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
@@ -1834,52 +1831,93 @@ fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
 /// stable resource id even when it is not selected in the editor, allowing
 /// agents and search to resolve a late library item without a visual grid
 /// having first materialised it.
-fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let library = PhotosDoc::library(doc);
-    let mut root = library_root_resource();
-    root = root.with_child(favorites_resource(
-        library.photos.iter().filter(|photo| photo.favorite).count(),
-    ));
-    root = root.with_child(albums_resource(&library));
-    root = root.with_child(places_resource(&library));
-    root = root.with_child(people_root_resource(&library));
-    root = root.with_child(timeline_resource(&library));
-    for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
-        root = root.with_child(photo_resource(photo));
+fn find_photo(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_photo(&resource.children, id) {
+            return Some(found);
+        }
     }
-    let (folders, people, tags, objects, pets) = metadata_label_counts(&library);
-    for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
-        root = root.with_child(folder_resource(&folder, count));
-    }
-    for (person, count) in people.into_iter().take(PERSON_CONTEXT_LIMIT) {
-        root = root.with_child(person_resource(&person, count));
-    }
-    for (tag, count) in tags.into_iter().take(TAG_CONTEXT_LIMIT) {
-        root = root.with_child(tag_resource(&tag, count));
-    }
-    for (object, count) in objects.into_iter().take(TAG_CONTEXT_LIMIT) {
-        root = root.with_child(object_resource(&object, count));
-    }
-    for (pet, count) in pets.into_iter().take(TAG_CONTEXT_LIMIT) {
-        root = root.with_child(pet_resource(&pet, count));
-    }
-    vec![root]
+    None
 }
 
-pub(crate) fn library_root_resource() -> Resource {
-    let mut root = Resource::new("photos.library", "photos.library", "Photo library");
-    if let Some(spec) = operation("open", "View photo library", &PhotosOperation::ViewLibrary) {
-        root = root.with_action(spec.with_description("Browse and manage photographs in Photos"));
+fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let state =
+        <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
+        "photos.library",
+        "Photo library",
+        &state,
+    );
+    root.children.insert(0, library_analysis_resource());
+    // Agents and search address the open photograph as its own root. The
+    // framework host still nests it under the library via Photos::children;
+    // the standalone surface must not publish the same id twice.
+    let mut roots = Vec::new();
+    if let Some(image) = &state.open {
+        let open = open_image_resource(image, &state.edits);
+        root.children.retain(|child| child.id != open.id);
+        roots.push(open);
     }
-    root = root
-        .with_action(file_operation("import", "Import photograph", true))
-        .with_action(import_directory_spec(false))
-        .with_action(import_directory_spec(true))
-        .with_action(create_album_spec())
-        .with_action(set_favorites_spec())
-        .with_action(set_metadata_batch_spec());
-    root = root.with_child(library_analysis_resource());
-    root
+    roots.push(root);
+    roots
+}
+
+/// Nested library catalogue rows for [`crate::resource::Photos::children`].
+pub(crate) fn library_children(library: &crate::model::PhotoLibrary) -> Vec<Resource> {
+    let mut children = vec![
+        favorites_resource(library.photos.iter().filter(|photo| photo.favorite).count()),
+        albums_resource(library),
+        places_resource(library),
+        people_root_resource(library),
+        timeline_resource(library),
+    ];
+    for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
+        children.push(photo_resource(photo));
+    }
+    let (folders, people, tags, objects, pets) = metadata_label_counts(library);
+    for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
+        children.push(folder_resource(&folder, count));
+    }
+    for (person, count) in people.into_iter().take(PERSON_CONTEXT_LIMIT) {
+        children.push(person_resource(&person, count));
+    }
+    for (tag, count) in tags.into_iter().take(TAG_CONTEXT_LIMIT) {
+        children.push(tag_resource(&tag, count));
+    }
+    for (object, count) in objects.into_iter().take(TAG_CONTEXT_LIMIT) {
+        children.push(object_resource(&object, count));
+    }
+    for (pet, count) in pets.into_iter().take(TAG_CONTEXT_LIMIT) {
+        children.push(pet_resource(&pet, count));
+    }
+    children
+}
+
+/// Root View/Effect operations for [`crate::resource::Photos::local_operations`].
+/// Document mutations on the library root stay on the legacy publisher until
+/// they are declared; `publish` drops Document specs from this list.
+pub(crate) fn library_local_operations() -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
+    if let Some(spec) = operation("open", "View photo library", &PhotosOperation::ViewLibrary) {
+        specs.push(spec.with_description("Browse and manage photographs in Photos"));
+    }
+    specs.push(file_operation("import", "Import photograph", true));
+    specs.push(import_directory_spec(false));
+    specs.push(import_directory_spec(true));
+    specs
+}
+
+/// Album and metadata edits. These are document actions, so they belong on
+/// [`crate::resource::Photos::bound_actions`] and ride [`tilo_resource::publish`].
+pub(crate) fn library_document_actions() -> Vec<ActionSpec> {
+    vec![
+        create_album_spec(),
+        set_favorites_spec(),
+        set_metadata_batch_spec(),
+    ]
 }
 
 /// Canonical address for whole-library local intelligence. Runtime progress is
@@ -3915,6 +3953,24 @@ mod tests {
     use crate::model::OpenImage;
     use tilo_actions::flatten;
 
+    fn published_open_image(resources: &[Resource]) -> &Resource {
+        resources
+            .iter()
+            .find(|resource| resource.kind == IMAGE_KIND)
+            .or_else(|| {
+                resources
+                    .iter()
+                    .find(|resource| resource.kind == "photos.library")
+                    .and_then(|library| {
+                        library
+                            .children
+                            .iter()
+                            .find(|child| child.kind == IMAGE_KIND)
+                    })
+            })
+            .expect("the open photograph is published")
+    }
+
     fn doc_with_image() -> AutoCommit {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -4088,7 +4144,7 @@ mod tests {
             .apply(&mut doc)
             .unwrap();
             let people = PhotosResources
-                .resource(&doc, "photos.people")
+                .publish_resource(&doc, "photos.people")
                 .expect("People is a canonical resource");
             assert!(
                 people
@@ -4100,7 +4156,7 @@ mod tests {
             assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
             assert_eq!(PhotosDoc::photo(&doc, &second_id).unwrap().people, ["Sam"]);
             let person = PhotosResources
-                .resource(&doc, &person_resource_id("Sam"))
+                .publish_resource(&doc, &person_resource_id("Sam"))
                 .expect("approved person is a resource");
             assert!(
                 person
@@ -4134,7 +4190,7 @@ mod tests {
             assert!(PhotosDoc::photo(&doc, &first_id).unwrap().people.is_empty());
             assert!(
                 PhotosResources
-                    .resource(&doc, &person_resource_id("Samantha"))
+                    .publish_resource(&doc, &person_resource_id("Samantha"))
                     .is_none()
             );
         }
@@ -4170,10 +4226,10 @@ mod tests {
                 Some(location.clone())
             );
             let place_id = place_resource_id(&location.place_key());
-            let place = PhotosResources.resource(&doc, &place_id).unwrap();
+            let place = PhotosResources.publish_resource(&doc, &place_id).unwrap();
             assert_eq!(place.kind, "photos.place");
             assert!(place.actions.iter().any(|action| action.id == "open"));
-            let photo_resource = PhotosResources.resource(&doc, &id).unwrap();
+            let photo_resource = PhotosResources.publish_resource(&doc, &id).unwrap();
             assert!(
                 photo_resource
                     .actions
@@ -4192,7 +4248,7 @@ mod tests {
             .apply(&mut doc)
             .unwrap();
             assert!(PhotosDoc::photo(&doc, &id).unwrap().location.is_none());
-            assert!(PhotosResources.resource(&doc, &place_id).is_none());
+            assert!(PhotosResources.publish_resource(&doc, &place_id).is_none());
         }
 
         eprintln!("phase locations_refuse_local_scope_or_out_of_range_coordinates");
@@ -4245,7 +4301,7 @@ mod tests {
             .unwrap();
             assert!(location.is_valid());
             let resource = PhotosResources
-                .resource(&doc, &place_resource_id(&location.place_key()))
+                .publish_resource(&doc, &place_resource_id(&location.place_key()))
                 .expect("map pin has one canonical place resource");
             assert_eq!(resource.label, "Meeting point");
             assert!(resource.actions.iter().any(|action| action.id == "open"));
@@ -4277,15 +4333,15 @@ mod tests {
             assert_eq!(stored.analysis.unwrap().ocr_text, "invoice total forty two");
             assert!(
                 PhotosResources
-                    .resource(&doc, &object_resource_id("bicycle"))
+                    .publish_resource(&doc, &object_resource_id("bicycle"))
                     .is_some()
             );
             assert!(
                 PhotosResources
-                    .resource(&doc, &pet_resource_id("dog"))
+                    .publish_resource(&doc, &pet_resource_id("dog"))
                     .is_some()
             );
-            let resource = PhotosResources.resource(&doc, &id).unwrap();
+            let resource = PhotosResources.publish_resource(&doc, &id).unwrap();
             assert!(
                 resource
                     .actions
@@ -4362,14 +4418,14 @@ mod tests {
 
             let analysis_id = format!("{id}#analysis");
             let resource = PhotosResources
-                .resource(&doc, &analysis_id)
+                .publish_resource(&doc, &analysis_id)
                 .expect("analysis is directly addressable");
             assert_eq!(resource.kind, "photos.analysis");
             assert_eq!(resource.children.len(), 2, "only OCR and vision components");
             assert!(resource.actions.iter().any(|action| action.id == "remove"));
 
             let ocr = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/ocr"))
+                .publish_resource(&doc, &format!("{analysis_id}/ocr"))
                 .expect("OCR component is directly addressable");
             assert_eq!(ocr.kind, "photos.analysis.ocr");
             let text = ocr
@@ -4401,7 +4457,7 @@ mod tests {
 
             let late_text_id = format!("{analysis_id}/ocr/text/20");
             let late_text = PhotosResources
-                .resource(&doc, &late_text_id)
+                .publish_resource(&doc, &late_text_id)
                 .expect("OCR outside the contextual window resolves exactly");
             assert_eq!(late_text.kind, "photos.analysis.ocr.text.part");
             assert!(!late_text.label.is_empty());
@@ -4409,23 +4465,23 @@ mod tests {
 
             let late_object_id = format!("{analysis_id}/vision/objects/20");
             let late_object = PhotosResources
-                .resource(&doc, &late_object_id)
+                .publish_resource(&doc, &late_object_id)
                 .expect("object outside the contextual window resolves exactly");
             assert_eq!(late_object.kind, "photos.analysis.objects.label");
             assert_eq!(late_object.label, "object-20");
 
             let language = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/ocr/provenance/language"))
+                .publish_resource(&doc, &format!("{analysis_id}/ocr/provenance/language"))
                 .expect("OCR language provenance is inspectable");
             assert_eq!(language.kind, "photos.analysis.provenance.language");
             assert_eq!(language.label, "language: deu");
             let model = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/vision/provenance/model"))
+                .publish_resource(&doc, &format!("{analysis_id}/vision/provenance/model"))
                 .expect("vision model provenance is inspectable");
             assert_eq!(model.kind, "photos.analysis.provenance.model");
             assert_eq!(model.label, "Model: local-vision-model");
             let revision = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/vision/provenance/revision"))
+                .publish_resource(&doc, &format!("{analysis_id}/vision/provenance/revision"))
                 .expect("vision model revision is inspectable");
             assert_eq!(revision.kind, "photos.analysis.provenance.revision");
             assert_eq!(
@@ -4433,13 +4489,13 @@ mod tests {
                 format!("Model revision: {}", "a".repeat(64))
             );
             let analyzed_content = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/ocr/provenance/content"))
+                .publish_resource(&doc, &format!("{analysis_id}/ocr/provenance/content"))
                 .expect("analyzed content identity is inspectable");
             assert_eq!(analyzed_content.kind, "photos.analysis.provenance.content");
             assert_eq!(analyzed_content.label, format!("content: {content}"));
 
             let vision = PhotosResources
-                .resource(&doc, &format!("{analysis_id}/vision"))
+                .publish_resource(&doc, &format!("{analysis_id}/vision"))
                 .expect("vision component is directly addressable");
             let refresh = vision
                 .actions
@@ -4455,7 +4511,7 @@ mod tests {
             );
             assert!(
                 PhotosResources
-                    .resource(&doc, &format!("{analysis_id}/vision/objects/40"))
+                    .publish_resource(&doc, &format!("{analysis_id}/vision/objects/40"))
                     .is_none(),
                 "exact lookup refuses an out-of-range derived child"
             );
@@ -4546,7 +4602,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             PhotosDoc::seed(&mut doc);
             let resource = PhotosResources
-                .resource(&doc, "photos.library-analysis")
+                .publish_resource(&doc, "photos.library-analysis")
                 .expect("library analysis resolves without materializing the gallery");
             assert_eq!(resource.kind, "photos.library-analysis");
             for id in [
@@ -4587,7 +4643,10 @@ mod tests {
                         .any(|tag| tag == "explicit-share")
                 );
             }
-            let root = PhotosResources.resources(&doc).pop().expect("library root");
+            let root = PhotosResources
+                .publish_resources(&doc)
+                .pop()
+                .expect("library root");
             assert!(
                 root.children
                     .iter()
@@ -4869,15 +4928,16 @@ mod tests {
                     .with_content(HASH);
             PhotosDoc::set_image(&mut doc, Some(&img));
 
-            let res = PhotosResources.resources(&doc);
-            assert_eq!(res[0].id.0, format!("photos.image:{HASH}"));
+            let res = PhotosResources.publish_resources(&doc);
+            let image = published_open_image(&res);
+            assert_eq!(image.id.0, format!("photos.image:{HASH}"));
             assert_eq!(
-                content_of(&res[0].id.0),
+                content_of(&image.id.0),
                 Some(HASH),
                 "the address does not lead back to the content it names"
             );
             // And the file's name is still what a person reads.
-            assert_eq!(res[0].label, "x.png");
+            assert_eq!(image.label, "x.png");
         }
 
         // The path-shaped id an older document produces is not mistaken for a
@@ -4886,8 +4946,8 @@ mod tests {
         eprintln!("phase a_path_shaped_address_names_no_content");
         {
             let doc = doc_with_image();
-            let res = PhotosResources.resources(&doc);
-            assert_eq!(content_of(&res[0].id.0), None);
+            let res = PhotosResources.publish_resources(&doc);
+            assert_eq!(content_of(&published_open_image(&res).id.0), None);
             assert_eq!(content_of("photos.image:"), None);
             assert_eq!(content_of("files.entry:/x"), None);
             // Right length, wrong alphabet: hex is what a hash is written in.
@@ -4900,11 +4960,8 @@ mod tests {
         eprintln!("phase the_open_photograph_is_published_with_its_name_and_size");
         {
             let doc = doc_with_image();
-            let res = PhotosResources.resources(&doc);
-            let image = res
-                .iter()
-                .find(|resource| resource.kind == IMAGE_KIND)
-                .unwrap();
+            let res = PhotosResources.publish_resources(&doc);
+            let image = published_open_image(&res);
             assert_eq!(image.label, "harbour.png");
             assert_eq!(
                 image.id.0,
@@ -4919,23 +4976,32 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             PhotosDoc::seed(&mut doc);
-            let resources = PhotosResources.resources(&doc);
+            let resources = PhotosResources.publish_resources(&doc);
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "photos.library");
-            assert_eq!(resources[0].actions[0].id, "open");
-            let tilo_actions::ActionInput::Immediate(open) = &resources[0].actions[0].input else {
+            let open_action = resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("the published library offers Open");
+            let tilo_actions::ActionInput::Immediate(open) = &open_action.input else {
                 panic!("library view is an immediate local operation");
             };
             assert_eq!(
                 decode_operation(&open.type_id, &open.payload).unwrap(),
                 Some(PhotosOperation::ViewLibrary)
             );
-            assert!(
-                resources[0]
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "import")
-            );
+            for id in [
+                "import",
+                "create-album",
+                "set-favorites",
+                "set-metadata-batch",
+            ] {
+                assert!(
+                    resources[0].actions.iter().any(|action| action.id == id),
+                    "published library is missing {id}"
+                );
+            }
         }
     }
 
@@ -4958,7 +5024,7 @@ mod tests {
             PhotosDoc::set_library(&mut doc, &library);
 
             let albums = PhotosResources
-                .resource(&doc, "photos.albums")
+                .publish_resource(&doc, "photos.albums")
                 .expect("the album collection is independently addressable");
             assert_eq!(albums.kind, ALBUMS_KIND);
             assert_eq!(
@@ -4986,7 +5052,7 @@ mod tests {
                 Some(PhotosOperation::ViewAlbums)
             );
 
-            let root = PhotosResources.resources(&doc).pop().unwrap();
+            let root = PhotosResources.publish_resources(&doc).pop().unwrap();
             assert!(
                 root.children
                     .iter()
@@ -4999,7 +5065,11 @@ mod tests {
                 "albums belong beneath their collection instead of duplicating the root namespace"
             );
             assert_eq!(
-                PhotosResources.resource(&doc, &late_id).unwrap().id.0,
+                PhotosResources
+                    .publish_resource(&doc, &late_id)
+                    .unwrap()
+                    .id
+                    .0,
                 late_id,
                 "albums beyond contextual enumeration remain exactly addressable"
             );
@@ -5021,7 +5091,7 @@ mod tests {
             );
 
             let favorites = PhotosResources
-                .resource(&doc, "photos.favorites")
+                .publish_resource(&doc, "photos.favorites")
                 .expect("favorites is addressable even outside a materialized shelf");
             assert_eq!(favorites.kind, FAVORITES_KIND);
             assert!(favorites.actions.iter().any(|action| action.id == "open"));
@@ -5031,7 +5101,10 @@ mod tests {
                     .iter()
                     .any(|child| child.label == "1 photographs")
             );
-            let root = PhotosResources.resources(&doc).pop().expect("library root");
+            let root = PhotosResources
+                .publish_resources(&doc)
+                .pop()
+                .expect("library root");
             assert!(
                 root.children
                     .iter()
@@ -5087,7 +5160,7 @@ mod tests {
             }
             let late = library.photos.last().unwrap().id.clone();
             PhotosDoc::set_library(&mut doc, &library);
-            let root = PhotosResources.resources(&doc).pop().unwrap();
+            let root = PhotosResources.publish_resources(&doc).pop().unwrap();
             assert!(
                 root.children
                     .iter()
@@ -5097,13 +5170,13 @@ mod tests {
                 "contextual photos stay bounded even as fixed virtual collections are added"
             );
             let resolved = PhotosResources
-                .resource(&doc, &late)
+                .publish_resource(&doc, &late)
                 .expect("late stable id resolves");
             assert_eq!(resolved.id.0, late);
             assert!(resolved.actions.iter().any(|action| action.id == "open"));
             assert!(
                 PhotosResources
-                    .resource(&doc, "photos.photo:stale")
+                    .publish_resource(&doc, "photos.photo:stale")
                     .is_none()
             );
         }
@@ -5116,7 +5189,7 @@ mod tests {
             let image = PhotosDoc::image(&doc).unwrap();
             let id = resource_id(&image);
             let resource = PhotosResources
-                .resource(&doc, &id)
+                .publish_resource(&doc, &id)
                 .expect("the open editor resource is independently addressable");
             assert_eq!(resource.kind, IMAGE_KIND);
             assert!(resource.actions.iter().any(|action| action.id == "crop"));
@@ -5128,7 +5201,7 @@ mod tests {
             let doc = doc_with_image();
             assert!(
                 PhotosResources
-                    .resource(&doc, &"x".repeat(MAX_RESOURCE_ID_CHARS + 1))
+                    .publish_resource(&doc, &"x".repeat(MAX_RESOURCE_ID_CHARS + 1))
                     .is_none()
             );
         }
@@ -5156,7 +5229,7 @@ mod tests {
             PhotosDoc::set_library(&mut doc, &library);
 
             let root = PhotosResources
-                .resources(&doc)
+                .publish_resources(&doc)
                 .pop()
                 .expect("library root is published");
             let timeline = root
@@ -5184,7 +5257,7 @@ mod tests {
 
             let day_id = timeline_day_resource_id("2026-01-01");
             let day = PhotosResources
-                .resource(&doc, &day_id)
+                .publish_resource(&doc, &day_id)
                 .expect("late timeline day resolves outside the bounded root context");
             let action = day
                 .actions
@@ -5204,7 +5277,7 @@ mod tests {
             );
             assert!(
                 PhotosResources
-                    .resource(&doc, "photos.timeline:day:summer holidays")
+                    .publish_resource(&doc, "photos.timeline:day:summer holidays")
                     .is_none(),
                 "free-form metadata cannot masquerade as a chronological resource"
             );
@@ -5319,8 +5392,12 @@ mod tests {
         eprintln!("phase every_action_is_addressable_by_a_stable_id");
         {
             let doc = doc_with_image();
-            let res = PhotosResources.resources(&doc);
-            let ids: Vec<&str> = res[0].actions.iter().map(|a| a.id.as_str()).collect();
+            let res = PhotosResources.publish_resources(&doc);
+            let ids: Vec<&str> = published_open_image(&res)
+                .actions
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
             assert_eq!(
                 ids,
                 vec![
@@ -5354,32 +5431,33 @@ mod tests {
             }
 
             let empty = AutoCommit::new();
-            for resource in PhotosResources.resources(&empty) {
+            for resource in PhotosResources.publish_resources(&empty) {
                 check(&resource);
             }
-            for resource in PhotosResources.resources(&doc_with_image()) {
+            for resource in PhotosResources.publish_resources(&doc_with_image()) {
                 check(&resource);
             }
         }
 
         eprintln!("phase exported_photo_operations_declare_arguments_and_execution_contracts");
         {
-            let res = PhotosResources.resources(&doc_with_image());
-            let crop = res[0].actions.iter().find(|a| a.id == "crop").unwrap();
+            let res = PhotosResources.publish_resources(&doc_with_image());
+            let image = published_open_image(&res);
+            let crop = image.actions.iter().find(|a| a.id == "crop").unwrap();
             assert_eq!(crop.params()[0].name.as_ref(), "region");
             assert!(crop.params()[0].schema.is_some());
             assert!(crop.contract.reversible);
 
-            let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
+            let open = image.actions.iter().find(|a| a.id == "open").unwrap();
             assert_eq!(
                 open.contract.execution,
                 tilo_actions::ExecutionMode::Background { cancellable: true }
             );
             assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
             assert_eq!(open.params()[0].name.as_ref(), "path");
-            let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
+            let copy = image.actions.iter().find(|a| a.id == "copy").unwrap();
             assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
-            let view = res[0].actions.iter().find(|a| a.id == "view").unwrap();
+            let view = image.actions.iter().find(|a| a.id == "view").unwrap();
             assert_eq!(view.contract.retry, RetryPolicy::Idempotent);
             assert_eq!(view.kind, OperationKind::View);
             assert!(view.contract.tags.iter().any(|tag| tag == "presentation"));
@@ -5402,7 +5480,7 @@ mod tests {
             let before_heads = doc.get_heads();
             let before_bytes = doc.save();
 
-            let res = PhotosResources.resources(&doc);
+            let res = PhotosResources.publish_resources(&doc);
             let flat = flatten(&res);
             // Touch every field a caller would read, including building the label
             // of each row.
@@ -5436,12 +5514,22 @@ mod tests {
         eprintln!("phase reset_appears_only_once_there_is_an_edit_to_discard");
         {
             let mut doc = doc_with_image();
-            let before = PhotosResources.resources(&doc);
-            assert!(!before[0].actions.iter().any(|a| a.id == "reset"));
+            let before = PhotosResources.publish_resources(&doc);
+            assert!(
+                !published_open_image(&before)
+                    .actions
+                    .iter()
+                    .any(|a| a.id == "reset")
+            );
 
             PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-            let after = PhotosResources.resources(&doc);
-            assert!(after[0].actions.iter().any(|a| a.id == "reset"));
+            let after = PhotosResources.publish_resources(&doc);
+            assert!(
+                published_open_image(&after)
+                    .actions
+                    .iter()
+                    .any(|a| a.id == "reset")
+            );
         }
 
         eprintln!("phase applying_rotate_right_advances_the_document_by_one_quarter");
@@ -5455,8 +5543,12 @@ mod tests {
         eprintln!("phase a_prompted_crop_composes_onto_the_edits_in_force");
         {
             let mut doc = doc_with_image();
-            let res = PhotosResources.resources(&doc);
-            let crop = res[0].actions.iter().find(|a| a.id == "crop").unwrap();
+            let res = PhotosResources.publish_resources(&doc);
+            let crop = published_open_image(&res)
+                .actions
+                .iter()
+                .find(|a| a.id == "crop")
+                .unwrap();
             let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
                 panic!("crop collects an argument");
             };
@@ -5480,7 +5572,7 @@ mod tests {
             let mut doc = doc_with_image();
             let selected = PhotosDoc::image(&doc).unwrap();
             let id = LibraryPhoto::from_image(selected).id;
-            let resource = PhotosResources.resource(&doc, &id).unwrap();
+            let resource = PhotosResources.publish_resource(&doc, &id).unwrap();
             let remove = resource
                 .actions
                 .iter()
@@ -5512,7 +5604,7 @@ mod tests {
             );
 
             let resource = PhotosResources
-                .resource(&doc, &id)
+                .publish_resource(&doc, &id)
                 .expect("library photo has a canonical resource");
             let share = resource
                 .actions
@@ -5598,7 +5690,7 @@ mod tests {
             action.apply(&mut doc).expect("valid metadata applies");
 
             let photo = PhotosResources
-                .resource(&doc, &photo_id)
+                .publish_resource(&doc, &photo_id)
                 .expect("photo resolves");
             assert!(
                 photo
@@ -5618,7 +5710,7 @@ mod tests {
             let tag_id = tag_resource_id("harbour");
             for id in [folder_id, person_id, tag_id] {
                 let resource = PhotosResources
-                    .resource(&doc, &id)
+                    .publish_resource(&doc, &id)
                     .expect("virtual resource resolves");
                 assert!(resource.actions.iter().any(|action| action.id == "open"));
                 assert!(
@@ -5659,7 +5751,7 @@ mod tests {
                 tag_resource_id("harbour"),
             ] {
                 assert!(
-                    PhotosResources.resource(&doc, &id).is_none(),
+                    PhotosResources.publish_resource(&doc, &id).is_none(),
                     "stale metadata id {id} must not materialize"
                 );
             }
@@ -5821,8 +5913,8 @@ mod tests {
 
         eprintln!("phase published_crop_schema_accepts_canonical_wire_coordinates");
         {
-            let resources = PhotosResources.resources(&doc_with_image());
-            let crop = resources[0]
+            let resources = PhotosResources.publish_resources(&doc_with_image());
+            let crop = published_open_image(&resources)
                 .actions
                 .iter()
                 .find(|action| action.id == "crop")
@@ -5868,8 +5960,8 @@ mod tests {
         {
             let mut doc = doc_with_image();
             PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-            let res = PhotosResources.resources(&doc);
-            let crop = res[0]
+            let res = PhotosResources.publish_resources(&doc);
+            let crop = published_open_image(&res)
                 .actions
                 .iter()
                 .find(|a| a.id == "crop")
@@ -6137,7 +6229,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: contract_library(),
         registry: registry(),
-        resources: |doc| PhotosResources.resources(doc),
+        resources: |doc| PhotosResources.publish_resources(doc),
         palette: ["Rotate right", "Reset edits", "Favorite", "Remove album", "Remove person label"],
         replay: [
             set_edits => |_| encode(&PhotosAction::SetEdits {

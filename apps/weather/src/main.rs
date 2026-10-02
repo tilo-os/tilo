@@ -57,27 +57,42 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tracing_subscriber::fmt::try_init();
         return run_probe();
     }
-    ui::launch::run(
-        &LaunchSpec::new("so.tilo.weather", weather::app_root)
-            .history(&weather::framework_history::HISTORY)
-            .shot_root(shot_root)
-            .configure_app(|app| weather::actions::register(app.action_registry_mut()))
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .scenarios(&[
-                "onboarding",
-                "detail",
-                "drag",
-                "scrolled",
-                "detail_scrolled",
-                "collapsed",
-                "search",
-                "search_loading",
-                "search_empty",
-                "offline",
-                "error",
-            ]),
-    )?;
+    if standalone_capture(&args) {
+        ui::launch::run(&shot_launch_spec())?;
+        return Ok(());
+    }
+    ui::framework::run::<weather::WeatherShell>();
     Ok(())
+}
+
+fn standalone_capture(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--shots"
+            || arg.starts_with("--shots=")
+            || arg == "--responsive-matrix"
+            || arg.starts_with("--responsive-matrix=")
+    })
+}
+
+fn shot_launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.weather", weather::app_root)
+        .history(&weather::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .configure_app(|app| weather::actions::register(app.action_registry_mut()))
+        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .scenarios(&[
+            "onboarding",
+            "detail",
+            "drag",
+            "scrolled",
+            "detail_scrolled",
+            "collapsed",
+            "search",
+            "search_loading",
+            "search_empty",
+            "offline",
+            "error",
+        ])
 }
 
 #[allow(

@@ -82,6 +82,7 @@ pub mod pixels;
 pub mod places;
 mod presentation;
 pub mod reference;
+pub mod resource;
 pub mod search;
 pub mod strings;
 mod timeline_projection;
@@ -578,6 +579,8 @@ pub fn seed_scenario(
         _ => {}
     }
 }
+
+pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};
 
 #[cfg(test)]
 mod framework_history_tests;

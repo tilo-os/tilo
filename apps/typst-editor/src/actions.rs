@@ -30,7 +30,6 @@
 //! Source typing remains on the CRDT-native text path. Compile/filesystem work
 //! is exported as an effect and local navigation/zoom as view operations.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
@@ -39,18 +38,41 @@ use tilo_actions::{
 
 pub const OPERATION_TYPE: &str = "typst.operation";
 
+/// Bound how many live diagnostic / preview-page rows the palette materialises.
+pub const LIVE_EXTRA_RESOURCE_LIMIT: usize = 32;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypstOperation {
     Compile,
-    Save { path: Option<String> },
-    Open { path: Option<String> },
-    ExportPdf { path: Option<String> },
+    Save {
+        path: Option<String>,
+    },
+    Open {
+        path: Option<String>,
+    },
+    ExportPdf {
+        path: Option<String>,
+    },
     ZoomOut,
     ZoomIn,
     FitWidth,
     ToggleProblems,
     ShowEditor,
     ShowPreview,
+    /// Jump the editor caret to a live Problems-panel row (presentation cache).
+    GoToDiagnostic {
+        index: usize,
+    },
+    /// Scroll the preview to a compiled page index (0-based, presentation cache).
+    GoToPage {
+        page: usize,
+    },
+}
+
+/// Live presentation inputs for the resource tree — not CRDT.
+pub struct TypstResourceCtx<'a> {
+    pub diagnostics: &'a [crate::compile::Diagnostic],
+    pub page_count: usize,
 }
 
 #[allow(
@@ -68,10 +90,11 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
         | TypstOperation::ExportPdf { .. } => spec
             .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
-        TypstOperation::ZoomOut | TypstOperation::ZoomIn => {
-            spec.with_contract(ActionContract::view())
-        }
-        TypstOperation::ToggleProblems => spec.with_contract(ActionContract::view()),
+        TypstOperation::ZoomOut
+        | TypstOperation::ZoomIn
+        | TypstOperation::ToggleProblems
+        | TypstOperation::GoToDiagnostic { .. }
+        | TypstOperation::GoToPage { .. } => spec.with_contract(ActionContract::view()),
         TypstOperation::FitWidth | TypstOperation::ShowEditor | TypstOperation::ShowPreview => spec
             .with_contract(ActionContract::view())
             .retry_policy(RetryPolicy::Idempotent),
@@ -115,7 +138,10 @@ fn path_operation(
     .returns(ResultSpec::Job)
 }
 
-pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
+/// Static workspace door shared by [`tilo_resource::publish`] and the
+/// standalone tree — compile / save / zoom / open ride here, never as a second
+/// hosted root. Live diagnostics and preview pages are attached separately.
+pub fn workspace_resource() -> Resource {
     // Publish the same hierarchy a person sees: a workspace contains the
     // active document, which contains its rendered preview and export target.
     // This keeps global search and agents from seeing a flat pile of unrelated
@@ -184,13 +210,115 @@ pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
     ] {
         document = document.with_action(operation(id, label, kind, op));
     }
-    vec![
-        Resource::new("typst.workspace", "typst.workspace", "Typst workspace")
-            .with_action(path_operation("open", "Open Typst file", |path| {
-                TypstOperation::Open { path }
-            }))
-            .with_child(document),
-    ]
+    Resource::new("typst.workspace", "typst.workspace", "Typst workspace")
+        .with_action(path_operation("open", "Open Typst file", |path| {
+            TypstOperation::Open { path }
+        }))
+        .with_child(document)
+}
+
+fn truncate_label(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
+    }
+    let cut: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> Resource {
+    use crate::compile::DiagKind;
+    let severity = match diag.kind {
+        DiagKind::Error => "Error",
+        DiagKind::Warning => "Warning",
+    };
+    let loc = match (diag.line, diag.col) {
+        (Some(line), Some(col)) => format!("{line}:{col}"),
+        (Some(line), None) => format!("{line}"),
+        _ => "—".to_owned(),
+    };
+    let label = format!("{severity} · {loc} · {}", truncate_label(&diag.message, 48));
+    Resource::new(
+        format!("typst.diagnostic:{index}"),
+        "typst.diagnostic",
+        label,
+    )
+    .with_action(operation(
+        "open",
+        "Go to diagnostic",
+        OperationKind::View,
+        TypstOperation::GoToDiagnostic { index },
+    ))
+}
+
+fn preview_page_resource(page: usize) -> Resource {
+    Resource::new(
+        format!("typst.preview-page:{page}"),
+        "typst.preview-page",
+        format!("Page {}", page + 1),
+    )
+    .with_action(operation(
+        "open",
+        "Go to page",
+        OperationKind::View,
+        TypstOperation::GoToPage { page },
+    ))
+}
+
+/// Live Problems rows and preview-page hits — presentation cache, not CRDT.
+///
+/// Standalone [`resources`] nests these under `typst.document`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep jump targets without a second workspace root
+/// beside [`crate::resource::TypstEditor`].
+pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    if !ctx.diagnostics.is_empty() {
+        let mut problems = Resource::new(
+            "typst.problems",
+            "typst.problems",
+            format!("Problems · {}", ctx.diagnostics.len()),
+        );
+        for (index, diag) in ctx
+            .diagnostics
+            .iter()
+            .take(LIVE_EXTRA_RESOURCE_LIMIT)
+            .enumerate()
+        {
+            problems = problems.with_child(diagnostic_resource(index, diag));
+        }
+        extras.push(problems);
+    }
+    if ctx.page_count > 0 {
+        let mut pages = Resource::new(
+            "typst.preview-pages",
+            "typst.preview-pages",
+            format!("Preview pages · {}", ctx.page_count),
+        );
+        for page in 0..ctx.page_count.min(LIVE_EXTRA_RESOURCE_LIMIT) {
+            pages = pages.with_child(preview_page_resource(page));
+        }
+        extras.push(pages);
+    }
+    extras
+}
+
+/// Full standalone / `--shots` tree: the resource's published door, plus live
+/// diagnostics and preview pages on the open document.
+pub fn resources(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
+    let mut workspace = ui::tilo_resource::publish::<crate::resource::TypstEditor>(
+        "typst.workspace",
+        "Typst workspace",
+        &(),
+    );
+    if let Some(document) = workspace
+        .children
+        .iter_mut()
+        .find(|child| child.kind == "typst.document")
+    {
+        document.children.extend(live_extras(ctx));
+    }
+    vec![workspace]
 }
 
 /// Decode one operation payload advertised by this app.
@@ -383,7 +511,11 @@ mod tests {
     fn typst_exports_effect_and_view_operations_with_honest_contracts() {
         // Case `file_effects_bind_direct_paths_and_keep_job_confirmation_contracts`.
         {
-            let resources = resources(&AutoCommit::new());
+            let empty = TypstResourceCtx {
+                diagnostics: &[],
+                page_count: 0,
+            };
+            let resources = resources(&empty);
             for id in ["open", "save", "export-pdf"] {
                 let spec = tilo_actions::flatten(&resources)
                     .into_iter()
@@ -449,9 +581,12 @@ mod tests {
                 a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
             }));
             assert!(
-                actions
-                    .iter()
-                    .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
+                actions.iter().all(|flat| {
+                    flat.action.kind != tilo_actions::OperationKind::Document
+                        || flat.action.id == "apply"
+                        || flat.action.id == "group"
+                }),
+                "the only document actions are the resource apply and group door"
             );
             assert!(
                 ui::undo::take_committed_action(&mut app).is_none(),
@@ -466,7 +601,10 @@ mod tests {
     ui::action_contract_tests! {
         seed: synced().1,
         registry: tilo_actions::ActionRegistry::new(),
-        resources: |doc| resources(doc),
+        resources: |_| resources(&TypstResourceCtx {
+            diagnostics: &[],
+            page_count: 0,
+        }),
         palette: ["Open Typst file", "Save Typst file", "Recompile", "Export PDF", "Zoom in"],
     }
 }

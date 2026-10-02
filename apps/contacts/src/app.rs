@@ -1428,7 +1428,7 @@ pub struct ContactsApp {
     /// brackets exactly one undo boundary, encodes under
     /// [`CONTACTS_ACTION_TYPE`](crate::actions::CONTACTS_ACTION_TYPE), and replays
     /// byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     /// The document heads the in-memory [`ContactStore`] was last derived from.
     /// When the document moves past this out of band — a Ctrl+K palette action,
@@ -1539,7 +1539,7 @@ impl ContactsApp {
             completed_resource_invocation: None,
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             model_heads: Vec::new(),
             local_projection_heads: None,
             pending_local_changes: Vec::new(),
@@ -1951,6 +1951,47 @@ impl ContactsApp {
         outcome
     }
 
+    /// Show the address book the framework resource already holds.
+    /// An empty projection does not wipe contacts that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ContactsState) {
+        if state.contacts.is_empty() {
+            return;
+        }
+        let keep: std::collections::HashSet<_> =
+            state.contacts.iter().map(|contact| contact.id).collect();
+        let stale_ids: Vec<_> = self
+            .store
+            .contacts
+            .iter()
+            .map(|contact| contact.id)
+            .filter(|id| !keep.contains(id))
+            .collect();
+        for id in stale_ids {
+            self.store.delete(id);
+        }
+        for contact in &state.contacts {
+            self.store.upsert(contact.clone());
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Contacts>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     fn local_change_for(
         &self,
         action: &crate::actions::ContactsAction,
@@ -1964,8 +2005,11 @@ impl ContactsApp {
             | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
             // A merge changes two projections. Let the next normal document
             // sync reconcile both together rather than risking a one-sided
-            // optimistic list update.
-            ContactsAction::MergeContacts { .. } => return None,
+            // optimistic list update. Repairing legacy row ids is the same:
+            // the next sync reads the repaired book.
+            ContactsAction::MergeContacts { .. } => {
+                return None;
+            }
         };
         let before = self.indexed_contact(id).cloned();
         if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
@@ -2063,6 +2107,7 @@ impl ContactsApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// tests.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -2264,6 +2309,10 @@ impl ContactsApp {
     /// Exact resources read one validated contact/group from the authoritative
     /// store via stable-id indices. A stale position is refused instead of
     /// redirecting an action to whatever shifted into that vector slot.
+    pub(crate) fn export_is_busy(&self) -> bool {
+        self.export_dialog.is_open() || self.export_rx.is_some()
+    }
+
     pub(crate) fn exact_contacts_resource_ctx(
         &self,
         id: &str,
@@ -8198,18 +8247,24 @@ impl ui::search::capability::SearchSource for ContactsApp {
 
 impl ui::resources::PublishesResources for ContactsApp {
     /// Publish the open book + its contacts so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the address-book door; only
+    /// live extras (import conflicts, pending merges) remain here.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     /// Resolve contacts outside the contextual palette page. This is the
     /// other half of bounded discovery: a search hit for contact 65,000 still
     /// reaches the exact current resource/action catalogue, while a deleted
     /// contact has no resource for the broker to invoke.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == "contacts.book" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

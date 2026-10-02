@@ -863,6 +863,12 @@ pub struct SlidesApp {
     /// through it as a [`SlidesAction`](crate::actions::SlidesAction); flowing
     /// text edits stay on the native CRDT splice path (see [`crate::actions`]).
     actions: ui::ActionHost,
+    /// Hosted by [`crate::resource::SlidesShell`]: edits go through the
+    /// framework dispatcher. Standalone / shots keep [`Self::actions`].
+    framework: Option<ui::framework::Dispatcher<crate::actions::SlidesDeck>>,
+    /// Test / attach override so [`PublishesResources`] can keep only the live
+    /// selection beside the published deck without constructing a dispatcher.
+    framework_hosted: bool,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -1080,6 +1086,8 @@ impl SlidesApp {
             text_edit_box: Rect::ZERO,
             needs_commit: false,
             actions: ui::ActionHost::new(),
+            framework: None,
+            framework_hosted: false,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
@@ -1599,13 +1607,91 @@ impl SlidesApp {
     /// palette does. The in-memory deck mirror is reconciled from the document on
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
+    /// Take part in the framework: submit deck edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::actions::SlidesDeck>,
+    ) {
+        self.framework = Some(dispatcher);
+        self.framework_hosted = true;
+    }
+
+    /// Mark this surface as framework-hosted so
+    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
+    /// selection live extras beside the published deck door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only selection live extras beside the framework door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted || self.framework.is_some()
+    }
+
+    /// Test-only: plant a local deck that has not been published through the
+    /// framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_deck_for_test(&mut self, deck: crate::model::Deck) {
+        self.deck = deck;
+        self.cur_slide = self.cur_slide.min(self.deck.slides.len().saturating_sub(1));
+    }
+
+    /// Test-only: slide ids currently held on the local deck surface.
+    #[cfg(test)]
+    pub(crate) fn local_slide_ids_for_test(&self) -> Vec<String> {
+        self.deck
+            .slides
+            .iter()
+            .map(|slide| slide.id.clone())
+            .collect()
+    }
+
+    /// Test-only: select an element on the current slide so hosted extras bind.
+    #[cfg(test)]
+    pub(crate) fn select_element_for_test(&mut self, element_id: crate::model::Id) {
+        self.sel = Some(element_id);
+    }
+
+    /// Show the deck the framework resource holds.
+    /// An empty projection does not wipe a deck that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::actions::SlidesResourceCtx) {
+        if state.slides.is_empty() && !self.deck.slides.is_empty() {
+            return;
+        }
+        if state.slides.is_empty() {
+            return;
+        }
+        let slides: Vec<_> = state
+            .slides
+            .iter()
+            .map(|slide| slide.data.to_slide())
+            .collect();
+        if self.deck.title == state.deck_title && self.deck.slides == slides {
+            return;
+        }
+        self.deck.title.clone_from(&state.deck_title);
+        self.deck.slides = slides;
+        self.search_provider.refresh(&self.deck);
+        self.bump_deck_revision();
+    }
+
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::SLIDES_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action),
-        );
+        let context = tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action);
+        if let Some(dispatcher) = &self.framework {
+            let _ = dispatcher.apply_now_with(doc, action, context);
+        } else {
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::SLIDES_ACTION_TYPE,
+                action,
+                context,
+            );
+        }
         self.canonical_deck = doc
             .get(automerge::ROOT, "deck")
             .ok()
@@ -1614,10 +1700,17 @@ impl SlidesApp {
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
-    /// title and each slide (with its elements). Derived entirely from the
-    /// in-memory deck mirror, which the shared document already holds.
+    /// title, each slide (with its elements), and this peer's live selection.
+    /// Deck rows come from the in-memory mirror; selection is local.
     pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
-        crate::actions::SlidesResourceCtx::from_deck(&self.deck)
+        let mut ctx = crate::actions::SlidesResourceCtx::from_deck(&self.deck);
+        if let Some(slide) = ctx.slides.get(self.cur_slide) {
+            ctx.selection = Some(crate::actions::selection_ctx_for(
+                slide,
+                self.sel.as_deref(),
+            ));
+        }
+        ctx
     }
 
     // --- rail scroll geometry ----------------------------------------------
@@ -3532,6 +3625,11 @@ impl SlidesApp {
     }
 
     fn apply_loaded_deck(&mut self, doc: &mut AutoCommit, deck: Deck) {
+        // Direct document write, not a deck action. Opening a file replaces
+        // the title, palette, and every slide, including ids the current deck
+        // already holds. `InsertSlide` rejects those ids, `DeleteSlide` refuses
+        // the last slide, and imported geometry can fall outside action
+        // validators. `SlideData` already carries blocks as `ClipBlock`.
         SlidesDoc::seed(doc, &deck);
         self.deck = deck;
         self.bump_deck_revision();
@@ -3634,16 +3732,7 @@ impl SlidesApp {
         let Ok(deck) = deck else {
             return false;
         };
-        SlidesDoc::seed(doc, &deck);
-        self.deck = deck;
-        self.bump_deck_revision();
-        self.cur_slide = 0;
-        self.sel = None;
-        self.editing_text = false;
-        self.editing_notes = false;
-        self.presentation.invalidate_cache();
-        self.mark();
-        self.reload(doc);
+        self.apply_loaded_deck(doc, deck);
         true
     }
 
@@ -3891,11 +3980,10 @@ impl SlidesApp {
     /// blur the field.
     fn commit_title_edit(&mut self, doc: &mut AutoCommit) {
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(doc, &t);
+            self.perform_action(doc, &crate::actions::set_deck_title_action(t));
         }
         self.editing_title = false;
         Widget::set_focus(&mut self.title_input, false);
-        self.mark();
         self.reload(doc);
     }
 
@@ -4009,7 +4097,10 @@ impl SlidesApp {
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(routed.state, &t);
+            self.perform_action(
+                routed.state,
+                &crate::actions::SlidesAction::SetDeckTitle { title: t },
+            );
             self.mark();
             self.reload(routed.state);
         }
@@ -5681,6 +5772,12 @@ impl Widget for SlidesApp {
         }
         if !self.seeded {
             if SlidesDoc::is_uninitialized(state) {
+                // Direct document write, not a deck action. Every `SlidesAction`
+                // loads an existing deck and refuses while that key is missing,
+                // which is the only time this runs. `Resource::initialize`
+                // already seeded its own `starter_deck()` ids; writing this
+                // widget's `starter_deck()` over that deck would replace them.
+                // Shots that set `self.deck` before sync depend on this write.
                 SlidesDoc::seed(state, &self.deck);
             }
             self.seeded = true;
@@ -6315,20 +6412,26 @@ impl ui::search::capability::SearchSource for SlidesApp {
 }
 
 impl ui::resources::PublishesResources for SlidesApp {
-    /// The deck's resource tree for the shell's one Ctrl+K palette — every
-    /// document-mutating affordance exported as the same action it dispatches on
-    /// screen. See [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// deck door — keep only the live selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.framework_hosted || self.framework.is_some() {
+            return crate::actions::live_presentation_resources(&self.slides_resource_ctx());
+        }
         if !self.canonical_matches(doc) {
             return Vec::new();
         }
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if (self.framework_hosted || self.framework.is_some()) && id == "slides.deck" {
+            return None;
+        }
+        Self::publish_resource(self, doc, id)
     }
 
     fn document_action_result(
@@ -6357,17 +6460,16 @@ impl ui::undo::CommittedActions for SlidesApp {
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        let typed = self
-            .text_editor
-            .as_mut()
-            .and_then(|editor| editor.host.widget_mut().take_committed_action());
+        let typed = self.text_editor.as_mut().and_then(|editor| {
+            ui::undo::CommittedActions::take_committed_action(editor.host.widget_mut())
+        });
         typed.or_else(|| self.actions.take_committed())
     }
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
-        self.text_editor
-            .as_ref()
-            .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
+        self.text_editor.as_ref().is_some_and(|editor| {
+            ui::undo::CommittedActions::keeps_undo_step_open(editor.host.widget())
+        })
     }
 }
 

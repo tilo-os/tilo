@@ -3977,6 +3977,23 @@ fn live_view_publishes_writer_focus_and_draws_a_remote_caret_without_relayout() 
     assert_eq!((start, end), (1, 1), "caret after the typed character");
     assert!(matches!(&key, ui::presence::PresenceKey::Widget { path } if path.len() == 2));
 
+    // The window's editor caret is published even without keyboard focus
+    // (focus left behind elsewhere, or an action moved the caret).
+    assert!(
+        layout
+            .window_presence
+            .iter()
+            .any(|(window_key, _)| *window_key == key),
+        "{:?}",
+        layout.window_presence
+    );
+    let unfocused = crate::live_view::snapshot_json(
+        &layout,
+        &handle.tab_records.borrow(),
+        crate::live_view::published_selection(None, &layout.window_presence),
+    );
+    assert_eq!(unfocused["selection"], snapshot["selection"]);
+
     let paths_before = frame.frame_render_input().scene.encoding().path_tags.len();
     let relayouts = frame.relayout_frames();
     let mut projection = crate::live_view::RemoteProjection::default();

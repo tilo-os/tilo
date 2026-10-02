@@ -180,7 +180,7 @@ uuid = { workspace = true, features = ["js"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 iroh-relay = { version = "1.0.3", features = ["server"] }

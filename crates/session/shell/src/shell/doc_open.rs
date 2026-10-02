@@ -149,7 +149,9 @@ pub fn resolve_for(
         return DocumentTarget::Directory;
     }
     let ext = extension_of(path);
-    let editable_document = ext.as_deref().is_some_and(qdoc_codecs::is_supported_ext);
+    let editable_document = ext
+        .as_deref()
+        .is_some_and(tilo_doc_codecs::is_supported_ext);
     let mime = mime_guess::from_path(path).first_raw();
     let by_mime = mime
         .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())

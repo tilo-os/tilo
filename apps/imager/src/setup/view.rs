@@ -3255,7 +3255,15 @@ impl ui::resources::PublishesResources for SetupApp {
         if let Some(import_app) = &self.import_app {
             return import_app.resources(doc);
         }
-        vec![super::actions::resource(&self.setup_projection())]
+        let projection = self.setup_projection();
+        let described = super::actions::resource(&projection);
+        let mut published = ui::tilo_resource::publish::<super::actions::SetupGuide>(
+            super::actions::SETUP_RESOURCE_ID,
+            "Guided Tilo setup",
+            &projection,
+        );
+        published.presentation = described.presentation;
+        vec![published]
     }
 }
 
@@ -5303,7 +5311,15 @@ mod tests {
                 resource.presentation.as_ref().unwrap().badge.as_deref(),
                 Some("Experience")
             );
-            assert_eq!(resource.actions.len(), 7);
+            let setup_actions = resource
+                .actions
+                .iter()
+                .filter(|action| {
+                    action.operation_type.as_deref()
+                        == Some(super::super::actions::SETUP_OPERATION_TYPE)
+                })
+                .count();
+            assert_eq!(setup_actions, 7);
             let detail = resource
                 .presentation
                 .as_ref()
@@ -5326,10 +5342,6 @@ mod tests {
                     .collect::<Vec<&str>>(),
                 vec!["desktop"]
             );
-            assert!(resource.actions.iter().all(|action| {
-                action.operation_type.as_deref()
-                    == Some(super::super::actions::SETUP_OPERATION_TYPE)
-            }));
             let chosen = invoke_setup(
                 &mut app,
                 "choose-experience",

@@ -612,13 +612,9 @@ pub struct CalendarApp {
     resource_import_invocation: Option<tilo_actions::InvocationId>,
     resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
-    /// brackets the undo boundary, applies the action through the executor (so it
-    /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
-    /// records the last one so a test can prove a button and its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
-    actions: ui::ActionHost,
+    /// Framework-owned action dispatch. Hosted via
+    /// [`crate::resource::ActionSink`]; standalone tests use the local host.
+    actions: crate::resource::ActionSink,
 
     /// The exact encoded non-document operation an on-screen Calendar control
     /// sent through the resource-operation boundary. This is test-only because
@@ -864,7 +860,7 @@ impl CalendarApp {
             launch_import_emitted: false,
             resource_import_invocation: None,
             resource_import_result: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             #[cfg(test)]
             last_local_resource_operation: None,
             model_heads: Vec::new(),
@@ -872,6 +868,21 @@ impl CalendarApp {
         app.observe_calendar_projection();
         app.rebuild_resource_index();
         app
+    }
+
+    /// Adopt the framework's live model projection.
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Model>) {
+        self.model = (**state).clone();
+        self.dirty = true;
+        self.rebuild_resource_index();
+    }
+
+    /// Attach the framework dispatcher when hosted as a surface.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Calendar>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     // --- shots-only configuration (no effect on live runtime behaviour) --
@@ -1211,7 +1222,7 @@ impl CalendarApp {
                 // Clear successfully-uploaded events from the push outbox and
                 // server-confirmed removals from the delete outbox.
                 for revision in revisions {
-                    CalDoc::set_remote_binding(
+                    self.record_remote_binding(
                         doc,
                         revision.id,
                         &revision.calendar_id,
@@ -1220,11 +1231,20 @@ impl CalendarApp {
                     );
                 }
                 for id in pushed {
-                    CalDoc::dequeue_push(doc, id);
+                    self.perform_action(
+                        doc,
+                        &crate::actions::CalendarAction::AcknowledgeRemotePush {
+                            id: id.to_string(),
+                        },
+                    );
                 }
                 for id in deleted {
-                    CalDoc::dequeue_delete(doc, id);
-                    CalDoc::remove_remote_binding(doc, id);
+                    self.perform_action(
+                        doc,
+                        &crate::actions::CalendarAction::AcknowledgeRemoteDelete {
+                            id: id.to_string(),
+                        },
+                    );
                 }
                 if !conflicts.is_empty() {
                     outcome = SyncOutcome::Failed(format!(
@@ -1311,7 +1331,12 @@ impl CalendarApp {
                 continue;
             }
             e.id = Uuid::new_v4();
-            CalDoc::update_event(doc, &e);
+            self.perform_action(
+                doc,
+                &crate::actions::CalendarAction::AdoptRemoteEvent(
+                    crate::actions::EventData::from_event(&e),
+                ),
+            );
             self.model.events.push(e);
             added += 1;
         }
@@ -1348,8 +1373,13 @@ impl CalendarApp {
                     self.model.events.push(event.clone());
                     added += 1;
                 }
-                CalDoc::update_event(doc, &event);
-                CalDoc::set_remote_binding(
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::AdoptRemoteEvent(
+                        crate::actions::EventData::from_event(&event),
+                    ),
+                );
+                self.record_remote_binding(
                     doc,
                     id,
                     &resource.calendar_id,
@@ -1372,8 +1402,13 @@ impl CalendarApp {
                     self.model.tasks.push(task.clone());
                     added += 1;
                 }
-                CalDoc::update_task(doc, &task);
-                CalDoc::set_remote_binding(
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::AdoptRemoteTask(
+                        crate::actions::TaskData::from_task(&task),
+                    ),
+                );
+                self.record_remote_binding(
                     doc,
                     id,
                     &resource.calendar_id,
@@ -1391,10 +1426,10 @@ impl CalendarApp {
                 .map(|(id, _)| id)
                 .collect();
             for id in victims {
-                CalDoc::delete_event(doc, id);
-                CalDoc::delete_task(doc, id);
-                CalDoc::remove_remote_binding(doc, id);
-                CalDoc::dequeue_push(doc, id);
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
+                );
                 self.model.events.retain(|event| event.id != id);
                 self.model.tasks.retain(|task| task.id != id);
                 removed += 1;
@@ -1413,10 +1448,10 @@ impl CalendarApp {
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
                     {
-                        CalDoc::delete_event(doc, id);
-                        CalDoc::delete_task(doc, id);
-                        CalDoc::remove_remote_binding(doc, id);
-                        CalDoc::dequeue_push(doc, id);
+                        self.perform_action(
+                            doc,
+                            &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
+                        );
                         self.model.events.retain(|event| event.id != id);
                         self.model.tasks.retain(|task| task.id != id);
                         removed += 1;
@@ -1427,7 +1462,13 @@ impl CalendarApp {
         // Commit markers are deliberately last: a crash before here repeats a
         // response idempotently; a crash after here sees fully reconciled data.
         for checkpoint in result.checkpoints {
-            CalDoc::set_sync_token(doc, &checkpoint.calendar_id, &checkpoint.token);
+            self.perform_action(
+                doc,
+                &crate::actions::CalendarAction::SetSyncToken {
+                    calendar_id: checkpoint.calendar_id.clone(),
+                    token: checkpoint.token.clone(),
+                },
+            );
         }
         self.model.events.sort_by_key(|e| e.start);
         self.status = Some(match outcome {
@@ -1497,7 +1538,7 @@ impl CalendarApp {
         };
         let context = crate::actions::history_context(&crate::actions::CalendarAction::EditNotes {
             owner: note_owner.clone(),
-            edit: qdoc_rich_text::RichTextAction::AppendParagraph {
+            edit: tilo_document::RichTextAction::AppendParagraph {
                 text: String::new(),
             },
         });
@@ -1834,11 +1875,25 @@ impl CalendarApp {
     /// feedback and reconciled from the document on the next `sync`. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
-        self.actions.dispatch_with_context(
+        self.actions.dispatch(doc, action);
+    }
+
+    fn record_remote_binding(
+        &mut self,
+        doc: &mut AutoCommit,
+        id: Id,
+        calendar_id: &str,
+        href: &str,
+        etag: Option<&str>,
+    ) {
+        self.perform_action(
             doc,
-            crate::actions::CALENDAR_ACTION_TYPE,
-            action,
-            crate::actions::history_context(action),
+            &crate::actions::CalendarAction::SetRemoteBinding {
+                id: id.to_string(),
+                calendar_id: calendar_id.to_string(),
+                href: href.to_string(),
+                etag: etag.unwrap_or_default().to_string(),
+            },
         );
     }
 
@@ -1882,6 +1937,7 @@ impl CalendarApp {
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -2186,13 +2242,6 @@ impl CalendarApp {
             data: crate::actions::ProjectData::from_project(project),
             in_use: self.resource_index.projects_in_use.contains(&raw),
         })
-    }
-
-    /// Build only the root metadata the pull directory needs.  In particular,
-    /// do not materialise events/tasks (which may number in the hundreds of
-    /// thousands) merely to expose Calendar's stable root actions.
-    fn calendar_directory_root_ctx(&self) -> crate::actions::CalendarResourceCtx {
-        self.resource_ctx_base()
     }
 
     /// Convert parsed ICS records into one deterministic action. Tilo's UUID
@@ -6707,7 +6756,13 @@ impl Widget for CalendarApp {
                 let _ = state.merge_incoming(&mut loaded);
             }
             // Seed sample content ONLY in the demo build, and only when the
-            // document is still empty.
+            // document is still empty. This stays a direct `CalDoc::seed` plus
+            // `seed_demo_notes`, not an action. `AdoptRemoteEvent` round-trips
+            // through `EventData`, which keeps only reminders of -1, 10, 30, or
+            // 60 minutes; the selected "Design review" event and "Quarterly
+            // planning" use 15, and the detail chip renders that. `UpsertEvent`
+            // also enqueues a push when `calendar_id` is `Some`. The curated
+            // notes are heading blocks filled into empty note maps.
             if self.demo && CalDoc::is_empty(state) {
                 CalDoc::seed(state, &self.model);
                 self.seed_demo_notes(state);
@@ -7377,19 +7432,45 @@ impl ui::search::capability::SearchSource for CalendarApp {
 
 impl ui::resources::PublishesResources for CalendarApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if self.actions.is_hosted() {
+            return self.pending_launch_resource().into_iter().collect();
+        }
+        let mut resources = self.publish_resources(doc);
         resources.extend(self.pending_launch_resource());
         resources
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the calendar. The directory page
+        // keeps the same pending-import extra as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
+                self.pending_launch_resource().into_iter().collect()
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
+        // The pull directory is the published calendar root. Event and task
+        // rows stay on the revisioned search provider; walking them here would
+        // materialise the whole history just to list stable root actions.
+        let mut root = ui::tilo_resource::publish::<crate::resource::Calendar>(
+            "calendar.calendar",
+            "Calendar",
+            &crate::doc::CalDoc::read_model(doc),
+        );
+        root.children.clear();
         Some(ui::widget::ActionDirectoryResourcePage {
             resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::calendar_root(&self.calendar_directory_root_ctx()))
+                .then_some(root)
                 .into_iter()
                 .collect(),
             next_cursor: Vec::new(),
@@ -7400,7 +7481,10 @@ impl ui::resources::PublishesResources for CalendarApp {
         if id == "calendar.pending-import" {
             return self.pending_launch_resource();
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.actions.is_hosted() && id == "calendar.calendar" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -7447,13 +7531,13 @@ impl ui::undo::CommittedActions for CalendarApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         // A notes edit dispatches through the editor's field; everything else
         // through the calendar's own host. One event does one or the other.
-        let notes = self.notes_editor.take_committed_action();
+        let notes = ui::undo::CommittedActions::take_committed_action(&mut self.notes_editor);
         let calendar = self.actions.take_committed();
         notes.or(calendar)
     }
     /// Typing a word in the notes is one undo step.
     fn keeps_undo_step_open(&self) -> bool {
-        self.notes_editor.keeps_undo_step_open()
+        ui::undo::CommittedActions::keeps_undo_step_open(&self.notes_editor)
     }
 }
 

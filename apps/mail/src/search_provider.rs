@@ -834,12 +834,8 @@ mod tests {
                 (address, id)
             };
 
-            let resource = <crate::app::MailApp as tilo_actions::ResourceProvider>::resource(
-                &app,
-                &doc,
-                &address.resource,
-            )
-            .expect("search address resolves lazily");
+            let resource = crate::app::MailApp::publish_resource(&app, &doc, &address.resource)
+                .expect("search address resolves lazily");
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
             assert!(matches!(
                 app.start_operation(

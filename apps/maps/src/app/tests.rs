@@ -1,5 +1,22 @@
 use super::*;
 use tilo_automerge::ApplyIncoming;
+use ui::tilo_actions::{ExecutionMode, ResultSpec};
+
+/// An offline sample map is published by map actions, not a whole-model write.
+#[test]
+fn an_offline_map_is_published_through_map_actions() {
+    let mut app = MapsApp::offline();
+    assert!(!app.actions.is_hosted());
+    let mut doc = automerge::AutoCommit::new();
+    app.sync(&mut doc, &automerge::ROOT);
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the sample map is submitted through map actions");
+    assert_eq!(recorded.type_id.as_str(), MAPS_ACTION_TYPE);
+    let loaded = MapsDoc::load(&doc).expect("the document holds the sample map");
+    assert!(!loaded.places.is_empty());
+}
 
 /// Resource operations: location reports the real portal result, place-open and
 /// search are window-local brokered operations, eager/lazy resources share ids.

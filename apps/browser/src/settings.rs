@@ -34,6 +34,8 @@ use ui::widget::{
     Toggle, Widget,
 };
 
+use crate::actions::BrowserAction;
+
 /// Resource bindings injected by Browser when this pane is hosted. They keep
 /// pointer, keyboard and assistive-tech changes on the exact same action path
 /// used by Ctrl+K and agents.
@@ -49,6 +51,10 @@ pub struct SettingsActionBindings {
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
     pub close: Option<tilo_actions::ActionBinding<()>>,
+    /// Hosted bookmark and preference edits. Used when the matching binding
+    /// is absent, so the surface submits a [`BrowserAction`] instead of
+    /// writing the document itself.
+    pub document_edits: Option<ui::LocalState<Vec<BrowserAction>>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -339,6 +345,7 @@ impl SettingsPane {
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.homepage.clone(),
+                    hosted_text(self.actions.document_edits.clone(), homepage_action),
                 ),
                 field_block(
                     "Search engine",
@@ -346,6 +353,7 @@ impl SettingsPane {
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.search_engine.clone(),
+                    hosted_text(self.actions.document_edits.clone(), search_engine_action),
                 ),
             ]),
         );
@@ -355,22 +363,26 @@ impl SettingsPane {
             setting_row_described(
                 "Block ads & trackers",
                 "Blocks ads, trackers, and YouTube video ads.",
-                Box::new(toggle_with_action(
+                Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.adblock.clone(),
+                    self.actions.document_edits.as_ref(),
+                    adblock_action,
                 )),
                 large_text,
             ),
             setting_row_described(
                 "Clear data when the browser closes",
                 "Wipe history and cookies on exit.",
-                Box::new(toggle_with_action(
+                Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.clear_on_exit.clone(),
+                    self.actions.document_edits.as_ref(),
+                    clear_on_exit_action,
                 )),
                 large_text,
             ),
@@ -527,19 +539,33 @@ fn browsing_data_controls(
 
 /// A labelled full-width text field: a caption above a [`TextInput`]
 /// bound to the CRDT `Text` object at `path`.
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     action: Option<tilo_actions::ActionBinding<String>>,
+    hosted: Option<(
+        ui::LocalState<Vec<BrowserAction>>,
+        fn(String) -> BrowserAction,
+    )>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
-    let input = match action {
-        Some(binding) => input.on_action(binding),
-        None => input,
+    let input = if let Some(binding) = action {
+        input.on_action(binding)
+    } else if let Some((edits, build)) = hosted {
+        input.on_change(move |value| {
+            let next = build(value.to_string());
+            edits.update(|queue| queue.push(next));
+        })
+    } else {
+        input
     };
     Box::new(
         Column::new()
@@ -551,11 +577,52 @@ fn field_block(
     )
 }
 
-fn toggle_with_action(toggle: Toggle, action: Option<tilo_actions::ActionBinding<bool>>) -> Toggle {
-    match action {
-        Some(binding) => toggle.on_action(binding),
-        None => toggle,
+fn preference_toggle(
+    toggle: Toggle,
+    action: Option<tilo_actions::ActionBinding<bool>>,
+    edits: Option<&ui::LocalState<Vec<BrowserAction>>>,
+    build: fn(bool) -> BrowserAction,
+) -> Toggle {
+    if let Some(binding) = action {
+        return toggle.on_action(binding);
     }
+    let Some(edits) = edits.cloned() else {
+        return toggle;
+    };
+    toggle.on_change(move |enabled| {
+        let next = build(enabled);
+        edits.update(|queue| queue.push(next));
+    })
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
+fn hosted_text(
+    edits: Option<ui::LocalState<Vec<BrowserAction>>>,
+    build: fn(String) -> BrowserAction,
+) -> Option<(
+    ui::LocalState<Vec<BrowserAction>>,
+    fn(String) -> BrowserAction,
+)> {
+    edits.map(|queue| (queue, build))
+}
+
+fn adblock_action(enabled: bool) -> BrowserAction {
+    BrowserAction::SetAdblock { enabled }
+}
+
+fn clear_on_exit_action(enabled: bool) -> BrowserAction {
+    BrowserAction::SetClearOnExit { enabled }
+}
+
+fn homepage_action(url: String) -> BrowserAction {
+    BrowserAction::SetHomepage { url }
+}
+
+fn search_engine_action(template: String) -> BrowserAction {
+    BrowserAction::SetSearchEngine { template }
 }
 
 fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {

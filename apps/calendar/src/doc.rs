@@ -39,7 +39,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use qdoc_rich_text::RichText;
+use tilo_document::RichText;
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -71,6 +71,17 @@ impl CalDoc {
     fn tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
         let tombstones = Self::map_at(doc, Self::TOMBSTONES);
         let _ = doc.put(&tombstones, Self::tombstone_key(kind, id), true);
+    }
+
+    /// Clear a tombstone so a restoring upsert (undo of delete) can rewrite
+    /// the row. Peers that still hold the tombstone keep it until they apply
+    /// the same restoring action.
+    pub(crate) fn clear_tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, Self::TOMBSTONES)
+        else {
+            return;
+        };
+        let _ = doc.delete(&tombstones, Self::tombstone_key(kind, id));
     }
 
     /// A durable delete marker for an event. It is intentionally never
@@ -1307,9 +1318,9 @@ mod tests {
 
     #[test]
     fn notes_edits_are_rich_text_actions_refused_for_a_stale_block() {
-        use qdoc_rich_text::RichTextAction;
-        use qdoc_rich_text::action::RegionKind;
         use tilo_actions::Action as _;
+        use tilo_document::RichTextAction;
+        use tilo_document::action::RegionKind;
         let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
         let id = model.events[0].id;
         let mut doc = AutoCommit::new();

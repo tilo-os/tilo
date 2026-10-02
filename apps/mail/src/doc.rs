@@ -23,7 +23,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use ui::doc::{read_bool, read_str};
 
-use qdoc_rich_text::RichText;
+use tilo_document::RichText;
 use ui::widget::{BlockContent, BlockKind};
 
 use crate::actions::DraftBodySeed;
@@ -34,6 +34,16 @@ use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
 const RICH_BODY: &str = "rich_body";
 
 pub struct MailDoc;
+
+/// Per-message collaborative flags projected from the document for publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageFlags {
+    pub id: String,
+    pub folder: Folder,
+    pub read: bool,
+    pub starred: bool,
+    pub labels: Vec<String>,
+}
 
 impl MailDoc {
     // ---- generic scalar helpers ----
@@ -68,16 +78,41 @@ impl MailDoc {
     /// remote `MailAction`; server flags merely establish the first baseline
     /// for a newly hydrated message.
     pub fn ingest_message_flags(doc: &mut AutoCommit, msg: &Message) {
-        Self::register_message(doc, &msg.id.to_string());
-        let key = msg.id.to_string();
-        if Self::get_read(doc, &key).is_none() {
-            Self::set_read(doc, &key, msg.read);
+        Self::ingest_baseline(
+            doc,
+            &msg.id.to_string(),
+            Some(msg.read),
+            Some(msg.starred),
+            Some(msg.folder),
+        );
+    }
+
+    /// Register `id` and, when a flag is still unset, record the server baseline.
+    pub fn ingest_baseline(
+        doc: &mut AutoCommit,
+        id: &str,
+        read: Option<bool>,
+        starred: Option<bool>,
+        folder: Option<Folder>,
+    ) {
+        if id.is_empty() {
+            return;
         }
-        if Self::get_starred(doc, &key).is_none() {
-            Self::set_starred(doc, &key, msg.starred);
+        Self::register_message(doc, id);
+        if let Some(read) = read
+            && Self::get_read(doc, id).is_none()
+        {
+            Self::set_read(doc, id, read);
         }
-        if Self::get_folder_for(doc, &key).is_none() {
-            Self::set_folder_for(doc, &key, msg.folder);
+        if let Some(starred) = starred
+            && Self::get_starred(doc, id).is_none()
+        {
+            Self::set_starred(doc, id, starred);
+        }
+        if let Some(folder) = folder
+            && Self::get_folder_for(doc, id).is_none()
+        {
+            Self::set_folder_for(doc, id, folder);
         }
     }
 
@@ -198,7 +233,7 @@ impl MailDoc {
         if let Some(html) = seed.html.as_deref().filter(|html| !html.trim().is_empty()) {
             // Mail bodies carry no inline images; any the HTML embeds are left out.
             let mut images = tilo_content::ContentInputs::new();
-            qdoc_codecs::html::import_html_under(doc, &body, html, &mut images);
+            tilo_doc_codecs::html::import_html_under(doc, &body, html, &mut images);
             return;
         }
         if RichText::initialize_under(doc, &body).is_err() {
@@ -408,6 +443,28 @@ impl MailDoc {
             return Vec::new();
         };
         read_str_list(doc, &list)
+    }
+
+    /// Collaborative flag projection for every non-purged message id. The
+    /// immutable corpus (subject, body, attachments) stays outside Automerge;
+    /// Document ops only need ids and flag/label/folder state.
+    pub fn list_message_flags(doc: &AutoCommit) -> Vec<MessageFlags> {
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return Vec::new();
+        };
+        let mut out: Vec<MessageFlags> = doc
+            .keys(&flags)
+            .filter(|id| !Self::is_message_purged(doc, id))
+            .map(|id| MessageFlags {
+                id: id.clone(),
+                folder: Self::get_folder_for(doc, &id).unwrap_or(Folder::Inbox),
+                read: Self::get_read(doc, &id).unwrap_or(false),
+                starred: Self::get_starred(doc, &id).unwrap_or(false),
+                labels: Self::get_labels(doc, &id),
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 
     /// Add a label to a message. A no-op when the label is already present, so

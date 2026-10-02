@@ -14,6 +14,8 @@
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
 //! - [`paint`]      — panel and text-metric helpers framing the toolkit's charts.
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
+//! - [`doc`]        — collaborative view preferences (tab, sort, filter,
+//!   selection) stored in Automerge.
 //! - [`prefs`]      — per-window device observation and safety preferences,
 //!   deliberately outside Automerge and collaborative history.
 //! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.
@@ -48,6 +50,7 @@
 )]
 
 pub mod app;
+pub mod doc;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
@@ -55,6 +58,7 @@ pub mod layout;
 pub mod model;
 pub mod paint;
 pub mod prefs;
+pub mod resource;
 pub mod responsive;
 pub mod sampler;
 pub mod tree;
@@ -67,3 +71,4 @@ pub use app::MonitorApp;
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     Box::new(MonitorApp::new_live())
 }
+pub use resource::{Monitor, MonitorShell};

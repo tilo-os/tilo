@@ -30,7 +30,7 @@ pub struct PersonalAppsPane {
     shown: HashMap<String, String>,
     needs_seed: bool,
     commit_context_pending: bool,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -52,7 +52,7 @@ impl PersonalAppsPane {
             shown: HashMap::new(),
             needs_seed: true,
             commit_context_pending: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -180,6 +180,13 @@ impl PersonalAppsPane {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 }
 
