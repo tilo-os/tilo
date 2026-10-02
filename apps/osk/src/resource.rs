@@ -233,6 +233,7 @@ impl ActionSink {
         self.hosted
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &SetPreference) {
         let context = ui::tilo_actions::ActionContext::for_action(
             "so.tilo.osk",
@@ -250,6 +251,7 @@ impl ActionSink {
         }
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

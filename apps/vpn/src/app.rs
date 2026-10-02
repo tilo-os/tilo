@@ -1262,6 +1262,7 @@ impl VpnApp {
     /// `affordance == ActionSpec` covenant test — an on-screen control and its
     /// Ctrl+K entry must build the byte-identical action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -1291,6 +1292,7 @@ impl VpnApp {
         self.actions.attach(dispatcher);
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_hosted(&self) -> bool {
         self.actions.is_hosted()
     }

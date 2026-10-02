@@ -74,4 +74,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub fn shots_root() -> Box<dyn Widget> {
     Box::new(CameraApp::sample())
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Camera, CameraShell, CameraState, launch_spec, standalone_launch};
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Camera, CameraShell, CameraState, standalone_launch};

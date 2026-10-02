@@ -40,7 +40,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use tilo_document::RichText;
-use ui::doc::{read_bool, read_i64_coerced, read_str, read_str_or_text};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{

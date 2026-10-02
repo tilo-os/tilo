@@ -150,4 +150,7 @@ pub fn app_root_persistence_error() -> Box<dyn Widget> {
 pub fn app_root_missing_secret() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::demo_missing_secret())
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Totp, TotpShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Totp, TotpShell, launch_spec};

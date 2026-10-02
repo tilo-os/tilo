@@ -265,6 +265,7 @@ impl MergeView {
             .as_ref()
             .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
     }
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.hosted = hosted;
     }

@@ -1620,6 +1620,7 @@ impl SlidesApp {
     /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
     /// selection live extras beside the published deck door.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.framework_hosted = hosted;
     }
@@ -1627,6 +1628,7 @@ impl SlidesApp {
     /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
     /// publishing only selection live extras beside the framework door.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted || self.framework.is_some()
     }

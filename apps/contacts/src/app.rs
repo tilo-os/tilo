@@ -2107,6 +2107,7 @@ impl ContactsApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// tests.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

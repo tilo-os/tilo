@@ -1,7 +1,7 @@
 //! App Store as a [`tilo_resource::Resource`]: report drafts are document
 //! state; install/update jobs and the live catalogue are extras when hosted.
 
-use automerge::{AutoCommit, ROOT};
+use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
     ActionParam, ActionSpec, EncodedAction, ExecutionMode, OperationKind, ParamType,
@@ -205,6 +205,7 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

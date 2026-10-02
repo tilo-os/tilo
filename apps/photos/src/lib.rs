@@ -635,4 +635,7 @@ mod camera_import_tests {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Photos, PhotosShell, PhotosState, standalone_launch};

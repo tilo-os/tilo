@@ -1565,6 +1565,7 @@ impl ClocksApp {
         self.hosted = true;
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.hosted
     }
@@ -1581,6 +1582,7 @@ impl ClocksApp {
         self.actions.is_hosted()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn timer_count(&self) -> usize {
         self.state.with(|state| state.timers.len())
     }

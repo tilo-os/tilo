@@ -563,6 +563,7 @@ impl ThemesApp {
 
     /// The last action an affordance dispatched through `Self::perform_action`.
     /// Rising state: it is the most recent dispatch, not cleared on read.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
     }

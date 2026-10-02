@@ -18,7 +18,7 @@ use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    self, CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
+    CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
     create_contact_action, live_presentation_extras, publish_children, register, split_name,
 };
 use crate::app::ContactsApp;
@@ -193,6 +193,7 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

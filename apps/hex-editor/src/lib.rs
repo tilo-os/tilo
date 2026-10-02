@@ -139,4 +139,7 @@ mod tests {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{HexEditor, HexEditorShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{HexEditor, HexEditorShell, launch_spec};

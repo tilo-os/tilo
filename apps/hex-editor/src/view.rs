@@ -270,6 +270,7 @@ impl HexView {
     }
 
     /// Whether this surface is under the framework ResourceApp host.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.actions.is_hosted()
     }

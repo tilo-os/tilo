@@ -17,7 +17,7 @@ use crate::actions::{
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
-use crate::model::{Id, Model, Palette, Priority};
+use crate::model::{Model, Palette, Priority};
 
 fn default_local_event() -> EventData {
     EventData {
@@ -410,6 +410,7 @@ impl ActionSink {
     }
 
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

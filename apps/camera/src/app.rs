@@ -375,6 +375,10 @@ pub struct CameraApp {
     /// Where capture bytes live; documents carry only their `media_id`. The
     /// worker holds a clone.
     content: tilo_content::ContentStore,
+    #[allow(
+        dead_code,
+        reason = "seed for screen; kept for restore after framework cutover"
+    )]
     initial_screen: Screen,
 
     // CRDT-backed caches (refreshed every sync)

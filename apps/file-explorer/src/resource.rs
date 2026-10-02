@@ -291,6 +291,7 @@ impl ActionSink {
         self.hosted = true;
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_hosted(&mut self, hosted: bool) {
         self.hosted = hosted;
     }
@@ -321,6 +322,7 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()
@@ -331,6 +333,7 @@ impl ActionSink {
 }
 
 /// Live launch on the framework host.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<FileExplorerShell>()
 }

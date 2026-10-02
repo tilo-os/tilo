@@ -7,7 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource};
-use ui::tilo_resource::Resource as _;
 
 use accounts::SecretItem;
 

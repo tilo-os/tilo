@@ -108,4 +108,7 @@ pub fn app_root_for_shot_demo(scenario: &str) -> Box<dyn Widget> {
     app.dev_set_screen(scenario);
     Box::new(app)
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Remote, RemoteShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Remote, RemoteShell, launch_spec};

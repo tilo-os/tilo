@@ -911,6 +911,7 @@ impl DiskUsageApp {
         self.hosted = true;
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.hosted
     }
@@ -947,10 +948,12 @@ impl DiskUsageApp {
     }
 
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn in_analysis(&self) -> bool {
         matches!(self.view, View::Analysis(_))
     }

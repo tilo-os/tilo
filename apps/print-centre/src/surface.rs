@@ -2500,6 +2500,7 @@ impl PrintCentre {
         self.hosted = true;
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.hosted
     }

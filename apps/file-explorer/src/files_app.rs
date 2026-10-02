@@ -912,6 +912,7 @@ impl FileExplorerWidget {
     /// Tests use this without a live dispatcher. The sink then records the
     /// edit on its local action host. Production [`Self::attach_framework`]
     /// stores the dispatcher and submits with `apply_now_with`.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.actions.set_hosted(hosted);
     }
@@ -7145,6 +7146,7 @@ impl FileExplorerWidget {
 
     /// The folder as a caller browsing into it resolves it: the root plus
     /// its first entries, each with its complete actions.
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn folder_with_entries(&self) -> Resource {
         let mut folder = self.action_directory_folder_root();
         folder.children.extend(

@@ -231,6 +231,7 @@ impl ActionSink {
     /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
     /// playhead live extras beside the published project door.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_hosted_for_test(&mut self, hosted: bool) {
         self.hosted_override = Some(hosted);
     }
@@ -273,6 +274,7 @@ impl ActionSink {
     }
 
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

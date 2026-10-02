@@ -30,8 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionFailure, ActionOutput, ExecutionMode, InvocationId, InvocationUpdate, OperationKind,
-    Resource, ResultSpec,
+    ActionFailure, ActionOutput, InvocationId, InvocationUpdate, OperationKind, Resource,
 };
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;

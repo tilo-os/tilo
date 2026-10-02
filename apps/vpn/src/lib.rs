@@ -89,4 +89,7 @@ pub fn app_root_demo_state(state: &str) -> Box<dyn Widget> {
     app.seed_shot_state(state);
     Box::new(app)
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Vpn, VpnShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Vpn, VpnShell, launch_spec};
