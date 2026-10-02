@@ -21,6 +21,40 @@ UPDATE = "code.tilo.so/tilo/tilo:lenovo-83ed-" + SOURCE
 
 
 class OfflineTargetTests(unittest.TestCase):
+    def test_direct_import_preserves_digest_and_uses_immutable_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            receipt = Path(directory) / 'receipt.json'
+            receipt.write_text(json.dumps(metadata))
+            image_id = 'sha256:' + 'e' * 64
+            calls = []
+            def command(*argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == 'skopeo':
+                    self.assertEqual(argv[1:4], ('--insecure-policy', 'copy', '--preserve-digests'))
+                    view = Path(argv[4].removeprefix('oci:').removesuffix(':target'))
+                    self.assertTrue((view / 'blobs').is_symlink())
+                    self.assertEqual(len(json.loads((view / 'index.json').read_text())['manifests']), 1)
+                    self.assertEqual(argv[5], 'containers-storage:localhost/tilo-offline-target:'
+                                     + metadata['target_digest'][7:])
+                    return ''
+                if '{{.Id}}' in argv:
+                    return image_id
+                if '{{.Digest}}' in argv:
+                    self.assertEqual(argv[-1], image_id)
+                    return metadata['target_digest']
+                self.assertEqual(argv[0:2], ('podman', 'run'))
+                self.assertIn(image_id, argv)
+                self.assertIn('--network=none', argv)
+                return ''
+            with patch.object(target, 'RECEIPT', receipt), patch.object(target, 'run', command):
+                self.assertEqual(target.import_image(root), image_id)
+            self.assertFalse(any('load' in argv for argv in calls))
+            with patch.object(target, 'RECEIPT', receipt), patch.object(target, 'run',
+                    side_effect=['', image_id, 'sha256:' + 'f' * 64]):
+                with self.assertRaisesRegex(ValueError, 'manifest differs'):
+                    target.import_image(root)
+
     def test_command_failure_retains_exit_status_without_arguments(self):
         for code in (-9, 125):
             with self.subTest(returncode=code), patch.object(
