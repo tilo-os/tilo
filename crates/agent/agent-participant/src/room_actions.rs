@@ -47,7 +47,7 @@ use tilo_actions::{
 pub use tilo_browser_peer::DeviceSigner;
 use tilo_browser_peer::DocumentRoute;
 pub use tilo_browser_peer::document::SignedDocumentFrame;
-use tilo_browser_peer::document::{Ciphers, open_frame, sign_frame};
+use tilo_browser_peer::document::{Ciphers, open_frame};
 use ui::widget::ResourceOperationStart;
 
 use crate::apps::{AppCatalogue, HostedApp, Seed};
@@ -431,33 +431,11 @@ struct RoomState {
 
 struct Worker {
     link: Arc<dyn RoomRecordsLink>,
-    signer: Arc<dyn DeviceSigner + Send + Sync>,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     participant: String,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     clock: u64,
-    doc_seq: u64,
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        })
-}
-
-/// Drive a future that never waits on I/O (signing with a local key).
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::yield_now();
-    }
 }
 
 fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
@@ -516,14 +494,12 @@ fn door_outcome(error: &tilo_actions::door::DoorError) -> Outcome {
 impl Worker {
     fn new(link: Arc<dyn RoomRecordsLink>, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
         Self {
-            signer: link.signer(),
             participant: hex::encode(link.user_public_key()),
             link,
             catalogue,
             shared,
             mounted: BTreeMap::new(),
             clock: 0,
-            doc_seq: 0,
         }
     }
 
@@ -945,12 +921,7 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    fn open_new(
-        &mut self,
-        workspace_id: u64,
-        room: &str,
-        app: &str,
-    ) -> Result<ActionOutput, Outcome> {
+    fn open_new(&self, workspace_id: u64, room: &str, app: &str) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
         let mut hosted = HostedApp::open(
             &self.catalogue,
@@ -980,30 +951,18 @@ impl Worker {
         })
     }
 
-    /// Sign `mutation` as the host and commit each frame.
+    /// The host holds none of the room's channel keys, so it cannot seal a
+    /// change, and a document never goes out in the clear: refuse.
+    #[allow(
+        clippy::unused_self,
+        reason = "every write of the worker goes through this one door"
+    )]
     fn commit(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
+        &self,
+        _workspace_id: u64,
+        _route: &DocumentRoute,
+        _mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        let frames = mutation
-            .encode_frames()
-            .map_err(|error| error.to_string())?;
-        for frame in frames {
-            let now = now_ns();
-            self.doc_seq = now.max(self.doc_seq.saturating_add(1));
-            let signed = block_on(sign_frame(
-                route,
-                frame,
-                self.signer.as_ref(),
-                None,
-                self.doc_seq,
-                now,
-            ))
-            .map_err(|error| error.to_string())?;
-            self.link.commit(workspace_id, signed)?;
-        }
-        Ok(())
+        Err("the room is end-to-end encrypted and this host holds none of its channel keys".into())
     }
 }
