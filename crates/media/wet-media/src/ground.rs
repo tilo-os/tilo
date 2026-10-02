@@ -95,6 +95,16 @@ impl Heightfield {
         read(&self.values, self.width, x, y, 0.5)
     }
 
+    /// How steeply the ground rises at a cell going along `(dx, dy)`, a
+    /// unit direction: positive on the faces a brush dragged that way meets.
+    pub fn rise(&self, x: usize, y: usize, (dx, dy): (f32, f32)) -> f32 {
+        let last_x = self.width.saturating_sub(1);
+        let last_y = self.height.saturating_sub(1);
+        let across = self.at(x.saturating_add(1).min(last_x), y) - self.at(x.saturating_sub(1), y);
+        let down = self.at(x, y.saturating_add(1).min(last_y)) - self.at(x, y.saturating_sub(1));
+        0.5 * (across * dx + down * dy)
+    }
+
     /// The lit ground, as opaque straight-alpha sRGB RGBA8.
     pub fn shade(&self, colour: Rgb) -> Vec<u8> {
         let relief = self.texture.relief();
@@ -136,22 +146,46 @@ fn height_at(texture: Texture, x: f32, y: f32, seed: u64) -> f32 {
     }
 }
 
-/// An over-under weave of slightly irregular threads.
+/// An over-under weave of irregular threads under an uneven priming.
 fn linen(x: f32, y: f32, seed: u64) -> f32 {
+    use std::f32::consts::PI;
     const PITCH: f32 = 3.4;
     let wobble_x = (value_noise(y / 9.0, x / 40.0, seed) - 0.5) * 0.9;
     let wobble_y = (value_noise(x / 9.0, y / 40.0, seed ^ 0x77) - 0.5) * 0.9;
-    let u = (x + wobble_x) / PITCH;
-    let v = (y + wobble_y) / PITCH;
-    let warp = (u * std::f32::consts::PI).sin().abs();
-    let weft = (v * std::f32::consts::PI).sin().abs();
+    // Threads are beaten in unevenly: their spacing crowds and opens over a
+    // few threads, so no stretch of the weave repeats the last.
+    let crowd_x = (value_noise(x / 13.0, y / 60.0, seed ^ 0x91) - 0.5) * 1.5;
+    let crowd_y = (value_noise(x / 60.0, y / 13.0, seed ^ 0x92) - 0.5) * 1.5;
+    let u = (x + wobble_x) / PITCH + crowd_x;
+    let v = (y + wobble_y) / PITCH + crowd_y;
+    let warp = thread(u, seed ^ 0xa1);
+    let weft = thread(v, seed ^ 0xa2);
     // Which thread lies on top changes smoothly, as real threads bend
     // over and under one another, rather than in hard cells.
-    let over = 0.5 + 0.5 * (u * std::f32::consts::PI).sin() * (v * std::f32::consts::PI).sin();
+    let over = 0.5 + 0.5 * (u * PI).sin() * (v * PI).sin();
     let thread = warp * (0.35 + 0.3 * over) + weft * (0.65 - 0.3 * over);
     let slub = value_noise(x / 14.0, y / 2.0, seed ^ 0x3c) * 0.2
         + value_noise(x / 2.0, y / 14.0, seed ^ 0x3d) * 0.15;
-    (thread * 0.75 + slub).clamp(0.0, 1.0)
+    // Lattice noise on the thread grid puts a random value on every
+    // crossing: some gaps are pulled open, others closed by a fat thread.
+    let gap = (value_noise(u, v, seed ^ 0x6b) - 0.5) * 0.4;
+    let weave = thread * 0.75 + slub + gap - 0.45;
+    // The priming fills the weave unevenly and the stretched cloth
+    // undulates: in some patches the threads stand proud, in others they
+    // are half buried, so a dry brush catches in patches, not a grid.
+    let lift = fbm(x / 28.0, y / 28.0, seed ^ 0x5e, 2) - 0.5;
+    let depth = 0.6 + 0.6 * value_noise(x / 37.0, y / 37.0, seed ^ 0x5f);
+    (0.5 + weave * depth + lift * 0.38).clamp(0.0, 1.0)
+}
+
+/// The height across one family of threads at `t` thread pitches: each
+/// thread is a little thicker or thinner and higher or lower than the next.
+fn thread(t: f32, seed: u64) -> f32 {
+    let index = t.floor();
+    let thick = lattice(index, 0.0, seed);
+    let high = lattice(index, 1.0, seed);
+    let profile = (t * std::f32::consts::PI).sin().abs();
+    profile.powf(0.5 + thick) * (0.8 + 0.25 * high)
 }
 
 /// Fractal value noise in `0..=1`.
