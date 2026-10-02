@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 79626240
+bytes = 80543744
 
 [bundles.desktop.rebaseline]
-run = 57413
-measured = 78807524
-reason = "feature growth: every app on one resource, action and view model (#1414); reduction tracked in #2143"
+run = 57939
+measured = 79719115
+reason = "feature growth: canvas and wet-media on the shared desktop web bundle (#2166)"
