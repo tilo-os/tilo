@@ -368,7 +368,8 @@ def scenario_argv(data, work, profile, target, out):
     argv = [str(data["tilo_vm_exe"]), "scenario", "install", "--medium",
             str(medium_path(work, profile)),
             "--layout", "guided-alongside", "--target-disk", str(target),
-            "--encrypt", "passphrase", "--graphics", "software", "--out", str(out)]
+            "--filesystem", "ext4", "--encrypt", "passphrase",
+            "--graphics", "software", "--out", str(out)]
     require(profile in PROFILES, "unknown WHPX profile")
     if profile == "lenovo-83ed":
         argv.append("--skip-target-boot")

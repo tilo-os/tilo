@@ -19,6 +19,7 @@ pub const INSTALLER: &str = "installer";
 /// What the scenario installs, in the installer's own terms.
 pub struct Choices {
     pub layout: Layout,
+    pub filesystem: Option<String>,
     pub unlock: Unlock,
     pub username: String,
     pub full_name: String,
@@ -354,6 +355,14 @@ fn disk_step(
     if choices.layout == Layout::GuidedAlongside && regions > 1 {
         invoke(console, "installer.region:0", "select", json!({}))?;
     }
+    if let Some(filesystem) = &choices.filesystem {
+        invoke(
+            console,
+            "installer.storage",
+            "set-filesystem",
+            json!({ "filesystem": filesystem }),
+        )?;
+    }
     invoke(console, INSTALLER, "next", json!({}))?;
     // A prepared alongside target runs a read-only preflight before the
     // wizard leaves the Disk step.
@@ -545,6 +554,9 @@ mod tests {
                 ("disk", "set-method@installer.storage") => {
                     self.method = args["method"].as_str().unwrap().into();
                 }
+                ("disk", "set-filesystem@installer.storage") => {
+                    assert_eq!(args["filesystem"], "ext4");
+                }
                 ("disk", "select@installer.disk:/dev/vdb") => {
                     self.selected = Some("/dev/vdb".into());
                 }
@@ -605,6 +617,7 @@ mod tests {
     fn choices(unlock: Unlock) -> Choices {
         Choices {
             layout: Layout::Erase,
+            filesystem: None,
             unlock,
             username: "scenario".into(),
             full_name: "Scenario User".into(),
@@ -663,6 +676,7 @@ mod tests {
             let mut fake = FakeInstaller::new();
             let mut chosen = choices(Unlock::Passphrase);
             chosen.username = "bob".into();
+            chosen.filesystem = Some("ext4".into());
             chosen.account_secret = Secret::new("account-password-for-testing");
             chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));
             let mut lines = Vec::new();
