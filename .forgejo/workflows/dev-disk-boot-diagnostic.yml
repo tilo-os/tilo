@@ -181,8 +181,22 @@ jobs:
           guest_evidence() {
             timeout --kill-after=5s 20s ./os/dev/vm.sh ssh "$@"
           }
+          host_observer_pid=
+          host_evidence() {
+            printf '\nTILO_HOST_PROGRESS time=%s\n' "$(date -u +%FT%TZ)"
+            timeout --kill-after=1s 3s df -h "$TILO_RUN" || true
+            timeout --kill-after=1s 3s df -i "$TILO_RUN" || true
+            timeout --kill-after=1s 5s ./os/dev/vm.sh status || true
+            timeout --kill-after=1s 5s ./os/dev/vm.sh cmd 'info status' || true
+            timeout --kill-after=1s 5s ./os/dev/vm.sh cmd 'info block' || true
+          }
           finish() {
             status=$?
+            if [[ -n $host_observer_pid ]]; then
+              kill "$host_observer_pid" 2>/dev/null || true
+              wait "$host_observer_pid" 2>/dev/null || true
+            fi
+            host_evidence >> "$TILO_RUN/host-switch.log" 2>&1 || true
             # A session can exit before the portal appears. Preserve its flight
             # recorder, rather than only the SSH chatter on the serial console.
             guest_evidence 'cat "$HOME/.local/state/tilo/session-logs/latest.log"' > "$TILO_RUN/desktop-session.log" 2>&1 || true
@@ -243,8 +257,21 @@ jobs:
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o PreferredAuthentications=password -o PubkeyAuthentication=no \
               "$TILO_RUN/guest-switch.sh" "$TILO_USER@127.0.0.1:/tmp/guest-switch.sh"
+            # A paused QEMU cannot run the guest's sampler or timeout. Observe
+            # the host independently to distinguish disk I/O errors from a
+            # running guest that has stopped responding over SSH.
+            (
+              while true; do
+                host_evidence
+                sleep 15
+              done
+            ) > >(tee "$TILO_RUN/host-switch.log") 2>&1 &
+            host_observer_pid=$!
             timeout --kill-after=10s 22m ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-switch.sh '$UPGRADE_IMAGE'" \
               | tee "$TILO_RUN/image-switch.log"
+            kill "$host_observer_pid" 2>/dev/null || true
+            wait "$host_observer_pid" 2>/dev/null || true
+            host_observer_pid=
             ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
             ready=false
             for attempt in $(seq 1 120); do
@@ -413,6 +440,7 @@ jobs:
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-phases.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-performance.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/image-switch.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/host-switch.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-build.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-boot.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop.ppm
