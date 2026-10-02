@@ -188,9 +188,18 @@ pub(crate) fn build_root<A: ResourceApp>(
     let stages = Stages::new();
     let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
     let content = A::view(&mut cx);
-    ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
+    #[cfg(not(target_arch = "wasm32"))]
+    let live = permissions.is_some();
+    let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
-        .with_presentation(A::local_operations())
+        .with_presentation(A::local_operations());
+    #[cfg(not(target_arch = "wasm32"))]
+    let root = if live {
+        root.drawing_past(super::preview::draw_past::<A>)
+    } else {
+        root
+    };
+    root
 }
 
 #[allow(
@@ -217,6 +226,7 @@ fn create<A: ResourceApp>(
     let root = build_root::<A>(reader, Editing::Live(permissions));
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
+    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
     let mut component = AppComponent::new(context, Box::new(root), registry);
     component
         .register_document_history(super::preview::history_definition::<A>())
