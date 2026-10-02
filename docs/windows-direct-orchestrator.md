@@ -85,6 +85,18 @@ secrets, use `os/dev/windows-direct-credentials-stored.ps1` in place of the
 interactive Python prompt. Pipe it directly into `prepare`; do not save its
 output to a plaintext file.
 
+Windows scenarios explicitly use an ext4 root and retain their install record.
+If installation completed but first-boot verification failed, rerunning
+`prepare` resumes verification of that same encrypted target. It checks the
+original inputs, target GPT and guest image proof before booting; it does not
+repeat the installer or overwrite a different target. The finished live
+installer overlay is discarded before target boot to reclaim its temporary
+container store.
+
+For a standalone retained Windows scenario, use the original options and
+output directory with `tilo-vm scenario install --resume --keep`. Supply the
+original secrets again if the first install used `--credentials-stdin`.
+
 The prompt helper sends only the JSON through the process pipe; it creates no
 plaintext file. `prepare` prompts only if a WHPX phase still needs to run.
 On success `C:\tilo\run\source-receipt.json` binds both checked WHPX proofs,
