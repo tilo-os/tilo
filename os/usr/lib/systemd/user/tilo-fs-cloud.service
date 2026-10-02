@@ -17,7 +17,7 @@ Type=simple
 # cache live under the state dir: queued edits are not a cache and must
 # survive cache cleaning.
 # The sandbox below makes the home read-only, so the mounts root comes from
-# user-tmpfiles.d/tilo-fs.conf and the accounts directory from
+# user-tmpfiles.d/tilo-fs.conf (in /usr/share) and the accounts directory from
 # ConfigurationDirectory=. No ExecStartPre: under systemd 259 a user unit
 # with PrivateIPC=yes cannot start a second sandboxed process (its IPC
 # namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
