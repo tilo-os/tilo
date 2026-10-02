@@ -236,7 +236,7 @@ for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
         %{buildroot}%{_userunitdir}/$unit.socket
 done
 install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
-                  %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+                  %{buildroot}%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 install -Dpm 0644 apps/profile.d/tilo-apps.sh \
                   %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 install -Dpm 0644 apps/license/LICENSE \
@@ -336,7 +336,7 @@ done
 %{_userunitdir}/tilo-model-gateway.socket
 %{_userunitdir}/tilo-ush.service
 %{_userunitdir}/tilo-ush.socket
-%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 %config %{_sysconfdir}/profile.d/tilo-apps.sh
 %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 %{_datadir}/tilo-apps

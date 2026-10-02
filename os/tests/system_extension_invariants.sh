@@ -5,7 +5,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 containerfile="$repo/os/Containerfile"
 tmpfiles="$repo/os/usr/lib/tmpfiles.d/tilo.conf"
-user_tmpfiles="$repo/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf"
+user_tmpfiles="$repo/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf"
 helper="$repo/os/usr/libexec/tilo-system-extension-activate"
 userspace="$repo/os/usr/lib/systemd/system/tilo-system-extension-userspace.service"
 boot="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service"
@@ -42,7 +42,7 @@ for source in \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/tilo-local-model.service /usr/lib/systemd/system/tilo-local-model.service' \
     'os/usr/lib/systemd/user/tilo-models.service /usr/lib/systemd/user/tilo-models.service' \
-    'os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' \
+    'os/usr/share/user-tmpfiles.d/tilo-model-manager.conf /usr/share/user-tmpfiles.d/tilo-model-manager.conf' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket /usr/lib/systemd/system/tilo-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service /usr/lib/systemd/system/tilo-system-extension-dispatcher@.service' \
     'os/usr/libexec/tilo-system-extension-dispatch /usr/libexec/tilo-system-extension-dispatch' \
