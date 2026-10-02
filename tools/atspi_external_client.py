@@ -108,7 +108,14 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
     for manifest in sorted(payload_root.glob("*/manifest.toml")):
         scenario = scenario_from_manifest(manifest)
         if scenario:
-            binary = manifest.parent / scenario.binary
+            # package-store keeps signed metadata in <hash>.pkg and the
+            # materialised executable tree beside it in <hash>.
+            payload = manifest.parent
+            if payload.name.endswith(".pkg"):
+                if not re.fullmatch(r"[0-9a-f]{64}\.pkg", payload.name):
+                    raise GateError(f"invalid installed package metadata directory: {payload}")
+                payload = payload.with_name(payload.name[:-4])
+            binary = payload / scenario.binary
             if not binary.is_file() or not os.access(binary, os.X_OK):
                 raise GateError(f"{scenario.app_id}: certified binary is absent: {binary}")
             scenarios.append((scenario, binary))
@@ -252,8 +259,8 @@ def exercise(scenario: Scenario, binary: Path, address: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--payload-root", type=Path, default=Path("/usr/share/tilo-apps/payloads"),
-        help="installed app payload directory containing <id>/manifest.toml",
+        "--payload-root", type=Path, default=Path("/usr/share/tilo-apps/pkgs"),
+        help="installed app package directory containing <content-hash>.pkg/manifest.toml",
     )
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
