@@ -3691,7 +3691,7 @@
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
-    "description": "List the layers and the marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
+    "description": "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
     "operation": "View",
     "params": [
       {
@@ -3724,6 +3724,22 @@
             "null"
           ],
           "description": "Only marks on this layer."
+        },
+        "nullable": true
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "How many of the newest matching marks to list, 1 to 400 (default 100).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "How many of the newest matching marks to list, 1 to 400 (default 100)."
         },
         "nullable": true
       }
@@ -3760,7 +3776,7 @@
         "name": "size",
         "ty": "integer",
         "required": false,
-        "description": "The longest side of the picture in pixels, 64 to 1536 (default 1024).",
+        "description": "The longest side of the picture in pixels, 64 to 1536 (default 768).",
         "schema": {
           "type": [
             "integer",
@@ -3768,7 +3784,21 @@
           ],
           "minimum": 0,
           "maximum": 4294967295,
-          "description": "The longest side of the picture in pixels, 64 to 1536 (default 1024)."
+          "description": "The longest side of the picture in pixels, 64 to 1536 (default 768)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "format",
+        "ty": "text",
+        "required": false,
+        "description": "`jpeg` (default) or `png` for exact pixels.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`jpeg` (default) or `png` for exact pixels."
         },
         "nullable": true
       },

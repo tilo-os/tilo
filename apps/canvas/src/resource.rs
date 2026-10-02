@@ -55,8 +55,10 @@ pub struct Look {
     /// `[x, y, width, height]` in artwork units; the whole artwork when
     /// absent. A small region is a close look at detail.
     pub region: Option<[f64; 4]>,
-    /// The longest side of the picture in pixels, 64 to 1536 (default 1024).
+    /// The longest side of the picture in pixels, 64 to 1536 (default 768).
     pub size: Option<u32>,
+    /// `jpeg` (default) or `png` for exact pixels.
+    pub format: Option<String>,
     /// Draw a labelled coordinate grid over the picture, to place marks.
     pub grid: Option<bool>,
     /// Show only these layers.
@@ -71,6 +73,8 @@ pub struct Inspect {
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
     pub layer: Option<String>,
+    /// How many of the newest matching marks to list, 1 to 400 (default 100).
+    pub limit: Option<u32>,
 }
 
 /// Render the artwork at full size as a PNG.
@@ -324,7 +328,7 @@ impl Resource for ArtworkResource {
             ViewOp::Inspect(read_args(args).unwrap_or_default())
         })
         .with_description(
-            "List the layers and the marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
+            "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
         );
         inspect.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
