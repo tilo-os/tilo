@@ -518,6 +518,47 @@ pub fn revert_run(
     Ok(outcome)
 }
 
+/// Undo several changes, each on its own, into one open transaction:
+/// `changes` pairs each change with the actor hex whose work it is, newest
+/// first. Every revert is planned before any is written, because reading
+/// the history closes the open transaction, which would commit the first
+/// revert as a change of its own.
+///
+/// As with [`revert_run`] the caller commits, and must consult each
+/// outcome's [`RevertOutcome::kept`] before saying "undone".
+///
+/// # Errors
+///
+/// [`RevertError::UnknownRun`] when a change is not in `doc`.
+pub fn revert_changes(
+    doc: &mut AutoCommit,
+    changes: &[(ChangeHash, String)],
+    authors: &AuthorDirectory,
+) -> Result<Vec<RevertOutcome>, RevertError> {
+    let mut plans = Vec::with_capacity(changes.len());
+    for (hash, actor) in changes {
+        let run = ChangeRun::single(entry_id_from_hash(&hash.to_string()));
+        let (before, after, covered) = run_bounds(doc, &run)?;
+        let forward = doc.diff(&before, &after);
+        let created = objects_created(&forward);
+        let inverse = doc.diff(&after, &before);
+        let later = later_writers(doc, &after, Some(actor), &created);
+        let (outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
+        plans.push((outcome, patches, before, after));
+    }
+    Ok(plans
+        .into_iter()
+        .map(|(mut outcome, patches, before, after)| {
+            if patches.iter().any(|(_, apply)| *apply) {
+                let pending_before = doc.pending_ops();
+                write_selected_patches(doc, patches, &before, &after);
+                outcome.wrote = doc.pending_ops() > pending_before;
+            }
+            outcome
+        })
+        .collect())
+}
+
 /// The contiguous run of changes authored by `actor_hex`, ending at the
 /// document's newest change by that actor.
 ///
