@@ -77,6 +77,13 @@
 //! opener, but never pretend transient process state is a durable document edit.
 //! The tests below prove each half of this split on the real production path.
 
+use ui::tilo_actions::ActionRegistry;
+
+/// Install the terminal session action decoder on the live launch path.
+pub fn register(registry: &mut ActionRegistry) {
+    <crate::resource::Terminal as ui::tilo_resource::Resource>::register(registry);
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
