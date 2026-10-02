@@ -106,9 +106,9 @@ pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
+    AGENT_TASK_PARTICIPANT_PREFIX, ARGS_FACET, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId,
+    ParticipantId, args_summary,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
@@ -120,7 +120,7 @@ pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, replay,
+    dispatch_with_context, invoking_context, replay,
 };
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
