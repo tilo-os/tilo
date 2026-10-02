@@ -239,7 +239,7 @@ impl Joined {
                         self.publish(&scope, &session);
                     }
                     Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
-                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {}
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. } | Inbound::Voice(_)) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {

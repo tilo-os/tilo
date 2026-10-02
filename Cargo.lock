@@ -13138,7 +13138,6 @@ dependencies = [
  "rand_core 0.10.0",
  "rcgen",
  "reis",
- "reqwest",
  "resvg",
  "runtime-collab",
  "runtime-fs",
@@ -13186,8 +13185,6 @@ dependencies = [
  "tilo-lockdown-policy",
  "tilo-media",
  "tilo-moq",
- "tilo-native-media-control",
- "tilo-net",
  "tilo-peer-state",
  "tilo-power-mgmt",
  "tilo-projector",
@@ -14879,6 +14876,9 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-identity-host",
+ "tilo-joined-room",
  "tilo-moq",
  "tilo-net",
  "tilo-peer-state",
@@ -15489,10 +15489,12 @@ dependencies = [
  "tempfile",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
  "tilo-identity-host",
+ "tilo-moq",
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",
@@ -15611,23 +15613,6 @@ dependencies = [
  "tokio",
  "url",
  "web-transport-quinn",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-native-media-control"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "postcard",
- "tilo-automerge-fork",
- "tilo-automerge-isolate",
- "tilo-delivery-protocol",
- "tilo-peer-state",
- "tilo-relay-protocol",
- "tilo-user-identity",
- "uuid",
  "workspace-hack",
 ]
 

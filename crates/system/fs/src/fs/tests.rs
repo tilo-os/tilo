@@ -1683,15 +1683,29 @@ mod history_integration_tests {
         assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
         let snapshot = history.snapshot(record_id).unwrap();
         assert_eq!(snapshot.versions.len(), 3);
+        assert_eq!(snapshot.heads.len(), 1);
+        let restored = snapshot
+            .versions
+            .iter()
+            .find(|version| snapshot.heads.contains(&version.id))
+            .unwrap();
         assert_eq!(
-            snapshot.versions[2].provenance,
+            restored.provenance,
             FileProvenance::Restore {
                 from: original_version
             }
         );
+        // Equal millisecond timestamps are ordered by version id, so array
+        // positions do not identify the original revision or restored head.
+        let baseline = snapshot
+            .versions
+            .iter()
+            .find(|version| version.id == original_version)
+            .unwrap();
+        assert_eq!(baseline.content_hash, restored.content_hash);
         assert_eq!(
-            snapshot.versions[0].content_hash,
-            snapshot.versions[2].content_hash
+            baseline.content_hash,
+            Some(collab_types::ContentHash(*original_hash.as_bytes()))
         );
     }
 }

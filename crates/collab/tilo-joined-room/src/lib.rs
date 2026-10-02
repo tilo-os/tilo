@@ -23,6 +23,7 @@ pub mod session;
 pub mod testing;
 #[cfg(test)]
 mod tests;
+pub mod voice;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
