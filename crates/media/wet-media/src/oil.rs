@@ -338,7 +338,7 @@ impl OilLayer {
                 // bristle presses and the threads stand high, mostly the
                 // former, so broken colour streaks along the stroke.
                 let tooth = self.canvas.ground.at(x, y);
-                let dryness = 1.0 - smoothstep(0.35, 0.9, bristle.load);
+                let dryness = 1.0 - smoothstep(0.2, 0.6, bristle.load);
                 let grip = tooth * 0.35 + (0.5 + (contact - 0.5) * dryness) * 0.65;
                 let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
                 let deposit =
@@ -422,7 +422,7 @@ impl OilLayer {
                 // A thin coat is scrubbed on unevenly, so where it misses the
                 // weave it misses in patches, not thread by thread.
                 let catch = smoothstep(0.5 - load, 0.8 - load, tooth * 0.7 + wander * 0.3);
-                let deposit = (inside * catch * opacity * (0.55 + 0.4 * load)).clamp(0.0, 1.0);
+                let deposit = (inside * catch * opacity * (0.7 + 0.35 * load)).clamp(0.0, 1.0);
                 let index = at(width, x, y);
                 let cover = read(&self.cover, width, x, y, 0.0);
                 let under = self.colour_at(x, y);
@@ -524,7 +524,7 @@ impl OilLayer {
                 }
                 let at = |salt: u64| hash01(seed, salt, row_key ^ piece);
                 let span = brush * (2.5 + 6.0 * at(29));
-                let wobble = (at(31) - 0.5) * spacing * 1.6;
+                let wobble = (at(31) - 0.5) * spacing;
                 let angle = region.angle.to_radians() + (at(37) - 0.5) * 0.3;
                 let (dy, dx) = angle.sin_cos();
                 let (nx, ny) = (-dy, dx);
@@ -548,9 +548,9 @@ impl OilLayer {
                 let base = region.paint.colour.scale(value);
                 pieces.push(Piece {
                     points: [
-                        point(0.0, 0.0, 0.3 + 0.3 * at(51)),
+                        point(0.0, 0.0, 0.45 + 0.3 * at(51)),
                         point(0.5, bow, 1.0),
-                        point(1.0, 0.0, 0.25 + 0.35 * at(53)),
+                        point(1.0, 0.0, 0.4 + 0.35 * at(53)),
                     ],
                     size: brush * (0.75 + 0.45 * at(57)),
                     load: load * (0.75 + 0.45 * at(59)),
