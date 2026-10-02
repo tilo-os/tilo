@@ -3199,7 +3199,11 @@ jobs:
       # Each board publishes on its own; one broken board must not cancel another.
       fail-fast: false
       matrix:
-        board: ${{ fromJSON(needs.plan.outputs.boards) }}
+        # The reusable workflow's completion job depends on `board`. Forgejo
+        # leaves that dependency unresolved when an empty matrix creates no
+        # job. Keep one skipped row in that case; board-wait still gates every
+        # real board build, so the placeholder never starts a runner.
+        board: ${{ fromJSON(needs.plan.outputs.boards != '[]' && needs.plan.outputs.boards || '["none"]') }}
     runs-on: runner-large-arm64
     timeout-minutes: 90
     env:
