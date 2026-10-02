@@ -354,7 +354,7 @@ pub async fn sign_frame(
     route: &DocumentRoute,
     cleartext: Vec<u8>,
     signer: &dyn DeviceSigner,
-    cipher: Option<&mut Box<dyn ContentCipher>>,
+    cipher: &mut Box<dyn ContentCipher>,
     seq: u64,
     now_ns: u64,
 ) -> Result<SignedDocumentFrame, DocumentError> {
@@ -363,32 +363,20 @@ pub async fn sign_frame(
     let author = collab_types::Ed25519PublicKey::from_bytes(signer.device_public_key());
     let attestation = document_attestation_id(&route.app_id, &route.cluster_id, &route.record);
     let timestamp = crate::clock::system_time(now_ns);
-    let mut op = match cipher {
-        Some(cipher) => {
-            let (metadata, sealed) = cipher
-                .seal(artifact, frame_retention(&cleartext), &cleartext)
-                .map_err(DocumentError::Payload)?;
-            SignedOp::new_unsigned_with_encryption(
-                sealed,
-                artifact,
-                author,
-                attestation,
-                collab_types::OpClass::Splice,
-                timestamp,
-                seq,
-                metadata,
-            )
-        }
-        None => SignedOp::new_unsigned(
-            cleartext,
-            artifact,
-            author,
-            attestation,
-            collab_types::OpClass::Splice,
-            timestamp,
-            seq,
-        ),
-    };
+    // A document is only ever written sealed for its route's channel.
+    let (metadata, sealed) = cipher
+        .seal(artifact, frame_retention(&cleartext), &cleartext)
+        .map_err(DocumentError::Payload)?;
+    let mut op = SignedOp::new_unsigned_with_encryption(
+        sealed,
+        artifact,
+        author,
+        attestation,
+        collab_types::OpClass::Splice,
+        timestamp,
+        seq,
+        metadata,
+    );
     let signing_bytes = op
         .signing_bytes()
         .map_err(|error| DocumentError::Signature(error.to_string()))?;

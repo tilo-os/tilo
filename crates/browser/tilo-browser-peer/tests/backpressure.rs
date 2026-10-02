@@ -93,7 +93,7 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host, &root).await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
 
     let author = start_peer(
         Host::Https(host.https()),
