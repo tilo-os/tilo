@@ -555,6 +555,16 @@ impl ResourceApp for TerminalShell {
     }
 }
 
+fn read_string(doc: &Doc, key: &str) -> Option<String> {
+    match doc.get(ROOT, key).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static ATTACH_RETAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -685,7 +695,7 @@ mod tests {
         super::ATTACH_RETAINED.with(|cell| cell.set(false));
         let _app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal shell");
         assert!(
-            super::ATTACH_RETAINED.with(|cell| cell.get()),
+            super::ATTACH_RETAINED.with(std::cell::Cell::get),
             "attach retains the dispatcher"
         );
     }
@@ -807,7 +817,7 @@ mod tests {
             .unwrap()
             .and_then(|(value, _)| match value {
                 automerge::Value::Scalar(value) => value.as_i64(),
-                _ => None,
+                automerge::Value::Object(_) => None,
             });
         assert_eq!(x, Some(3));
         TerminalAction::WriteLine {
@@ -870,7 +880,7 @@ mod tests {
             .unwrap()
             .and_then(|(value, _)| match value {
                 automerge::Value::Scalar(value) => value.as_u64(),
-                _ => None,
+                automerge::Value::Object(_) => None,
             });
         assert_eq!(row, Some(0));
     }
@@ -973,7 +983,7 @@ mod tests {
             .unwrap()
             .and_then(|(value, _)| match value {
                 automerge::Value::Scalar(value) => value.as_i64(),
-                _ => None,
+                automerge::Value::Object(_) => None,
             });
         assert_eq!(x, Some(4));
         TerminalAction::EnsureLines {
@@ -994,15 +1004,5 @@ mod tests {
             .map(|(_, id)| id)
             .unwrap();
         assert_eq!(doc.length(&grid), 1);
-    }
-}
-
-fn read_string(doc: &Doc, key: &str) -> Option<String> {
-    match doc.get(ROOT, key).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        _ => None,
     }
 }

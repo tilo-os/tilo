@@ -5600,6 +5600,21 @@ fn demo_items() -> Vec<SecretItem> {
         .collect()
 }
 
+fn find_resource(
+    resources: &[ui::tilo_actions::Resource],
+    id: &str,
+) -> Option<ui::tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6673,19 +6688,4 @@ mod tests {
             let _ = std::fs::remove_dir_all(base);
         }
     }
-}
-
-fn find_resource(
-    resources: &[ui::tilo_actions::Resource],
-    id: &str,
-) -> Option<ui::tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }

@@ -1161,6 +1161,26 @@ pub fn from_verbs<'a>(
         }
     }
     if best.len() > 1 {
+        // Equal keyword hits still leave a shorter label closer to what
+        // was said: "insert table" beats "generate table of contents" for
+        // an instruction that only said "table". Align left / Align centre
+        // stay tied (same length) and remain Ambiguous.
+        let label_words = |offer: &Offer| keywords(&offer.descriptor.action_label).len().max(1);
+        let fewest = best
+            .iter()
+            .map(|offer| label_words(offer))
+            .min()
+            .unwrap_or(1);
+        let denser: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|offer| label_words(offer) == fewest)
+            .collect();
+        if !denser.is_empty() {
+            best = denser;
+        }
+    }
+    if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
                 .take(4)

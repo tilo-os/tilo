@@ -3264,7 +3264,19 @@ impl Widget for ChatApp {
         self.establish_realtime_target();
         if !self.canonical && self.is_live {
             let status = model::Presence::Online;
-            if !ChatDoc::user_is_current(
+            // A brand-new live record still needs the honest first workspace.
+            // SeedStarter owns that write; EnsureUser only joins the roster.
+            if ChatDoc::list_workspaces(doc).is_empty() {
+                self.perform_action(
+                    doc,
+                    &actions::ChatAction::SeedStarter {
+                        id: self.me.id.clone(),
+                        name: self.me.name.clone(),
+                        initials: self.me.initials.clone(),
+                        color_idx: self.me.color_idx,
+                    },
+                );
+            } else if !ChatDoc::user_is_current(
                 doc,
                 &self.me.id,
                 &self.me.name,
