@@ -2580,6 +2580,8 @@ jobs:
             fi
             if [[ "$attempt" == 60 ]]; then
               ./os/dev/vm.sh serial | tail -120
+              # The session's own journal: the compositor and its services.
+              ./os/dev/vm.sh ssh 'journalctl -b --no-pager -o short-monotonic -n 200 _UID=$(id -u)' || true
               echo "native compositor did not reach first-login OOBE" >&2
               exit 1
             fi
@@ -2598,6 +2600,8 @@ jobs:
             fi
             if [[ "$attempt" == 60 ]]; then
               ./os/dev/vm.sh serial | tail -120
+              # The session's own journal: the compositor and its services.
+              ./os/dev/vm.sh ssh 'journalctl -b --no-pager -o short-monotonic -n 200 _UID=$(id -u)' || true
               echo "identity ceremony did not produce the certified chain" >&2
               exit 1
             fi
