@@ -90,8 +90,10 @@ def profile(source, output, encoder, args, handoff=None):
     if (info.get("format") != "qcow2" or "backing-filename" in info
             or type(size) is not int or size < BLOCK or size % 512):
         raise ValueError("source must be a standalone, sector-aligned qcow2")
-    if not encoder.is_file() or encoder.is_symlink():
+    if encoder is not None and (not encoder.is_file() or encoder.is_symlink()):
         raise ValueError("profile encoder must be a regular file")
+    if encoder is None and (handoff is None or args):
+        raise ValueError("handoff-only mode requires a handoff and no profile arguments")
     payload = handoff_payload(handoff) if handoff is not None else b""
     extra = (len(payload) + 511) // 512 * 512 + HANDOFF_HEADER if payload else 0
     try:
@@ -101,7 +103,8 @@ def profile(source, output, encoder, args, handoff=None):
         with tempfile.TemporaryDirectory(prefix="tilo-profile-") as temporary:
             block = Path(temporary) / "profile.bin"
             block.write_bytes(bytes(BLOCK))
-            run(str(encoder), "--target", str(block), *args)
+            if encoder is not None:
+                run(str(encoder), "--target", str(block), *args)
             expected = block.read_bytes()
             if len(expected) != BLOCK:
                 raise ValueError("profile encoder changed the reserved block size")
@@ -124,7 +127,8 @@ def profile(source, output, encoder, args, handoff=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
-        raise SystemExit("usage: profile-installer-qcow2.py SOURCE OUTPUT ENCODER --hostname ...")
+        raise SystemExit("usage: profile-installer-qcow2.py SOURCE OUTPUT ENCODER --hostname ...\n"
+                         "   or: profile-installer-qcow2.py SOURCE OUTPUT --handoff-only --setup-handoff DIR")
     args = sys.argv[4:]
     handoff = None
     if "--setup-handoff" in args:
@@ -133,4 +137,5 @@ if __name__ == "__main__":
             raise SystemExit("--setup-handoff requires a directory")
         handoff = Path(args[index + 1])
         del args[index:index + 2]
-    profile(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), args, handoff)
+    encoder = None if sys.argv[3] == "--handoff-only" else Path(sys.argv[3])
+    profile(Path(sys.argv[1]), Path(sys.argv[2]), encoder, args, handoff)
