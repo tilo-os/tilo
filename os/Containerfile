@@ -2591,6 +2591,13 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
+# Buildah does not hash a `--mount=from=` stage into this RUN's cache key, so
+# a changed `FROM ${KERNEL_RPMS_REF} AS kernel-rpms` reused the previous swap
+# and the new kernel was never installed. Redeclaring the ref here (it is
+# already a build-arg) puts its value in this RUN's cache key only; layers
+# before this ARG stay cached. The shell below reads it, so the layer reruns
+# when the kernel image identity changes.
+ARG KERNEL_RPMS_REF
 # The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
 # RPM. Keep it in the frozen ARM package set, but install it only in that image.
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
@@ -2602,6 +2609,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
     --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
     set -eux; \
+    test -n "$KERNEL_RPMS_REF"; \
     mkdir -p /etc/tilo-swap.d; \
     printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
         > /etc/tilo-swap.d/frozen.repo; \
