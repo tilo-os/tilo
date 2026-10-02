@@ -1152,6 +1152,10 @@ impl CodeApp {
 
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "buffer seed, project id, and active Text binding stay one sync path"
+    )]
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
         let action = actions::CodeEditorAction::EnsureProjectId {
             id: self.project_id.clone(),
