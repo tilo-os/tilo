@@ -4863,13 +4863,28 @@ impl FrameHarness {
             }
             if history_input {
                 // Framework editors (and History chrome) capture the keyboard
-                // before the ordinary host tick. Still drain dispatched action
+                // before the ordinary host tick. Still record dispatched action
                 // brackets: ActionHost records them through get_heads, which
                 // closes the Automerge transaction so the next resource sync
                 // can refresh incrementally instead of re-reading the whole
                 // document on every keystroke.
+                //
+                // Do not dispatch new live-tree control invocations here.
+                // History seals those queues on entry; dispatching first would
+                // empty them before capture and drop retained work.
                 self.poll_control_invocations();
-                self.idle_control_tick();
+                let author = self.author.clone();
+                // SAFETY: this host exclusively owns the unchanged root and admitted layout.
+                unsafe {
+                    crate::undo::record_dispatched_action_bound(
+                        &mut self.state,
+                        std::ptr::from_mut(self.root.as_mut()),
+                        &self.node_map,
+                        &self.bindings,
+                        &author,
+                        &self.permissions,
+                    );
+                }
             } else {
                 self.host_tick();
             }
