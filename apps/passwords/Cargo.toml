@@ -17,7 +17,6 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 accounts = { path = "../../crates/system/accounts" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

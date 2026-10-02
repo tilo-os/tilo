@@ -177,7 +177,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn attach_hosted_surface_does_not_republish_the_speed_test_root() {
         let mut idle = SpeedTestApp::new();
         assert!(!idle.is_framework_hosted());

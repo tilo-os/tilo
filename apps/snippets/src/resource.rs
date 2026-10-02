@@ -309,7 +309,7 @@ mod tests {
             "hosted returns the sidebar-folder slice alone"
         );
         assert_eq!(extras[0].kind, "snippets.folder");
-        assert_eq!(extras[0].id.as_str(), actions::folder_resource_id("Ops"));
+        assert_eq!(extras[0].id.as_str(), crate::actions::folder_resource_id("Ops"));
         assert!(
             extras[0]
                 .actions
@@ -340,7 +340,7 @@ mod tests {
             door[0]
                 .children
                 .iter()
-                .any(|child| child.id.as_str() == actions::snippet_resource_id(snippet.id)),
+                .any(|child| child.id.as_str() == crate::actions::snippet_resource_id(snippet.id)),
             "publish children carry per-snippet document ops"
         );
 

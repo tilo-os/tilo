@@ -52,7 +52,7 @@ use tilo_actions::{
 };
 
 use crate::doc::VpnDoc;
-use crate::model::{ConnId, ConnKind, Connection, Vault};
+use crate::model::{ConnId, Connection, Vault};
 
 /// Registry `type_id` for every VPN action.
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
@@ -373,6 +373,8 @@ impl crate::app::VpnApp {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::ConnKind;
+
     use super::*;
     use crate::app::VpnApp;
     use crate::model::draft_connection;

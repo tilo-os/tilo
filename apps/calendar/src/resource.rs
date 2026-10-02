@@ -433,6 +433,7 @@ impl ResourceSurface<Calendar> for CalendarApp {
 #[cfg(test)]
 mod host_undo_tests {
     use super::*;
+    use crate::model::Id;
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Invoke;
 
