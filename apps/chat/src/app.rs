@@ -4108,7 +4108,7 @@ mod identity_on_screen {
     use super::*;
     use ui::widget::Widget;
 
-    /// A live peer joins the roster through EnsureUser, hosted or standalone.
+    /// A live peer joins the roster through `EnsureUser`, hosted or standalone.
     #[test]
     fn a_live_peer_joins_through_the_user_action() {
         let mut app = ChatApp::new_ephemeral();

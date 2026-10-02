@@ -441,7 +441,7 @@ mod tests {
 
         // Empty present must not wipe unpublished local messages.
         let mut local = ChatApp::new_ephemeral();
-        let mut seeded_local = doc.clone();
+        let mut seeded_local = doc;
         local.sync(&mut seeded_local, &automerge::ROOT);
         let before = local.messages.len();
         assert!(before > 0, "seeded app has local messages");

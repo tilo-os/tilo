@@ -2390,13 +2390,13 @@ mod tests {
     /// exact book and annotation resources the retained search snapshot
     /// resolves for the document's annotations.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
-        let (app, _seed, book_id, _group) = open_with_annotations();
-        let mut resources = ui::resources::resources(&app, doc);
         fn contains_id(resources: &[Resource], id: &str) -> bool {
             resources
                 .iter()
                 .any(|resource| resource.id.as_str() == id || contains_id(&resource.children, id))
         }
+        let (app, _seed, book_id, _group) = open_with_annotations();
+        let mut resources = ui::resources::resources(&app, doc);
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
