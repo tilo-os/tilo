@@ -1842,18 +1842,6 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     if platform == tilo_app_cli::PackagePlatform::Android {
         return build_android(path, &args, arch);
     }
-    platform.ensure_runs_here(arch)?;
-    let plan = tilo_app_cli::plan_app_task(&path, tilo_app_cli::AppTask::Run, &args.forwarded)?;
-    plan.execute()?;
-    Ok(json!({"app_dir": plan.app_dir, "platform": platform.cli_name()}))
-}
-
-fn run_build(args: BuildArgs) -> Result<Value> {
-    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
-    let (platform, arch) = args.target.resolve()?;
-    if platform == tilo_app_cli::PackagePlatform::Android {
-        return build_android(&path, &args, arch);
-    }
     if platform != tilo_app_cli::PackagePlatform::Web {
         return build_native(path, &args, platform, arch);
     }
