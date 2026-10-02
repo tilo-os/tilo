@@ -599,19 +599,19 @@ impl ImageEditorApp {
     }
 
     fn restore_project(&mut self, state: &mut AutoCommit, project: Project, label: &str) {
-        self.project = project;
-        if !self
+        let selection_survives = self
             .editor
             .selection
             .iter()
-            .any(|id| self.project.graph.nodes.contains_key(id))
-        {
+            .any(|id| project.graph.nodes.contains_key(id));
+        self.dispatch_graph_action(
+            state,
+            crate::actions::RESTORE_PROJECT_TYPE,
+            &crate::actions::RestoreProject { project },
+        );
+        if !selection_survives {
             self.editor.select_only(self.project.output.clone());
         }
-        ProjectDoc::restore_history_snapshot(state, &self.project);
-        ProjectDoc::write(state, &self.project);
-        self.rendered_project = None;
-        self.rebuild_crop_editor();
         self.notice = format!("{label}. The final image was recomputed.");
     }
 

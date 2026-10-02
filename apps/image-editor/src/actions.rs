@@ -13,6 +13,7 @@ pub const REMOVE_ADJUSTMENT_TYPE: &str = "image-editor.remove-adjustment";
 pub const UPDATE_ADJUSTMENT_TYPE: &str = "image-editor.update-adjustment";
 pub const RECONNECT_INPUT_TYPE: &str = "image-editor.reconnect-input";
 pub const SET_SOURCE_TYPE: &str = "image-editor.set-source";
+pub const RESTORE_PROJECT_TYPE: &str = "image-editor.restore-project";
 pub const OPERATION_TYPE: &str = "image-editor.operation";
 /// Unified document action type for the framework resource APPLY path.
 pub const IMAGE_EDITOR_ACTION_TYPE: &str = "image-editor.action";
@@ -38,6 +39,7 @@ pub enum EditorOperation {
 pub fn register(r: &mut ActionRegistry) {
     r.register::<ImageEditorAction>(IMAGE_EDITOR_ACTION_TYPE);
     r.register::<SetSource>(SET_SOURCE_TYPE);
+    r.register::<RestoreProject>(RESTORE_PROJECT_TYPE);
     r.register::<AddAdjustment>(ADD_ADJUSTMENT_TYPE);
     r.register::<RemoveAdjustment>(REMOVE_ADJUSTMENT_TYPE);
     r.register::<UpdateAdjustment>(UPDATE_ADJUSTMENT_TYPE);
@@ -164,6 +166,24 @@ impl Action for ReconnectInput {
     }
 }
 
+/// Put back a project snapshot from the editor's undo or redo stack.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RestoreProject {
+    pub project: Project,
+}
+
+impl Action for RestoreProject {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        ProjectDoc::restore_history_snapshot(doc, &self.project);
+        ProjectDoc::write(doc, &self.project);
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
 /// Point the project at an opened image and name it. Other adjustments stay.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SetSource {
@@ -194,6 +214,7 @@ pub enum ImageEditorAction {
     Update(UpdateAdjustment),
     Reconnect(ReconnectInput),
     SetSource(SetSource),
+    Restore(RestoreProject),
 }
 
 impl Action for ImageEditorAction {
@@ -204,6 +225,7 @@ impl Action for ImageEditorAction {
             Self::Update(action) => action.apply(doc),
             Self::Reconnect(action) => action.apply(doc),
             Self::SetSource(action) => action.apply(doc),
+            Self::Restore(action) => action.apply(doc),
         }
     }
     fn locus(&self) -> ExecutionLocus {
@@ -213,6 +235,7 @@ impl Action for ImageEditorAction {
             Self::Update(action) => action.locus(),
             Self::Reconnect(action) => action.locus(),
             Self::SetSource(action) => action.locus(),
+            Self::Restore(action) => action.locus(),
         }
     }
 }
@@ -248,6 +271,12 @@ impl AsEditorAction for ReconnectInput {
 impl AsEditorAction for SetSource {
     fn as_editor_action(&self) -> ImageEditorAction {
         ImageEditorAction::SetSource(self.clone())
+    }
+}
+
+impl AsEditorAction for RestoreProject {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Restore(self.clone())
     }
 }
 
@@ -566,6 +595,31 @@ mod tests {
     use tilo_actions::Action;
 
     #[test]
+    fn restore_project_puts_the_snapshot_back() {
+        let mut doc = AutoCommit::new();
+        let original = ProjectDoc::read(&doc);
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        assert!(
+            ProjectDoc::read(&doc)
+                .graph
+                .nodes
+                .contains_key("exposure-1")
+        );
+        RestoreProject {
+            project: original.clone(),
+        }
+        .apply(&mut doc)
+        .expect("restore applies");
+        let restored = ProjectDoc::read(&doc);
+        assert!(!restored.graph.nodes.contains_key("exposure-1"));
+        assert_eq!(restored.name, original.name);
+    }
+
     fn set_source_records_the_opened_image_without_replacing_adjustments() {
         let mut doc = AutoCommit::new();
         ProjectDoc::add_adjustment(
