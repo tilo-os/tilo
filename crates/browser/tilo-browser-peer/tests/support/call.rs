@@ -1,7 +1,12 @@
 //! A room its host governs, with a call on a chat's voice channel: Alice
 //! owns the room from her laptop (a native iroh device) and starts the call;
 //! people she invites take part from browser sessions. Included with
-//! the shared support module; call binaries re-exec as the automerge worker.
+//! voice test binaries; call binaries re-exec as the automerge worker.
+
+#![allow(
+    dead_code,
+    reason = "each voice test binary uses a different subset of these fixtures"
+)]
 
 use std::time::{Duration, SystemTime};
 

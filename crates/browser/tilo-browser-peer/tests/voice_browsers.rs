@@ -8,8 +8,9 @@
     clippy::too_many_lines,
     reason = "test assertions and fixture setup fail loudly"
 )]
+#[path = "support/call.rs"]
+mod call;
 mod support;
-use support::call;
 tilo_automerge_isolate::test_worker!();
 
 use serde_json::{Value, json};

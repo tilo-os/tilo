@@ -12,8 +12,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "support/call.rs"]
+mod call;
 mod support;
-use support::call;
 
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
