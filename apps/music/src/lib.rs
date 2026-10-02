@@ -218,7 +218,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 pub fn live_shot_app() -> MusicApp {
     MusicApp::new()
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Music, MusicShell, launch_spec, standalone_launch};
-#[cfg(target_arch = "wasm32")]
-pub use resource::{Music, MusicShell, standalone_launch};

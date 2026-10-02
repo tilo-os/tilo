@@ -167,7 +167,4 @@ mod tests {
         }
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};
-#[cfg(target_arch = "wasm32")]
-pub use resource::{Tube, TubeShared, TubeShell, standalone_launch};

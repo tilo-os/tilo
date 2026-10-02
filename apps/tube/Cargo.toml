@@ -22,7 +22,6 @@ web-features = ["media"]
 fnv.workspace = true
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
-tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

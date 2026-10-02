@@ -101,7 +101,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
-#[cfg(target_arch = "wasm32")]
-pub use resource::{Snippets, SnippetsShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Snippets, SnippetsShell, launch_spec};

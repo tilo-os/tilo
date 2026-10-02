@@ -81,6 +81,5 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::launch_spec;
 pub use resource::{Ebook, EbookShell, EbookState, standalone_launch};

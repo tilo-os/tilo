@@ -179,7 +179,6 @@ impl ActionSink {
 }
 
 /// Live launch on the framework host. Capture modes keep the standalone path.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<VideoPlayerShell>()
         .allowed_live_options(&["--data-dir", "--open"])

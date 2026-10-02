@@ -75,7 +75,4 @@ pub fn write_shot_image(path: &std::path::Path) -> Result<(), image::ImageError>
     }
     image.save(path)
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{ImageEditor, ImageEditorShell, launch_spec, standalone_launch};
-#[cfg(target_arch = "wasm32")]
-pub use resource::{ImageEditor, ImageEditorShell, standalone_launch};

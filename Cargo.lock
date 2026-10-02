@@ -1776,9 +1776,7 @@ dependencies = [
  "fnv",
  "hex",
  "image",
- "iroh",
  "runtime-dylib",
- "runtime-identity",
  "serde",
  "serde_json",
  "taffy",
@@ -1802,7 +1800,6 @@ dependencies = [
  "tilo-winit",
  "tokio",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 
@@ -17349,7 +17346,6 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
- "tilo-xdg-paths",
  "tracing",
  "tracing-subscriber",
  "uuid",
