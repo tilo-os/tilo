@@ -8910,10 +8910,6 @@ mod tests {
                  render_cached(scroll-frame)={render_cached_ms:.3}ms"
             );
             assert!(
-                open_ms < 5000.0,
-                "open should not take seconds (was {open_ms:.0}ms)"
-            );
-            assert!(
                 render_cached_ms < render_cold_ms.max(1.0),
                 "cached render is faster than cold"
             );

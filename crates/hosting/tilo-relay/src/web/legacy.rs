@@ -251,6 +251,7 @@ impl LegacyWindows {
             }
             _ => {}
         }
+        drop(rooms);
     }
 
     fn grant(
@@ -459,6 +460,7 @@ impl LegacyWindows {
             );
             state.index_dirty = true;
         }
+        drop(rooms);
     }
 
     /// End immediately when membership, write permission or the device certificate is lost.
@@ -502,7 +504,7 @@ impl LegacyWindows {
             let due = state
                 .index_sent
                 .is_none_or(|sent| now.saturating_duration_since(sent) >= INDEX_EVERY);
-            if !state.index_dirty && !(due && live) {
+            if !(state.index_dirty || due && live) {
                 continue;
             }
             let record = hex::encode(wire::index_record().digest());
@@ -631,7 +633,7 @@ mod tests {
         fn room(&self) -> &str {
             &self.0
         }
-        fn publisher(&self) -> &str {
+        fn publisher(&self) -> &'static str {
             "abababababababababababababababababababababababababababababababab"
         }
         fn publish(&self) -> bool {
@@ -702,30 +704,37 @@ mod tests {
         .unwrap()
     }
 
-    /// A granted stream becomes an index and keyframe-headed groups on the
-    /// live relay, as a member receives them.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn granted_streams_reach_a_live_member_as_an_index_and_keyframe_groups() {
-        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+    fn observe(bridge: &LegacyWindows, message: &NeighbourMsg) {
+        bridge.observe_presence(WORKSPACE, SESSION, USER, &presence(SESSION, message));
+    }
+
+    fn track(record: &tilo_relay_protocol::live::LiveRecord) -> String {
+        format!("ops/{}", hex::encode(record.digest()))
+    }
+
+    async fn connect_viewer(live: &LoopbackLive) -> tilo_moq::live::peer::Peer {
         let trust = tilo_moq::carrier::Trust::Fingerprints(live.fingerprints.clone());
-        let viewer = tilo_moq::live::peer::Peer::connect(
+        tilo_moq::live::peer::Peer::connect(
             &live.endpoint.parse().unwrap(),
             &trust,
             b"viewer",
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    /// A granted stream becomes an index and keyframe-headed groups on the
+    /// live relay, as a member receives them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn granted_streams_reach_a_live_member_as_an_index_and_keyframe_groups() {
+        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+        let viewer = connect_viewer(&live).await;
         let bridge = LegacyWindows::new(live.relay.clone(), HOST);
         let mut now = Instant::now();
         let host = tilo_peer_state::peer_handle(&HOST);
-        bridge.observe_presence(
-            WORKSPACE,
-            SESSION,
-            USER,
-            &presence(SESSION, &grant(7, host, "granted")),
-        );
-        bridge.observe_presence(WORKSPACE, SESSION, USER, &presence(SESSION, &start(7)));
+        observe(&bridge, &grant(7, host, "granted"));
+        observe(&bridge, &start(7));
         bridge.maintain(now);
         let path = format!(
             "tilo-live/{}/{}",
@@ -735,9 +744,6 @@ mod tests {
         let namespace = tilo_test_env::within("the session namespace", viewer.member(&path))
             .await
             .expect("announced by the index");
-        let track = |record: &tilo_relay_protocol::live::LiveRecord| {
-            format!("ops/{}", hex::encode(record.digest()))
-        };
         let subscription =
             moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
         let mut index = namespace
@@ -764,19 +770,9 @@ mod tests {
         assert_eq!(listed, std::slice::from_ref(&expected));
 
         // Before any keyframe there is nothing to decode from.
-        bridge.observe_presence(
-            WORKSPACE,
-            SESSION,
-            USER,
-            &presence(SESSION, &frame(7, &DELTA)),
-        );
+        observe(&bridge, &frame(7, &DELTA));
         // A static window: one keyframe before anyone watches, then nothing.
-        bridge.observe_presence(
-            WORKSPACE,
-            SESSION,
-            USER,
-            &presence(SESSION, &frame(7, &IDR)),
-        );
+        observe(&bridge, &frame(7, &IDR));
         let mut video = namespace
             .track(&track(&wire::stream_record(7)))
             .unwrap()
@@ -807,12 +803,7 @@ mod tests {
         };
         assert_eq!(flags & wire::CHUNK_KEY, wire::CHUNK_KEY);
         assert_eq!(data, IDR);
-        bridge.observe_presence(
-            WORKSPACE,
-            SESSION,
-            USER,
-            &presence(SESSION, &frame(7, &DELTA)),
-        );
+        observe(&bridge, &frame(7, &DELTA));
         let wire::Frame::Chunk { flags, data, .. } = next().await else {
             panic!("a delta joins the group");
         };
@@ -822,12 +813,7 @@ mod tests {
         );
 
         // Revoking the grant ends the stream for members.
-        bridge.observe_presence(
-            WORKSPACE,
-            SESSION,
-            USER,
-            &presence(SESSION, &grant(7, host, "revoked")),
-        );
+        observe(&bridge, &grant(7, host, "revoked"));
         bridge.maintain(now);
         let emptied = tilo_test_env::within("the emptied index", async {
             loop {
@@ -930,6 +916,7 @@ mod tests {
                 !publisher.streams[&7].sequence.is_empty(),
                 "repeat grant must keep the static image replay"
             );
+            drop(rooms);
         }
         bridge.revoke(WORKSPACE, SESSION, Instant::now());
         assert!(bridge.publisher_user(WORKSPACE, SESSION, 7).is_none());

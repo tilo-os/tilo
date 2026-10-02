@@ -21,7 +21,13 @@ if ! systemctl is-active --quiet greetd.service; then
   echo 'greetd.service is not active' >&2
   exit 1
 fi
-greetd_socket="${TILO_GREETD_SOCKET:-/run/greetd.sock}"
+# greetd listens on /run/greetd-<main pid>.sock (the GREETD_SOCK it gives its
+# greeter), not on a fixed path.
+greetd_socket="${TILO_GREETD_SOCKET:-}"
+if [ -z "$greetd_socket" ]; then
+  greetd_pid="$(systemctl show --property=MainPID --value greetd.service 2>/dev/null || true)"
+  greetd_socket="/run/greetd-${greetd_pid:-0}.sock"
+fi
 if [ ! -S "$greetd_socket" ]; then
   echo "greetd login endpoint is unavailable: $greetd_socket" >&2
   exit 1

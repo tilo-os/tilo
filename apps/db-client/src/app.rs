@@ -3450,7 +3450,7 @@ impl DbClientApp {
             scene,
             conn.engine.glyph(),
             10.0,
-            Color::WHITE,
+            theme.tokens.colors.on_surface(chip_color).ink,
             t * Affine::translate((row.x0 + 11.0, y + 13.0)),
             None,
         );
@@ -3587,7 +3587,10 @@ impl DbClientApp {
             scene,
             label,
             12.0,
-            Color::WHITE,
+            theme
+                .tokens
+                .colors
+                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             t * Affine::translate((btn.x0 + 12.0, btn.y0 + (btn.height() - f64::from(lh)) / 2.0)),
             None,
         );
@@ -3834,7 +3837,10 @@ impl DbClientApp {
             scene,
             run_label,
             13.0,
-            Color::WHITE,
+            theme
+                .tokens
+                .colors
+                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             t * Affine::translate((
                 run.x0 + 14.0,
                 run.y0 + (run.height() - f64::from(run_lh)) / 2.0,

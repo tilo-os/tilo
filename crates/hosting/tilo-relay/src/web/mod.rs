@@ -107,6 +107,8 @@ struct Web {
     allowed_origins: Vec<String>,
     /// What `/session/finish` advertises.
     features: u64,
+    /// The rooms this relay governs, for `/rooms` and `/join`.
+    rooms: Option<crate::rooms::Rooms>,
 }
 
 impl Relay {
@@ -131,14 +133,13 @@ impl Relay {
             ));
         }
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-        let tcp = tokio::net::TcpListener::bind(config.listen)
-            .await
-            .map_err(|error| failed(error.to_string()))?;
+        let (tcp, udp) =
+            bind_port_pair(config.listen).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
         let endpoint =
-            tilo_moq::carrier::listener(addr, identity.chain.clone(), identity.key.clone_key())
+            tilo_moq::carrier::listener_on(udp, identity.chain.clone(), identity.key.clone_key())
                 .map_err(failed)?;
         let acceptor =
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
@@ -166,6 +167,7 @@ impl Relay {
             },
             allowed_origins: config.allowed_origins,
             features: self.web_features(),
+            rooms: self.rooms().cloned(),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
@@ -213,14 +215,15 @@ impl Relay {
 }
 
 impl Relay {
-    /// What `/session/finish` advertises: calls only where rooms are governed.
+    /// What `/session/finish` advertises: calls and room administration
+    /// only where rooms are governed.
     fn web_features(&self) -> u64 {
-        let voice = if self.rooms().is_some() {
-            protocol::FEATURE_VOICE
+        let rooms = if self.rooms().is_some() {
+            protocol::FEATURE_VOICE | protocol::FEATURE_ROOMS
         } else {
             0
         };
-        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | voice
+        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | rooms
     }
 
     /// The voice carrier of the calls in this relay's rooms, served beside
@@ -501,6 +504,41 @@ fn bridge_browser_presence(
             );
         }
     })
+}
+
+/// Ephemeral ports tried for a TCP and UDP pair before giving up.
+const PORT_PAIR_ATTEMPTS: usize = 64;
+
+/// HTTPS (TCP) and WebTransport (UDP) sockets on one port of `listen`. For
+/// port 0 the kernel picks the TCP port, which another socket may hold for
+/// UDP; the next pick is tried then.
+fn bind_port_pair(
+    listen: SocketAddr,
+) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
+    let mut attempts = 0;
+    loop {
+        let socket = if listen.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        // As `TcpListener::bind`: a restarted host takes its port back while
+        // its old connections linger in TIME_WAIT.
+        socket.set_reuseaddr(true)?;
+        socket.bind(listen)?;
+        let tcp = socket.listen(1024)?;
+        match std::net::UdpSocket::bind(tcp.local_addr()?) {
+            Ok(udp) => return Ok((tcp, udp)),
+            Err(error)
+                if listen.port() == 0
+                    && error.kind() == std::io::ErrorKind::AddrInUse
+                    && attempts < PORT_PAIR_ATTEMPTS =>
+            {
+                attempts = attempts.saturating_add(1);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Accepted connections belong to their listener's loop: aborting the loop
@@ -836,6 +874,25 @@ async fn route(
                 ));
             }
             legacy_input(web, &session.peer, request).await
+        }
+        "/rooms" => {
+            let session = authed()?;
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let request = decode(&bytes)?;
+            Ok(encoded(
+                &rooms.page_rooms(&session.peer.cert, request).await,
+            ))
+        }
+        "/join" => {
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let step = decode(&bytes)?;
+            Ok(encoded(&rooms.page_join(step).await))
         }
         _ if path == FALLBACK_OPEN_PATH => {
             let id: [u8; 16] = rand::random();

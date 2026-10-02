@@ -1135,28 +1135,15 @@ impl Mount {
             }
             reasons
         });
-        // Desktop tabs' components and queued desktop changes wake the
-        // mount, not the frame harness. Relayout to take them, and present
-        // the new scene.
-        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
-            let wakers = desktop.shared.take_wakers();
-            if let Some(reasons) = &mut reasons {
-                if wakers.is_empty() {
-                    reasons.push("desktop wake".into());
-                }
-                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
-            }
-            self.frame.relayout();
-            self.pending = true;
-        }
-        // A peer's change merged into an open record.
-        if self.replica_changed.replace(false) {
-            if let Some(reasons) = &mut reasons {
-                reasons.push("replica change".into());
-            }
-            self.frame.relayout();
-            self.pending = true;
-        }
+        // Host wakes are consumed only after acquiring a surface. A skipped
+        // acquisition must retain them for the next redraw.
+        let desktop_woken = self.desktop.as_ref().is_some_and(|desktop| {
+            desktop
+                .shared
+                .woken
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+        self.pending |= desktop_woken || self.replica_changed.get();
         let frame = self.frame.frame_schedule();
         let due = frame
             .next_wake_deadline
@@ -1250,13 +1237,58 @@ impl Mount {
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
         }
+        // Desktop commands and peer changes need an update even when the
+        // harness itself is idle. Let a scheduled poll consume them first:
+        // eagerly relayouting here and then polling animated widgets runs
+        // the same frame pipeline twice before one presentation.
+        let mut host_changed = false;
+        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
+            let wakers = desktop.shared.take_wakers();
+            if let Some(reasons) = &mut reasons {
+                if wakers.is_empty() {
+                    reasons.push("desktop wake".into());
+                }
+                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
+            }
+            host_changed = true;
+        }
+        // A peer's change merged into an open record.
+        if self.replica_changed.replace(false) {
+            if let Some(reasons) = &mut reasons {
+                reasons.push("replica change".into());
+            }
+            host_changed = true;
+        }
         // Poll only after applying the new viewport, avoiding an old-size
         // layout merely to discover work.
-        self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
-        self.save_desktop();
-        if let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+        let stage = self.metric_start();
+        let polled = self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
+        let stats = self.frame.last_relayout();
+        self.metric_end(
+            match (polled, stats.rebuilt, stats.measured) {
+                (false, ..) => "poll_frame:idle",
+                (true, true, _) => "poll_frame:rebuilt",
+                (true, false, true) => "poll_frame:measured",
+                (true, false, false) => "poll_frame:applied",
+            },
+            stage,
+        );
+        if host_changed && !polled {
+            let stage = self.metric_start();
+            self.frame
+                .relayout_at(viewport.logical_size())
+                .map_err(|e| format!("{e:?}"))?;
+            self.metric_end("wake_relayout", stage);
         }
+        let stage = self.metric_start();
+        self.save_desktop();
+        self.metric_end("save_desktop", stage);
+        if let Some(peer) = self.peer {
+            let stage = self.metric_start();
+            crate::replication::publish(peer);
+            self.metric_end("replicate", stage);
+        }
+        let stage = self.metric_start();
         let frame = self.frame.frame_render_input();
         // Never hand the renderer a scene it cannot resolve: an oversized
         // encoding overflows vello's resolver or WebGPU buffer limits. Keep the
@@ -1275,6 +1307,8 @@ impl Mount {
             frame.scene,
             Some(ui::scale::composite_transform(viewport.dpr)),
         );
+        self.metric_end("scene", stage);
+        let stage = self.metric_start();
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
         let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
         let shared = &mut *shared_guard;
@@ -1312,13 +1346,16 @@ impl Mount {
         handle.queue.submit([encoder.finish()]);
         drop(shared_guard);
         output.present();
+        self.metric_end("render", stage);
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
         if let Some(reasons) = reasons {
             self.metrics.borrow_mut().presented(reasons);
         }
+        let stage = self.metric_start();
         self.publish(0);
+        self.metric_end("publish", stage);
         Ok(())
     }
 
@@ -1352,15 +1389,19 @@ impl Mount {
         let ime = self.frame.ime_window().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
         });
+        let stage = self.metric_start();
         let semantics = self.frame.inspection();
+        self.metric_end("inspection", stage);
         // The semantics tree is the bulk of every status; the host keeps the
         // last tree it received, so an unchanged tree is left out and
         // content-only changes while typing are throttled.
+        let stage = self.metric_start();
         let decision = self.semantics.borrow_mut().decide(
             &semantics,
             self.frame.ime_window().as_ref(),
             ui::time::now(),
         );
+        self.metric_end("semantics_decide", stage);
         let applied = self.viewport.applied();
         let value = serde_json::json!({
             "phase": if self.error.is_some() { "failed" } else { "presented" },
@@ -2213,6 +2254,8 @@ pub fn configure_frame_metrics(enabled: bool) {
             mount.metrics.borrow_mut().configure(enabled);
             if enabled {
                 mount.frame.begin_profiling();
+            } else {
+                mount.frame.end_profiling();
             }
         }
     });
@@ -2230,7 +2273,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples()})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)

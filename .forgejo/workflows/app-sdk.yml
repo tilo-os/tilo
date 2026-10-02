@@ -40,8 +40,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: app-sdk-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run. Pushes keep one
+  # run per commit.
+  group: app-sdk-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -107,13 +109,13 @@ jobs:
   # representative app, and a generated app built outside the repository.
   linux:
     needs: [builder]
-    runs-on: runner-quality
-    timeout-minutes: 180
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
-    # app for two targets) share one target directory on the runner's disk.
-    # The runner has two CPUs and 5 GiB; each step reports its peak memory.
+    # app for two targets) share one target directory: they outgrow the
+    # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
+    # reports its peak memory.
+    runs-on: runner
+    timeout-minutes: 180
     env:
-      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -151,7 +153,7 @@ jobs:
         # A Tilo OS .tapp links the toolkit from runtime-dylib, so this step
         # compiles the whole runtime: about 1,050 crates in a profile nothing
         # else here builds. At thin-app's opt-level 3 with one codegen unit
-        # those compiles exceed the runner's 5 GiB. This package is signed with an ephemeral
+        # those compiles take far longer. This package is signed with an ephemeral
         # key and never shipped, so it is optimized lightly; release-apps.yml
         # builds the shipped runtime at the full profile.
         env:
@@ -174,6 +176,8 @@ jobs:
   # without them `package` signs ad hoc) that becomes a signed registry
   # entry for the macOS artifact format.
   macos:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
     runs-on: imager-macos-aarch64
     timeout-minutes: 180
     steps:
@@ -230,7 +234,9 @@ jobs:
   # to its size budget.
   web:
     needs: [builder]
-    runs-on: runner-quality
+    # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
+    # 5 GiB.
+    runs-on: runner
     timeout-minutes: 150
     container:
       image: ${{ needs.builder.outputs.image }}

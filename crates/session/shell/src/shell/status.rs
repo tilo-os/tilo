@@ -11,8 +11,12 @@
 //! only — a `--shots` render must produce the same pixels everywhere,
 //! so with no poller the readings stay `None`, rendered as *nothing*.
 
+use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::shell::i18n::{t, t_args};
@@ -20,10 +24,24 @@ use crate::shell::i18n::{t, t_args};
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
-/// Fast enough that plugging in a charger shows up while the user is
-/// still thinking about it, slow enough that two `nmcli` calls a
-/// minute is the whole cost.
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// When `nmcli monitor` is silent, still refresh battery, volume and
+/// missed events. Thirty seconds is slow enough that idle does not fork
+/// `nmcli`/`wpctl` twice a second, and fast enough that a charger still
+/// shows up while the user is looking at the tray.
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Change monitors that may wake the status poller.
+///
+/// `pw-dump --monitor` is not one of them. `PipeWire` reprints the graph on
+/// client and parameter churn, so a line-oriented watch never goes quiet:
+/// each line forked `wpctl`, and that client kept the dump, `WirePlumber` and
+/// `PipeWire` awake. The shell's reader burned CPU on that stream while the
+/// frame loop stayed asleep. Volume still arrives on the media-key path and
+/// on [`FALLBACK_INTERVAL`]. The privacy worker owns the only `pw-dump
+/// --monitor`, and it exits once the device graph is unchanged.
+pub(crate) fn status_change_monitors() -> &'static [&'static [&'static str]] {
+    &[&["nmcli", "monitor"]]
+}
 
 /// Every field is `Option` because "not read yet" and "this machine
 /// has none" are both real and both drawn as absence, not a zero.
@@ -34,9 +52,9 @@ pub struct SystemStatus {
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed from `PipeWire`'s server security
-    /// PID to the kernel executable. Polled independently at one-second
-    /// cadence so a privacy indicator appears promptly without running
-    /// `NetworkManager` queries every second.
+    /// PID to the kernel executable. The monitor runs only while the device
+    /// graph is still changing; an idle desktop does not keep `pw-dump`
+    /// running, and it is not restarted until a frame is requested.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
@@ -129,6 +147,16 @@ pub struct StatusBridge {
     inner: Arc<Mutex<SystemStatus>>,
     /// So a second `spawn` is a no-op, not a second thread racing the first.
     polling: Arc<AtomicBool>,
+    /// Set on the rising edge of a requested frame. The privacy worker
+    /// parks on it instead of arming its own timer.
+    frame_interest: Arc<FrameInterest>,
+}
+
+#[derive(Debug, Default)]
+struct FrameInterest {
+    requested: AtomicBool,
+    lock: Mutex<()>,
+    cv: Condvar,
 }
 
 impl StatusBridge {
@@ -172,13 +200,20 @@ impl StatusBridge {
         if self.polling.swap(true, Ordering::SeqCst) {
             return;
         }
+        let (wake_tx, wake_rx) = mpsc::channel();
+        for argv in status_change_monitors() {
+            spawn_change_monitor("tilo-nm-watch", argv, wake_tx.clone());
+        }
+        drop(wake_tx);
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
             .spawn(move || {
                 loop {
                     bridge.set(read_once());
-                    std::thread::sleep(POLL_INTERVAL);
+                    if wake_rx.recv_timeout(FALLBACK_INTERVAL).is_ok() {
+                        while wake_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                    }
                 }
             });
         if let Err(e) = spawned {
@@ -192,13 +227,120 @@ impl StatusBridge {
             .spawn(move || {
                 loop {
                     let bridge = media_bridge.clone();
+                    // Returns when the device graph is unchanged (the
+                    // `pw-dump --monitor` process is gone) or when PipeWire
+                    // exits. Frames requested while that watch was running
+                    // already had a chance to publish; they must not restart
+                    // the monitor by themselves.
                     let _ = os_actions::monitor_media_usage(|media| bridge.set_media(media));
-                    // PipeWire may restart during login or an update. Rebind
-                    // without spinning and without ending the shell session.
-                    std::thread::sleep(Duration::from_secs(2));
+                    bridge.acknowledge_frame_requests();
+                    let frame_requested = bridge.frame_is_requested();
+                    if privacy_watch_followup(frame_requested) == PrivacyWatchFollowup::Park {
+                        bridge.wait_for_frame_request();
+                    }
                 }
             });
     }
+
+    /// The compositor calls this on the edge from an idle loop to a
+    /// requested frame. It does not start a timer.
+    pub fn notify_frame_requested(&self) {
+        self.frame_interest.requested.store(true, Ordering::Release);
+        self.frame_interest.cv.notify_one();
+    }
+
+    fn frame_is_requested(&self) -> bool {
+        self.frame_interest.requested.load(Ordering::Acquire)
+    }
+
+    fn acknowledge_frame_requests(&self) {
+        self.frame_interest
+            .requested
+            .store(false, Ordering::Release);
+    }
+
+    fn wait_for_frame_request(&self) {
+        let mut guard = self
+            .frame_interest
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
+            guard = self
+                .frame_interest
+                .cv
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(guard);
+    }
+}
+
+/// What the privacy worker does after `pw-dump --monitor` has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrivacyWatchFollowup {
+    /// A frame was requested after the graph settled. Look once more.
+    Watch,
+    /// No frame is requested. Park. Do not arm a timer.
+    Park,
+}
+
+/// Recurring privacy work is scheduled only when a frame is requested.
+/// An idle compositor has nothing to draw the indicator onto, and a timer
+/// here is what kept `pw-dump` in the session after the device graph was still.
+pub(crate) fn privacy_watch_followup(frame_requested: bool) -> PrivacyWatchFollowup {
+    if frame_requested {
+        PrivacyWatchFollowup::Watch
+    } else {
+        PrivacyWatchFollowup::Park
+    }
+}
+
+/// Rising edge of "a frame is requested". Holding the request across later
+/// frames must not schedule another watch per frame.
+pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool) -> (bool, bool) {
+    (frame_requested, frame_requested && !was_requested)
+}
+
+fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: Sender<()>) {
+    let Some((program, rest)) = argv.split_first() else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            loop {
+                if monitor_until_exit(program, rest, &tx).is_err() {
+                    std::thread::sleep(FALLBACK_INTERVAL);
+                }
+            }
+        });
+}
+
+fn monitor_until_exit(program: &str, args: &[&str], tx: &Sender<()>) -> Result<(), ()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|_| ())?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return Err(());
+    };
+    for line in BufReader::new(stdout).lines() {
+        if line.is_err() {
+            break;
+        }
+        if tx.send(()).is_err() {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(())
 }
 
 /// Public so a diagnostic or a test can take a reading without owning a poller.
@@ -381,5 +523,61 @@ mod tests {
                 "a screenshot render must not depend on the host's hardware"
             );
         }
+    }
+
+    #[test]
+    fn idle_status_thread_sleeps_between_reads() {
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+        let (_bridge, tid) = crate::idle_thread_probe::spawned_thread("tilo-stat-wait", || {
+            let bridge = StatusBridge::new();
+            let poller = bridge.clone();
+            std::thread::Builder::new()
+                .name("tilo-stat-wait".into())
+                .spawn(move || {
+                    poller.set(SystemStatus::default());
+                    let _ = wake_rx.recv_timeout(FALLBACK_INTERVAL);
+                })
+                .expect("status idle thread");
+            bridge
+        });
+        crate::idle_thread_probe::assert_stays_asleep(&tid, "status fallback wait");
+        drop(wake_tx);
+    }
+
+    #[test]
+    fn idle_graph_stops_the_pw_dump_monitor_without_scheduling_work() {
+        let graph = r#"[{"id":1,"type":"PipeWire:Interface:Device","info":{"props":{"device.name":"alsa_card.pci"}}},{"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo"}}}]"#;
+        let mut watch = os_actions::DeviceGraphWatch::default();
+        assert_eq!(
+            watch.observe_document(graph),
+            os_actions::MonitorDisposition::Keep
+        );
+        let dump_stream = r#"[{"id":99,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pw-dump","application.name":"pw-dump"}}}]"#;
+        assert_eq!(
+            watch.observe_document(dump_stream),
+            os_actions::MonitorDisposition::Stop,
+            "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
+        );
+        assert!(
+            status_change_monitors()
+                .iter()
+                .all(|argv| !argv.contains(&"pw-dump")),
+            "the status poller must not keep pw-dump --monitor; a quiet graph still emits client lines, and waking wpctl on each one held WirePlumber and PipeWire in the idle budget"
+        );
+        assert_eq!(
+            privacy_watch_followup(false),
+            PrivacyWatchFollowup::Park,
+            "the shell must not schedule recurring work while no frame is requested"
+        );
+        assert_eq!(privacy_watch_followup(true), PrivacyWatchFollowup::Watch);
+        let (open, notify) = privacy_frame_interest(false, false);
+        assert!(!open && !notify);
+        let (open, notify) = privacy_frame_interest(false, true);
+        assert!(open && notify);
+        let (_open, notify) = privacy_frame_interest(true, true);
+        assert!(
+            !notify,
+            "frames that are already requested must not schedule another watch"
+        );
     }
 }

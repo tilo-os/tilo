@@ -449,7 +449,8 @@ mod tests {
         let mut bad = stream();
         bad.width = 0;
         assert!(Frame::Index(vec![bad]).encode().is_err());
-        for (flags, total) in [(8, 1), (7, 0), (7, MAX_ENCODED_FRAME_BYTES as u32 + 1)] {
+        let over_limit = u32::try_from(MAX_ENCODED_FRAME_BYTES.checked_add(1).unwrap()).unwrap();
+        for (flags, total) in [(8, 1), (7, 0), (7, over_limit)] {
             assert!(
                 Frame::Chunk {
                     flags,

@@ -17,13 +17,13 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{enrol, ready, start_host, start_peer, workspace};
 
-fn publish(client: &RelayClient, author: [u8; 32], message: NeighbourMsg) {
+fn publish(client: &RelayClient, author: [u8; 32], message: &NeighbourMsg) {
     client
         .send(Envelope::Presence {
             workspace_id: workspace(),
             payload: AttributedPresence {
                 author,
-                body: postcard::to_allocvec(&message).unwrap(),
+                body: postcard::to_allocvec(message).unwrap(),
             }
             .encode()
             .unwrap(),
@@ -59,13 +59,17 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
+    let (http, relay, web) = {
+        let host = start_host(
+            &root,
+            &host_device,
+            state.path(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await;
+        let http = host.https();
+        (http, host.relay, host.web)
+    };
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&laptop.key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
@@ -74,7 +78,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
         .unwrap();
     let native = RelayClient::connect_to_pinned_host(
         endpoint,
-        host.relay.node_addr(),
+        relay.node_addr(),
         laptop.cert.clone(),
         laptop.key.clone(),
         RevocationList::new(),
@@ -95,7 +99,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     })
     .await;
     let browser = start_peer(
-        Host::Https(host.https()),
+        Host::Https(http),
         browser_device.cert,
         host_device.cert.clone(),
         browser_device.key,
@@ -115,11 +119,11 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
         .await
         .unwrap()
         .unwrap();
-    let url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
+    let url = format!("https://127.0.0.1:{}/moq/live", web.addr.port())
         .parse()
         .unwrap();
     let trust =
-        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
+        tilo_moq::carrier::Trust::Fingerprints(vec![web.certificate_sha256.clone().unwrap()]);
     let live = tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, None)
         .await
         .unwrap();
@@ -138,7 +142,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     publish(
         &native,
         author,
-        NeighbourMsg::PermissionGrant {
+        &NeighbourMsg::PermissionGrant {
             peer: tilo_peer_state::peer_handle(&host_device.cert.device_public_key),
             capability: "workspace-control:7:granted".into(),
         },
@@ -146,7 +150,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     publish(
         &native,
         author,
-        NeighbourMsg::SurfaceStreamStart {
+        &NeighbourMsg::SurfaceStreamStart {
             surface: 7,
             source_peer: tilo_peer_state::peer_handle(&author),
             width: 640,
@@ -164,7 +168,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     publish(
         &native,
         author,
-        NeighbourMsg::SurfaceFrame {
+        &NeighbourMsg::SurfaceFrame {
             surface: 7,
             source_peer: tilo_peer_state::peer_handle(&author),
             encoded_h264: encoded.to_vec(),
@@ -249,7 +253,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     publish(
         &native,
         author,
-        NeighbourMsg::PermissionGrant {
+        &NeighbourMsg::PermissionGrant {
             peer: tilo_peer_state::peer_handle(&host_device.cert.device_public_key),
             capability: "workspace-control:7:revoked".into(),
         },
@@ -271,5 +275,6 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     drop(live);
     browser.close();
     native.close().await;
-    host.relay.shutdown().await;
+    drop(web);
+    relay.shutdown().await;
 }

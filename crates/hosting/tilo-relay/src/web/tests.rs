@@ -73,7 +73,7 @@ async fn post(
         .unwrap();
     let header = std::str::from_utf8(&reply[..split]).unwrap();
     let status = header.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let body = &reply[split + 4..];
+    let body = &reply[split.checked_add(4).unwrap()..];
     if header
         .to_ascii_lowercase()
         .contains("transfer-encoding: chunked")
@@ -87,9 +87,9 @@ async fn post(
             if length == 0 {
                 break;
             }
-            rest = &rest[end + 2..];
+            rest = &rest[end.checked_add(2).unwrap()..];
             decoded.extend_from_slice(&rest[..length]);
-            rest = &rest[length + 2..];
+            rest = &rest[length.checked_add(2).unwrap()..];
         }
         (status, decoded)
     } else {
@@ -157,13 +157,13 @@ async fn native(
     client
 }
 
-fn publish(client: &RelayClient, workspace_id: u64, author: [u8; 32], message: NeighbourMsg) {
+fn publish(client: &RelayClient, workspace_id: u64, author: [u8; 32], message: &NeighbourMsg) {
     client
         .send(Envelope::Presence {
             workspace_id,
             payload: crate::AttributedPresence {
                 author,
-                body: postcard::to_allocvec(&message).unwrap(),
+                body: postcard::to_allocvec(message).unwrap(),
             }
             .encode()
             .unwrap(),
@@ -189,10 +189,10 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_input() {
-    let root = SigningKey::from_bytes(&[61; 32]);
+    let signer = SigningKey::from_bytes(&[61; 32]);
     let other_root = SigningKey::from_bytes(&[62; 32]);
-    let (host_key, host) = device(&root, 63, DeviceCapabilities::host());
-    let (owner_key, owner) = device(&root, 64, DeviceCapabilities::member());
+    let (host_key, host) = device(&signer, 63, DeviceCapabilities::host());
+    let (owner_key, owner) = device(&signer, 64, DeviceCapabilities::member());
     let (guest_key, guest) = device(&other_root, 65, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = Relay::start_with_relay_mode(
@@ -272,6 +272,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         },
         allowed_origins: vec![],
         features: 0,
+        rooms: relay.rooms().cloned(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -291,13 +292,13 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         &owner_native,
         room.workspace_id,
         owner.device_public_key,
-        grant(7),
+        &grant(7),
     );
     publish(
         &owner_native,
         room.workspace_id,
         owner.device_public_key,
-        start(&owner, 7),
+        &start(&owner, 7),
     );
     tilo_test_env::within("authorized native stream", async {
         while legacy
@@ -312,25 +313,25 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         &guest_native,
         room.workspace_id,
         guest.device_public_key,
-        grant(8),
+        &grant(8),
     );
     publish(
         &guest_native,
         room.workspace_id,
         guest.device_public_key,
-        start(&guest, 8),
+        &start(&guest, 8),
     );
     publish(
         &owner_native,
         room.workspace_id,
         guest.device_public_key,
-        grant(9),
+        &grant(9),
     );
     publish(
         &owner_native,
         room.workspace_id,
         guest.device_public_key,
-        start(&guest, 9),
+        &start(&guest, 9),
     );
     tilo_test_env::within("editor's stream", async {
         while legacy
@@ -440,25 +441,25 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         &guest_native,
         room.workspace_id,
         guest.device_public_key,
-        grant(8),
+        &grant(8),
     );
     publish(
         &guest_native,
         room.workspace_id,
         guest.device_public_key,
-        start(&guest, 8),
+        &start(&guest, 8),
     );
     publish(
         &guest_native,
         room.workspace_id,
         owner.device_public_key,
-        grant(9),
+        &grant(9),
     );
     publish(
         &guest_native,
         room.workspace_id,
         owner.device_public_key,
-        start(&owner, 9),
+        &start(&owner, 9),
     );
     // A successful ordered request is a barrier after the presence messages on this connection.
     owner_native
