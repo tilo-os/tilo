@@ -1704,6 +1704,7 @@ impl Widget for FirewallApp {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.status.clone())
+                    .with_hashed_key("firewall.status")
                     .with_live(Politeness::Polite),
             );
         }
@@ -1726,6 +1727,7 @@ impl Widget for FirewallApp {
                 } else {
                     "Stopped"
                 })
+                .with_action_target("firewall.header.enabled")
                 .with_bounds(self.layout.enable_pill)
                 .with_state(
                     AccessState::new()
@@ -1737,6 +1739,7 @@ impl Widget for FirewallApp {
             AccessNode::new(Role::ToggleButton)
                 .with_name("Panic mode")
                 .with_value(if self.config.panic_mode { "On" } else { "Off" })
+                .with_action_target("firewall.header.panic")
                 .with_bounds(self.layout.panic_btn)
                 .with_state(
                     AccessState::new()
@@ -1747,6 +1750,7 @@ impl Widget for FirewallApp {
         root.children.push(
             AccessNode::new(Role::Button)
                 .with_name("Apply firewall configuration")
+                .with_action_target("firewall.header.apply")
                 .with_bounds(self.layout.apply_btn)
                 .with_state(AccessState::new().focusable(true)),
         );
@@ -1764,11 +1768,13 @@ impl Widget for FirewallApp {
                 .selected(*zone == self.selected_zone),
             );
         }
-        root.children.push(zones.accessibility());
+        root.children
+            .push(zones.accessibility().with_hashed_key("firewall.zones"));
         if !self.layout.content_seg.is_empty() {
             let mut routes = AccessNode::new(Role::Group)
                 .with_name("Firewall content")
-                .with_description("Choose rules or services");
+                .with_description("Choose rules or services")
+                .with_hashed_key("firewall.routes");
             for (index, bounds) in self.layout.content_seg.iter().enumerate() {
                 let (name, route, selected) = if index == 0 {
                     ("Rules", "rules", self.compact_view == CompactView::Rules)
@@ -1790,11 +1796,17 @@ impl Widget for FirewallApp {
             root.children.push(routes);
         }
         if self.layout.compact_services {
-            root.children.push(self.services_accessibility());
+            root.children.push(
+                self.services_accessibility()
+                    .with_hashed_key("firewall.services"),
+            );
         } else {
             root.children.push(self.rules_table_accessibility());
             if self.layout.services_visible {
-                root.children.push(self.services_accessibility());
+                root.children.push(
+                    self.services_accessibility()
+                        .with_hashed_key("firewall.services"),
+                );
             }
         }
         Some(root)
@@ -1869,6 +1881,25 @@ impl Widget for FirewallApp {
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
             self.retry_connect(state);
             return true;
+        }
+        let toggles = matches!(action, A11yAction::Activate | A11yAction::ToggleCheck);
+        match target {
+            "firewall.header.enabled" if toggles => {
+                self.toggle_enabled(state);
+                self.set_form_focus(None);
+                return true;
+            }
+            "firewall.header.panic" if toggles => {
+                self.toggle_panic(state);
+                self.set_form_focus(None);
+                return true;
+            }
+            "firewall.header.apply" if matches!(action, A11yAction::Activate) => {
+                let _ = self.apply();
+                self.set_form_focus(None);
+                return true;
+            }
+            _ => {}
         }
         if let Some(route) = target.strip_prefix("firewall.route:")
             && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
@@ -4099,6 +4130,35 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         a.relayout();
         a
+    }
+
+    /// The painted header controls are reachable through the action door.
+    #[test]
+    fn populated_firewall_passes_native_certification() {
+        let driver = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(FirewallApp::new_demo()),
+            (1280, 800),
+        );
+        let audit = driver.native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "native={:?}, accessibility={:?}",
+            audit.issues,
+            audit.accessibility.issues
+        );
+
+        let mut app = app_with_rect();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let panic = app.config.panic_mode;
+        assert!(app.perform_semantic_action(
+            "firewall.header.panic",
+            &A11yAction::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_ne!(app.config.panic_mode, panic);
     }
 
     /// Live, unavailable, failed-recovery and demo builds write only honest state to the document and announce backend status.
