@@ -307,21 +307,22 @@ fn select_source(doc: &mut automerge::AutoCommit, source: crate::model::Source) 
     );
 }
 
+fn ensure_empty_records(doc: &mut automerge::AutoCommit) {
+    let _ = ui::tilo_actions::Action::apply(&crate::actions::ImagerAction::EnsureRecords, doc);
+}
+
 fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
+    ensure_empty_records(doc);
     select_source(doc, demo_iso_source());
 }
 
 fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
+    ensure_empty_records(doc);
 }
 
 fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
     use crate::model::sample_source;
-    ImagerDoc::seed(doc, &[]);
+    ensure_empty_records(doc);
     select_source(doc, sample_source());
 }
 
@@ -341,6 +342,10 @@ mod tests {
     fn drive_scenario_selects_the_iso_through_the_source_action() {
         let mut doc = ui::automerge::AutoCommit::new();
         super::seed_scenario(&mut doc, "drive-empty");
+        assert!(
+            !crate::doc::ImagerDoc::is_empty(&doc),
+            "the scenario record is created by EnsureRecords"
+        );
         let source = crate::doc::ImagerDoc::source(&doc).expect("iso selected");
         assert!(source.name.contains("Fedora"));
     }
