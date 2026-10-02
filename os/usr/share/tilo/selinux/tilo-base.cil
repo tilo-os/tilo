@@ -38,6 +38,11 @@
 (allow init_t tilo_fs_t (process (transition)))
 (allow tilo_fs_t bin_t (file (entrypoint execute execute_no_trans read open getattr map ioctl)))
 (allow init_t tilo_fs_t (process (siginh rlimitinh noatsecure)))
+; fs.service also sets NoNewPrivileges=yes, and with the nnp_nosuid_transition
+; policy capability a transition under no_new_privs needs its own permission:
+; without it every exec into tilo_fs_t (fs, and the umount in ExecStopPost)
+; fails with EPERM, status 203/EXEC.
+(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))
 
 ; The authenticated greetd session runs tilo-session in xdm_t. That wrapper
 ; starts and stops exactly one user lifecycle target before/after the native
