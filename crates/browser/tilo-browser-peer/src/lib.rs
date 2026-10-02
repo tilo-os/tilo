@@ -10,7 +10,9 @@
 //!   acknowledged commits from a persisted outbox and replayed after every
 //!   reconnect;
 //! - the **live plane** ([`live`]): ephemeral presence and previews relayed
-//!   by the host to live members.
+//!   by the host to live members;
+//! - **calls** ([`voice`]): the device's participation in the calls the host
+//!   governs, and the grants for its voice carrier.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
 //! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
@@ -45,6 +47,7 @@ pub mod net;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
+pub mod voice;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use custody::{CertifyError, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify};
@@ -58,3 +61,4 @@ pub use session::{
     PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
+pub use voice::VoiceEvent;

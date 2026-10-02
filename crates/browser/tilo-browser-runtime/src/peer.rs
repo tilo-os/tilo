@@ -697,6 +697,263 @@ struct JsGrant {
     expires_at_ns: u64,
 }
 
+fn hex32(text: &str, what: &str) -> Result<[u8; 32], JsError> {
+    hex::decode(text)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| js_error(format!("{what} must be 32 bytes of hex")))
+}
+
+/// `{publish, subscribe}`.
+#[derive(Serialize, Deserialize)]
+struct JsDirections {
+    publish: bool,
+    subscribe: bool,
+}
+
+impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
+    fn from(value: tilo_relay_protocol::voice::Directions) -> Self {
+        Self {
+            publish: value.publish,
+            subscribe: value.subscribe,
+        }
+    }
+}
+
+/// One call participant: device and person as hex.
+#[derive(Serialize)]
+struct JsVoiceParticipant {
+    device: String,
+    user: String,
+    namespace: String,
+    publishes: bool,
+}
+
+fn voice_participants(
+    participants: Vec<tilo_relay_protocol::voice::VoiceParticipant>,
+) -> Vec<JsVoiceParticipant> {
+    participants
+        .into_iter()
+        .map(|participant| JsVoiceParticipant {
+            device: hex::encode(participant.device_public_key),
+            user: hex::encode(participant.user_public_key),
+            namespace: participant.namespace,
+            publishes: participant.publishes,
+        })
+        .collect()
+}
+
+/// A call grant for `web/voice.mjs`: ids and the token as hex.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsVoiceGrant {
+    call: String,
+    epoch: u64,
+    participation: String,
+    token: String,
+    endpoint: String,
+    fingerprints: Vec<String>,
+    directions: JsDirections,
+    publication: Option<String>,
+    subscriptions: Vec<String>,
+    participants: Vec<JsVoiceParticipant>,
+    expires_at_ns: u64,
+}
+
+/// A call of the room as `web/voice.mjs` lists it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsCall {
+    call: String,
+    epoch: u64,
+    active: bool,
+    allowed: JsDirections,
+    app: String,
+    record: String,
+    channel: String,
+    participants: Vec<JsVoiceParticipant>,
+}
+
+fn call_state(state: &tilo_relay_protocol::voice::CallState) -> serde_json::Value {
+    serde_json::json!({
+        "call": hex::encode(state.call),
+        "epoch": state.epoch,
+        "active": state.active,
+        "allowed": JsDirections::from(state.allowed),
+    })
+}
+
+/// A call event for `web/voice.mjs`.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsVoiceEvent {
+    Calls {
+        room: String,
+        calls: Option<Vec<JsCall>>,
+        error: Option<String>,
+    },
+    CallResult {
+        room: String,
+        request: String,
+        call: Option<serde_json::Value>,
+        error: Option<String>,
+    },
+    Granted {
+        room: String,
+        grant: JsVoiceGrant,
+    },
+    Ended {
+        room: String,
+        call: String,
+        reason: String,
+    },
+}
+
+fn room_of(workspace_id: u64, rooms: &RefCell<std::collections::HashMap<u64, String>>) -> String {
+    rooms
+        .borrow()
+        .get(&workspace_id)
+        .cloned()
+        .unwrap_or_else(|| workspace_id.to_string())
+}
+
+fn voice_event(
+    event: tilo_browser_peer::VoiceEvent,
+    rooms: &RefCell<std::collections::HashMap<u64, String>>,
+) -> JsVoiceEvent {
+    use tilo_browser_peer::VoiceEvent;
+    match event {
+        VoiceEvent::Calls {
+            workspace_id,
+            result,
+        } => {
+            let (calls, error) = match result {
+                Ok(calls) => (
+                    Some(
+                        calls
+                            .into_iter()
+                            .map(|summary| JsCall {
+                                call: hex::encode(summary.state.call),
+                                epoch: summary.state.epoch,
+                                active: summary.state.active,
+                                allowed: summary.state.allowed.into(),
+                                app: summary.app_id,
+                                record: summary.record_id,
+                                channel: summary.channel_id,
+                                participants: voice_participants(summary.participants),
+                            })
+                            .collect(),
+                    ),
+                    None,
+                ),
+                Err(error) => (None, Some(error)),
+            };
+            JsVoiceEvent::Calls {
+                room: room_of(workspace_id, rooms),
+                calls,
+                error,
+            }
+        }
+        VoiceEvent::CallResult {
+            workspace_id,
+            request,
+            result,
+        } => {
+            let (call, error) = match result {
+                Ok(state) => (Some(call_state(&state)), None),
+                Err(error) => (None, Some(error)),
+            };
+            JsVoiceEvent::CallResult {
+                room: room_of(workspace_id, rooms),
+                request: hex::encode(request),
+                call,
+                error,
+            }
+        }
+        VoiceEvent::Granted {
+            workspace_id,
+            grant,
+        } => {
+            let grant = *grant;
+            JsVoiceEvent::Granted {
+                room: room_of(workspace_id, rooms),
+                grant: JsVoiceGrant {
+                    call: hex::encode(grant.call),
+                    epoch: grant.epoch,
+                    participation: hex::encode(grant.participation),
+                    token: hex::encode(&grant.token),
+                    endpoint: grant.endpoint,
+                    fingerprints: grant.fingerprints,
+                    directions: grant.directions.into(),
+                    publication: grant.publication,
+                    subscriptions: grant.subscriptions,
+                    participants: voice_participants(grant.participants),
+                    expires_at_ns: grant.expires_at_ns,
+                },
+            }
+        }
+        VoiceEvent::Ended {
+            workspace_id,
+            call,
+            reason,
+        } => JsVoiceEvent::Ended {
+            room: room_of(workspace_id, rooms),
+            call: hex::encode(call),
+            reason,
+        },
+    }
+}
+
+/// A change to a call, as `web/voice.mjs` asks for it.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsCallOperation {
+    Start {
+        app: String,
+        record: String,
+        channel: String,
+        allowed: JsDirections,
+    },
+    End {
+        call: String,
+        epoch: u64,
+    },
+    Restart {
+        call: String,
+        epoch: u64,
+    },
+}
+
+impl JsCallOperation {
+    fn into_operation(self) -> Result<tilo_relay_protocol::voice::CallOperation, JsError> {
+        use tilo_relay_protocol::voice::{CallOperation, Directions};
+        Ok(match self {
+            Self::Start {
+                app,
+                record,
+                channel,
+                allowed,
+            } => CallOperation::Start {
+                app_id: app,
+                record_id: record,
+                channel_id: channel,
+                allowed: Directions {
+                    publish: allowed.publish,
+                    subscribe: allowed.subscribe,
+                },
+            },
+            Self::End { call, epoch } => CallOperation::End {
+                call: hex32(&call, "call")?,
+                epoch,
+            },
+            Self::Restart { call, epoch } => CallOperation::Restart {
+                call: hex32(&call, "call")?,
+                epoch,
+            },
+        })
+    }
+}
+
 /// A remote-action event for `web/agents.mjs` (and `actionsV1`).
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -772,6 +1029,9 @@ pub struct WasmPeer {
     handle: PeerHandle,
     durable_events: PeerEvents,
     remote_events: PeerEvents,
+    voice_events: PeerEvents,
+    /// Joined rooms by workspace, to name them in call events.
+    voice_rooms: RefCell<std::collections::HashMap<u64, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
     /// The profile's store and a queue opened at start, until a room is
     /// joined and replicated ([`crate::replication`]).
@@ -873,6 +1133,8 @@ impl WasmPeer {
             device_key,
             durable_events: handle.events(),
             remote_events: handle.events(),
+            voice_events: handle.events(),
+            voice_rooms: RefCell::default(),
             handle,
             listeners,
             replication: RefCell::new(replication),
@@ -903,7 +1165,11 @@ impl WasmPeer {
     /// Throws for a room that is not a uuid, or a closed session.
     #[wasm_bindgen(js_name = joinRoom)]
     pub fn join_room(&self, room: &str) -> Result<(), JsError> {
-        self.handle.join(workspace(room)?).map_err(js_error)?;
+        let workspace_id = workspace(room)?;
+        self.handle.join(workspace_id).map_err(js_error)?;
+        self.voice_rooms
+            .borrow_mut()
+            .insert(workspace_id, room.to_owned());
         if let Some((events, store)) = self.replication.borrow_mut().take() {
             let device = hex::encode(self.device_key);
             crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
@@ -950,6 +1216,84 @@ impl WasmPeer {
             expires_at_ns: grant.expires_at_ns,
         })
         .map_err(js_error)
+    }
+
+    /// Ask the host for `room`'s calls; the answer is a `calls` event of
+    /// [`Self::take_voice_events`].
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room or a closed session.
+    #[wasm_bindgen(js_name = voiceCalls)]
+    pub fn voice_calls(&self, room: &str) -> Result<(), JsError> {
+        self.handle.voice_calls(workspace(room)?).map_err(js_error)
+    }
+
+    /// Start, end or restart a call of `room` (`{kind: 'start', app, record,
+    /// channel, allowed}`, `{kind: 'end' | 'restart', call, epoch}` JSON);
+    /// its `callResult` event names `request` (16 bytes of hex).
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room, operation or request, or a closed
+    /// session.
+    #[wasm_bindgen(js_name = voiceCall)]
+    pub fn voice_call(
+        &self,
+        room: &str,
+        operation_json: &str,
+        request: &str,
+    ) -> Result<(), JsError> {
+        let operation: JsCallOperation = serde_json::from_str(operation_json).map_err(js_error)?;
+        let request: [u8; 16] = hex::decode(request)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| js_error("request must be 16 bytes of hex"))?;
+        self.handle
+            .voice_call(workspace(room)?, request, operation.into_operation()?)
+            .map_err(js_error)
+    }
+
+    /// Take part in call `call` (hex) of `room` until [`Self::voice_leave`]:
+    /// the session keeps the participation alive and its grants arrive as
+    /// `granted` events of [`Self::take_voice_events`].
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room or call, or a closed session.
+    #[wasm_bindgen(js_name = voiceJoin)]
+    pub fn voice_join(&self, room: &str, call: &str) -> Result<(), JsError> {
+        self.handle
+            .voice_join(workspace(room)?, hex32(call, "call")?)
+            .map_err(js_error)
+    }
+
+    /// Leave the call of `room`.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room or a closed session.
+    #[wasm_bindgen(js_name = voiceLeave)]
+    pub fn voice_leave(&self, room: &str) -> Result<(), JsError> {
+        self.handle.voice_leave(workspace(room)?).map_err(js_error)
+    }
+
+    /// Call events since the last call, as a JSON array of `{kind: 'calls',
+    /// room, calls | error}`, `{kind: 'callResult', room, request, call |
+    /// error}`, `{kind: 'granted', room, grant}` and `{kind: 'ended', room,
+    /// call, reason}`.
+    #[wasm_bindgen(js_name = takeVoiceEvents)]
+    pub fn take_voice_events(&self) -> String {
+        let out: Vec<JsVoiceEvent> = self
+            .voice_events
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_rooms)),
+                _ => None,
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
     /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally

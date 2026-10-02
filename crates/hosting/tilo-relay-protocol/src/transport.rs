@@ -486,6 +486,21 @@ pub enum Envelope {
         /// The participation that ends.
         participation: [u8; 32],
     },
+
+    /// Ask for the calls of a room the host governs. Requires an accepted
+    /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
+    VoiceCalls {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// A room's calls as its governance records them, with who is in each.
+    VoiceCallList {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The calls, or why the room has none to list.
+        result: Result<Vec<crate::voice::CallSummary>, String>,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
@@ -560,6 +575,44 @@ mod tests {
         ];
         // The frame codec (length prefix) lives in `tilo-relay-client`; the
         // payload bytes it carries are these postcard encodings.
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_voice_envelope_bytes() {
+        // These exact discriminants and fields predate browser call listings.
+        let cases = [
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: None,
+                },
+                [vec![27, 7], vec![1; 32], vec![0]].concat(),
+            ),
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: Some([2; 32]),
+                },
+                [vec![27, 7], vec![1; 32], vec![1], vec![2; 32]].concat(),
+            ),
+            (
+                Envelope::VoiceLeave {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: [2; 32],
+                },
+                [vec![30, 7], vec![1; 32], vec![2; 32]].concat(),
+            ),
+        ];
         for (envelope, payload) in cases {
             assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
             assert_eq!(
