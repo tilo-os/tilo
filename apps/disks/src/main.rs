@@ -111,7 +111,7 @@ fn live_root() -> Box<dyn Widget> {
 extern crate runtime_dylib;
 
 fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
-    let mut args = args.peekable();
+    let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => {
@@ -125,6 +125,10 @@ fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
     false
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set DISKS_LIVE once on the main thread before the framework host starts threads"
+)]
 pub fn main() {
     if !wants_standalone(std::env::args().skip(1)) {
         // Live mode: probe the real system (lsblk + smartctl), same as

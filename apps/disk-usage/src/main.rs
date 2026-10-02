@@ -4,7 +4,7 @@ extern crate runtime_dylib;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
-    let mut args = args.peekable();
+    let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => {
