@@ -2219,11 +2219,7 @@ impl DrmScanout {
             });
             return result;
         }
-        let idx = if self.use_pageflip {
-            1usize.saturating_sub(self.front)
-        } else {
-            self.front
-        };
+        let idx = draw_buffer_slot(self.front);
         let (dw, dh) = (self.width as usize, self.height as usize);
         let hw_cursor_active = self.hw_cursor_active;
         let cursor_bitmap = self.cursor_bitmap();
@@ -2367,13 +2363,11 @@ impl DrmScanout {
             return Ok(false);
         }
 
-        // Back buffer when flipping, else the single live buffer. `front` is always 0 or 1, so
-        // this is equivalent to `1 - self.front`, just without unchecked subtraction.
-        let idx = if self.use_pageflip {
-            1usize.saturating_sub(self.front)
-        } else {
-            self.front
-        };
+        // The buffer the host is not currently scanning. Real connectors
+        // page-flip to it. Virtual connectors dirty-flush it and then record
+        // it as front, so the next frame does not overwrite the dmabuf the
+        // host is still reading.
+        let idx = draw_buffer_slot(self.front);
 
         // `fill` is an arbitrary caller-owned write, so no retained destination claim can
         // survive this legacy entry point. Invalidate before borrowing the dumb buffer; a map
@@ -2541,7 +2535,9 @@ impl DrmScanout {
         match self.card.dirty_framebuffer(fb, &clips) {
             Ok(()) => {
                 // The clip is accepted. A virtual CRTC never delivers the
-                // page-flip event, so this return is the retirement.
+                // page-flip event, so this return is the retirement. The
+                // published buffer is now the one the host may still read.
+                self.front = idx;
                 self.note_publish(true, false);
                 true
             }
@@ -3133,6 +3129,13 @@ fn connector_uses_pageflip(card: &Card, connector: connector::Handle) -> bool {
 /// [`inflight_after_page_flip_event`]. A virtual scanout has no such event:
 /// `dirty_framebuffer` retiring the clip (`dirty_accepted`) drops the count
 /// even when a flip was queued, so the next frame can start.
+/// Buffer slot to draw into. `front` is the buffer the host is scanning,
+/// so the draw goes to the other of the two dumb buffers. Virtual dirtyfb
+/// and real page-flip both use this; only the publish path differs.
+fn draw_buffer_slot(front: usize) -> usize {
+    1usize.saturating_sub(front)
+}
+
 fn inflight_after_publish(use_pageflip: bool, dirty_accepted: bool, page_flip_queued: bool) -> u8 {
     let virtual_clip_retired = !use_pageflip && dirty_accepted;
     u8::from(page_flip_queued && !virtual_clip_retired)
@@ -3188,6 +3191,14 @@ mod tests {
     }
     use super::*;
     use ui::ColorCompat as _;
+
+    #[test]
+    fn virtual_and_real_scanout_draw_the_buffer_the_host_is_not_reading() {
+        assert_eq!(draw_buffer_slot(0), 1);
+        assert_eq!(draw_buffer_slot(1), 0);
+        // A third value must not wrap into a slot that does not exist.
+        assert_eq!(draw_buffer_slot(2), 0);
+    }
 
     #[test]
     fn only_connected_real_display_connectors_with_modes_are_scanout_eligible() {

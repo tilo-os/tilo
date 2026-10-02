@@ -523,6 +523,11 @@ fn video_model(entry: &VmEntry) -> String {
     } else {
         ""
     };
+    // Guest dumb scanouts stay on the 2D copy path unless the host
+    // advertises blob resources. With virgl that copy is a full-frame
+    // upload inside the vcpu kick, about 50 ms. `blob='on'` lets the
+    // guest export the scanout as a dmabuf instead.
+    let blob = if entry.gl { " blob='on'" } else { "" };
     let resolution = entry
         .resolution
         .as_deref()
@@ -535,9 +540,9 @@ fn video_model(entry: &VmEntry) -> String {
             )
         });
     if accel.is_empty() && resolution.is_empty() {
-        format!("<model type='virtio'{heads}/>")
+        format!("<model type='virtio'{heads}{blob}/>")
     } else {
-        format!("<model type='virtio'{heads}>{accel}{resolution}</model>")
+        format!("<model type='virtio'{heads}{blob}>{accel}{resolution}</model>")
     }
 }
 
@@ -2092,7 +2097,7 @@ mod tests {
         );
         assert!(
             xml.contains(
-                "<video><model type='virtio'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
+                "<video><model type='virtio' blob='on'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
             ),
             "{xml}"
         );

@@ -1,0 +1,99 @@
+From: Tilo <tilo@tilo.so>
+Subject: virtio-gpu: scan out a guest blob without waiting for vblank
+
+With virgl enabled, a dumb scanout is a 2D resource. Every dirtyfb
+commit copies it through TRANSFER_TO_HOST_2D, and virgl uploads that
+copy on the vcpu before the kick returns. That upload is the ~50 ms
+gap that remains after the flush fence is retired immediately. The
+software vblank wait then holds the same ioctl for the rest of the frame.
+
+Create the dumb buffer as a guest blob whenever the host advertises
+blobs, including when virgl is on, and do not transfer a guest blob.
+The flush only publishes the dmabuf the host already imported. Skip
+the software vblank wait in the commit tail and send the flip event
+immediately, so dirtyfb returns once that publish is queued.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_gem.c
++++ b/drivers/gpu/drm/virtio/virtgpu_gem.c
+@@ -81,7 +81,7 @@
+ 	params.size = args->size;
+ 	params.dumb = true;
+ 
+-	if (vgdev->has_resource_blob && !vgdev->has_virgl_3d) {
++	if (vgdev->has_resource_blob) {
+ 		params.blob_mem = VIRTGPU_BLOB_MEM_GUEST;
+ 		params.blob_flags = VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+ 		params.blob = true;
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -264,7 +264,12 @@
+ 		return;
+ 
+ 	bo = gem_to_virtio_gpu_obj(plane->state->fb->obj[0]);
+-	if (bo->dumb)
++	/* A guest blob is the host's dmabuf. Copying it through
++	 * TRANSFER_TO_HOST_2D makes virgl upload the whole frame on the
++	 * vcpu and is the ~50 ms present stall. The flush below only
++	 * publishes the already-imported scanout.
++	 */
++	if (bo->dumb && !bo->guest_blob)
+ 		virtio_gpu_update_dumb_bo(vgdev, plane->state, &rect);
+ 
+ 	if (plane->state->fb != old_state->fb ||
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -148,10 +148,13 @@
+ 	crtc_state->event = NULL;
+ 
+ 	if (event) {
+-		if (drm_crtc_vblank_get(crtc) == 0)
+-			drm_crtc_arm_vblank_event(crtc, event);
+-		else
+-			drm_crtc_send_vblank_event(crtc, event);
++		/*
++		 * These CRTCs are software vblank timers. Arming the
++		 * event makes the blocking dirtyfb commit wait out the
++		 * frame in drm_atomic_helper_wait_for_vblanks. The host
++		 * has already been kicked; send the event now.
++		 */
++		drm_crtc_send_vblank_event(crtc, event);
+ 	}
+ 
+ 	spin_unlock_irq(&dev->event_lock);
+@@ -350,6 +353,28 @@
+ 	return &virtio_gpu_fb->base;
+ }
+ 
++static void virtio_gpu_commit_tail(struct drm_atomic_commit *state)
++{
++	struct drm_device *dev = state->dev;
++
++	/*
++	 * Same sequence as drm_atomic_helper_commit_tail, without
++	 * drm_atomic_helper_wait_for_vblanks. That wait starts the
++	 * software vblank timer and holds the dirtyfb ioctl for a
++	 * frame after the scanout update has been submitted.
++	 */
++	drm_atomic_helper_commit_modeset_disables(dev, state);
++	drm_atomic_helper_commit_planes(dev, state, 0);
++	drm_atomic_helper_commit_modeset_enables(dev, state);
++	drm_atomic_helper_fake_vblank(state);
++	drm_atomic_helper_commit_hw_done(state);
++	drm_atomic_helper_cleanup_planes(dev, state);
++}
++
++static const struct drm_mode_config_helper_funcs virtio_gpu_mode_config_helpers = {
++	.atomic_commit_tail = virtio_gpu_commit_tail,
++};
++
+ static const struct drm_mode_config_funcs virtio_gpu_mode_funcs = {
+ 	.fb_create = virtio_gpu_user_framebuffer_create,
+ 	.atomic_check = drm_atomic_helper_check,
+@@ -369,6 +394,7 @@
+ 
+ 	vgdev->ddev->mode_config.quirk_addfb_prefer_host_byte_order = true;
+ 	vgdev->ddev->mode_config.funcs = &virtio_gpu_mode_funcs;
++	vgdev->ddev->mode_config.helper_private = &virtio_gpu_mode_config_helpers;
+ 
+ 	/* modes will be validated against the framebuffer size */
+ 	vgdev->ddev->mode_config.min_width = XRES_MIN;
