@@ -308,9 +308,10 @@ pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> Enc
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 fn refused<R: Resource>(reason: &str) -> EncodedAction {
+    let _ = R::ACTION_TYPE;
     EncodedAction {
-        type_id: R::ACTION_TYPE.to_owned(),
-        payload: serde_json::to_vec(&serde_json::json!({ "refused": reason })).unwrap_or_default(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+        payload: reason.as_bytes().to_vec(),
     }
 }
 

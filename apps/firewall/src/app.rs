@@ -777,8 +777,7 @@ impl FirewallApp {
     }
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
-    /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
-    /// [``]() impl in
+    /// firewall is unavailable / has no zones (nothing to act on). Exposed to
     /// [`crate::actions`], which can't read the app's private fields directly.
     pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
         if !self.available || self.config.zones.is_empty() {
@@ -2043,19 +2042,23 @@ impl ui::resources::PublishesResources for FirewallApp {
         if self.actions.is_hosted() && id == "firewall.config" {
             return None;
         }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
+        find_resource_tree(&self.publish_resources(doc), id)
     }
+}
+
+fn find_resource_tree(
+    resources: &[tilo_actions::Resource],
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl ui::undo::CommittedActions for FirewallApp {

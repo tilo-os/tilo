@@ -2,6 +2,7 @@
 //! publishes the resource and its actions, forwards edits to the host, and
 //! indexes the resource for search.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use ui_core::widget::{AppModel, ModelPath};
@@ -272,6 +273,53 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
+
+    /// Resource and app presentation doors publish effect/view actions; their
+    /// operation types must be in the retained handler table or publication
+    /// withdraws the whole component surface.
+    fn resource_operation_handlers(&self) -> HashSet<String> {
+        let mut handlers = self.inner().resource_operation_handlers();
+        for spec in R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+        {
+            if let Some(type_id) = spec.operation_type {
+                handlers.insert(type_id);
+            }
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui_core::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
+            return Ok(Some(started));
+        }
+        // View openers from the resource/presentation catalogue (e.g.
+        // `tilo.rich-text.view` editor/compact) are already mounted; accept
+        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if request.kind != tilo_actions::OperationKind::View {
+            return Ok(None);
+        }
+        let known = R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+        if known {
+            Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
