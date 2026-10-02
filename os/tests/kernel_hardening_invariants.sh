@@ -751,9 +751,14 @@ for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
   fi
 done
 for dir in '%h/Remote' '%h/Shared' '%h/.cache/tilo/received-files'; do
-  grep -Eq "^d ${dir//./\\.}[[:space:]]" "$repo/os/usr/lib/user-tmpfiles.d/tilo-fs.conf" \
+  grep -Eq "^d ${dir//./\\.}[[:space:]]" "$repo/os/usr/share/user-tmpfiles.d/tilo-fs.conf" \
     || bad "user-tmpfiles.d/tilo-fs.conf does not create $dir for the filesystem services"
 done
+# systemd-tmpfiles --user reads user-tmpfiles.d from /etc and /usr/share,
+# never /usr/lib: a snippet there is silently dead.
+if grep -Eq '/usr/lib/user-tmpfiles\.d' "$repo/os/Containerfile" || [ -e "$repo/os/usr/lib/user-tmpfiles.d" ]; then
+  bad 'a user-tmpfiles.d snippet is installed under /usr/lib, which systemd-tmpfiles --user never reads'
+fi
 [ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
