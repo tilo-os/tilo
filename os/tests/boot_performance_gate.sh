@@ -114,6 +114,25 @@ boot_phases() {
 }
 # The kernel phase has no units to blame: name the longest silences in this
 # boot's kernel log before the initrd started, and the initramfs unpack.
+# The initrd phase: the longest silences between its start and switch-root,
+# from the journal (the gate user reads it through wheel). systemd and its
+# units log there in real time, so a gap names what the boot waited on.
+initrd_gaps() {
+  local initrd_us userspace_us log
+  initrd_us="$(systemctl show --property=InitRDTimestampMonotonic --value 2>/dev/null || true)"
+  userspace_us="$(systemctl show --property=UserspaceTimestampMonotonic --value 2>/dev/null || true)"
+  case "$initrd_us$userspace_us" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$initrd_us" -gt 0 ] && [ "$userspace_us" -gt "$initrd_us" ] || return 0
+  log="$(journalctl -b -o short-monotonic --no-pager 2>/dev/null)" || return 0
+  [ -n "$log" ] || return 0
+  printf 'initrd, longest gaps before switch-root:\n'
+  awk -F'[][]' -v start="$initrd_us" -v end="$userspace_us" '
+    { t = $2 * 1e6 }
+    t < start { next }
+    t > end { exit }
+    p != "" && t - p > 300000 { m = $0; sub(/^[^]]*]/, "", m); printf "  %7.3fs before [%s]%s\n", (t - p) / 1e6, $2, substr(m, 1, 110) }
+    { p = t }' <<<"$log" | sort -rn | head -10 || true
+}
 kernel_gaps() {
   local log
   # Journald timestamps imported early messages at receipt. Those timestamps
@@ -156,6 +175,7 @@ cpu_steal() {
 if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" ]; then
   cpu_steal
   kernel_gaps
+  initrd_gaps
   systemd-analyze critical-chain graphical.target 2>/dev/null | head -14 || true
 fi
 if [ "$entered_us" -gt "$budget_us" ]; then
@@ -164,6 +184,7 @@ if [ "$entered_us" -gt "$budget_us" ]; then
   boot_phases >&2
   cpu_steal >&2
   kernel_gaps >&2
+  initrd_gaps >&2
   systemd-analyze critical-chain graphical.target >&2 || true
   systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true
   exit 1
