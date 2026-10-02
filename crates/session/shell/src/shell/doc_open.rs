@@ -987,7 +987,7 @@ mod tests {
     }
 
     /// Keep the machine's own desktop entries and `mimeapps.list` defaults
-    /// out: a host with LibreOffice installed would otherwise answer for
+    /// out: a host with an office suite installed would otherwise answer for
     /// `.docx`, and a video player for `.mkv`.
     fn without_host_apps(dir: &Path, env: &mut tilo_test_env::ScopedEnv) {
         let data = dir.join("host-data");
