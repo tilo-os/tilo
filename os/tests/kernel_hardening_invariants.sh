@@ -740,6 +740,22 @@ grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
   || bad 'identity key holders no longer turn non-dumpable'
 [ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
 
+# systemd 259's user manager cannot start a second sandboxed process in a
+# unit with PrivateIPC=yes: the IPC namespace setup fails with EPERM and the
+# next exec exits 226/NAMESPACE, so the unit crash-loops. Such user units run
+# only their ExecStart; directories they need come from user-tmpfiles.d.
+for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
+  grep -Fqx 'PrivateIPC=yes' "$unit" || continue
+  if grep -Eq '^Exec(StartPre|StartPost|Condition|Reload|Stop|StopPost)=' "$unit"; then
+    bad "$(basename "$unit") runs a second process beside PrivateIPC=yes (226/NAMESPACE)"
+  fi
+done
+for dir in '%h/Remote' '%h/Shared' '%h/.cache/tilo/received-files'; do
+  grep -Eq "^d ${dir//./\\.}[[:space:]]" "$repo/os/usr/lib/user-tmpfiles.d/tilo-fs.conf" \
+    || bad "user-tmpfiles.d/tilo-fs.conf does not create $dir for the filesystem services"
+done
+[ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
+
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
 rollback_exec="$repo/crates/system/tilo-rollback/src/exec.rs"
 for required in \
