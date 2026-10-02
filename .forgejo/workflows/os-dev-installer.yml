@@ -95,6 +95,8 @@ jobs:
             ')"
             if [ "$layout" = unsealed ]; then
               ./os/dev/install-cached-cosign.sh
+              # GITHUB_PATH applies to later steps, not this current shell.
+              export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
               RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
               adapted="localhost/tilo-dev-installer-base:$GITHUB_RUN_ID"
               adapter_context="$TILO_OUTPUT/boot-adapter"
