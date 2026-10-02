@@ -204,6 +204,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one assertion covers publish ownership, hosted extras, and empty adopt"
+    )]
     fn resource_publish_owns_policy_document_ops_and_hosted_keeps_no_second_door() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &automerge::ROOT);
