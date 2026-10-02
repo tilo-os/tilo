@@ -138,6 +138,21 @@ switch ($Action) {
     }
     'boot-installer' { Boot $true $Args }
     'boot-target' { Boot $false $Args }
+    'discard-installer' {
+        if (Get-VmProcess) { throw 'Installer VM is still running; refusing to discard its overlay' }
+        if (!$externalTarget) { throw 'Discarding the installer requires an independent external raw target' }
+        $resolvedWork = [IO.Path]::GetFullPath($work)
+        $resolvedCycle = [IO.Path]::GetFullPath($cycleDir)
+        if (!$resolvedWork.StartsWith($resolvedCycle + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Installer overlay path is outside its owned cycle'
+        }
+        if (Test-Path -LiteralPath $resolvedWork) {
+            $item = Get-Item -LiteralPath $resolvedWork
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Refusing installer overlay reparse point' }
+            Remove-Item -LiteralPath $resolvedWork
+        }
+        'finished installer overlay discarded; installed target retained'
+    }
     'status' { if (Get-VmProcess) { 'running' } else { 'stopped' } }
     'stop' {
         $proc = Get-VmProcess
@@ -147,7 +162,10 @@ switch ($Action) {
                 if ($identity.return.name -ne $cycle) { throw 'QMP endpoint belongs to another VM' }
                 $null = Invoke-Qmp 'quit'
             } catch { Write-Warning "QMP quit did not acknowledge: $_" }
-            Wait-Process -Id $proc.Id -Timeout 5 -ErrorAction SilentlyContinue
+            # QMP quit can finish before Wait-Process attaches, which turns a
+            # successful stop into ProcessAlreadyTerminated under Stop policy.
+            try { $null = $proc.WaitForExit(5000) }
+            catch [System.InvalidOperationException] { }
             $remaining = Get-VmProcess
             if ($remaining -and $remaining.Id -eq $proc.Id) {
                 Stop-Process -Id $proc.Id -Force
