@@ -994,14 +994,19 @@ impl Widget for ToggleGroup {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                AccessNode::new(Role::ToggleButton)
+                let node = AccessNode::new(Role::ToggleButton)
                     .with_action_target(self.segment_id(i))
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
                         ..Default::default()
                     })
-                    .with_position(i.saturating_add(1), count)
+                    .with_position(i.saturating_add(1), count);
+                // Where the segment is drawn, so pointing at it lands on it.
+                match self.segment_rects.get(i) {
+                    Some(rect) => node.with_bounds(*rect),
+                    None => node,
+                }
             })
             .collect();
         Some(
@@ -1575,6 +1580,12 @@ mod tests {
             assert_eq!(
                 Widget::accessibility(&g).unwrap().value.as_deref(),
                 Some("a")
+            );
+            let segments = Widget::accessibility(&g).unwrap().children;
+            assert_eq!(
+                segments.get(2).and_then(|segment| segment.bounds),
+                g.segment_rects.get(2).map(|rect| (*rect).into()),
+                "each segment is placed where it is drawn"
             );
 
             // Click into segment 2 → value follows the new selection.
