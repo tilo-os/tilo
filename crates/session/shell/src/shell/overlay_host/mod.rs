@@ -5719,6 +5719,11 @@ impl ShellOverlayHost {
         self.file_picker_overlay.widget()
     }
 
+    /// A portal sheet (permission, secrets, device choice) is on screen.
+    pub fn portal_dialog_open(&self) -> bool {
+        self.portal_dialogs.view().is_some()
+    }
+
     pub fn file_picker_mut(&mut self) -> Option<&mut ui::widget::FilePicker> {
         self.file_picker_overlay.widget_mut()
     }
