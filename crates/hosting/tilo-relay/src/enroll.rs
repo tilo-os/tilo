@@ -91,12 +91,16 @@ enum Command {
         /// Optional world-readable progress file for the first-run UI.
         #[arg(long)]
         status_file: Option<PathBuf>,
+        /// Agent hosts and other headless boxes: pair without a compositor
+        /// first-use requester lease. Desktop first-use must omit this flag.
+        #[arg(long, default_value_t = false)]
+        headless: bool,
         /// PID of the compositor that initiated this first-use operation.
         #[arg(long)]
-        requester_pid: u32,
+        requester_pid: Option<u32>,
         /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
         #[arg(long)]
-        requester_start_time: u64,
+        requester_start_time: Option<u64>,
     },
     /// Approve one nearby host token issued by this device.
     Approve {
@@ -1654,9 +1658,9 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
         port,
         ..
     } = options;
-    if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
-        bail!("personal-device pairing requires a live first-use requester");
-    }
+    // Desktop first-use always supplies a compositor lease. Agent hosts pass
+    // `--headless` so the lease is absent on purpose; validate_requester is a
+    // no-op for None.
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -2288,24 +2292,40 @@ fn run() -> anyhow::Result<()> {
             label,
             timeout,
             status_file,
+            headless,
             requester_pid,
             requester_start_time,
-        } => pair(
-            JoinOptions {
-                identity_root: &identity_root,
-                label: &label,
-                timeout,
-                kind: EnrollmentKind::PersonalDevice,
-                home_peer_output: None,
-                identity_dir: Some(&identity_dir),
-                requester_lease: Some(tilo_relay::ProcessLease::from_parts(
-                    requester_pid,
-                    requester_start_time,
-                )),
-                port: NEARBY_PORT,
-            },
-            status_file.as_deref(),
-        ),
+        } => {
+            let requester_lease = match (headless, requester_pid, requester_start_time) {
+                (true, None, None) => None,
+                (true, _, _) => {
+                    bail!(
+                        "--headless cannot be combined with --requester-pid or --requester-start-time"
+                    );
+                }
+                (false, Some(pid), Some(start_time)) => {
+                    Some(tilo_relay::ProcessLease::from_parts(pid, start_time))
+                }
+                (false, _, _) => {
+                    bail!(
+                        "personal-device pairing requires --requester-pid and --requester-start-time unless --headless"
+                    );
+                }
+            };
+            pair(
+                JoinOptions {
+                    identity_root: &identity_root,
+                    label: &label,
+                    timeout,
+                    kind: EnrollmentKind::PersonalDevice,
+                    home_peer_output: None,
+                    identity_dir: Some(&identity_dir),
+                    requester_lease,
+                    port: NEARBY_PORT,
+                },
+                status_file.as_deref(),
+            )
+        }
         Command::Approve {
             identity_root,
             timeout,
