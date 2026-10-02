@@ -131,7 +131,7 @@ type ScrollCell = Rc<Cell<(f32, f32)>>;
 pub struct TubeApp {
     model: TubeModel,
     /// Canonical document-operation dispatcher used by visible affordances.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// History has a different replication boundary from collaborative Tube
     /// state: it is owner-local and only crosses an approved device-sync link.
     history_actions: ui::ActionHost,
@@ -297,7 +297,7 @@ impl TubeApp {
         }
         Self {
             model,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             history_actions: ui::ActionHost::new(),
             history_store,
             bus: action::new_bus(),
@@ -696,11 +696,7 @@ impl TubeApp {
             return;
         }
 
-        let current_id = format!("tube.current:{video_id}");
-        let current = crate::actions::provide_resources(&self.model)
-            .into_iter()
-            .flat_map(|resource| resource.children)
-            .find(|resource| resource.id.0 == current_id);
+        let current = crate::actions::current_watch_resource(&self.model);
         let Some(current) = current else {
             self.play_action = None;
             self.share_action = None;
@@ -795,6 +791,39 @@ impl TubeApp {
             });
         }
         applied
+    }
+
+    /// Show the likes, queue, subscriptions and settings the framework resource holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::TubeShared) {
+        let on = |map: &std::collections::BTreeMap<String, bool>| -> Vec<String> {
+            map.iter()
+                .filter(|(_, enabled)| **enabled)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        let liked = on(&state.likes);
+        let queue = on(&state.queue);
+        let subscriptions = on(&state.subscriptions);
+        if liked.is_empty()
+            && queue.is_empty()
+            && subscriptions.is_empty()
+            && !self.model.liked.is_empty()
+        {
+            return;
+        }
+        self.model.liked = liked;
+        self.model.queue = queue;
+        self.model.subscriptions = subscriptions;
+        self.model.settings = state.settings.clone();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Tube>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
@@ -2992,12 +3021,38 @@ impl ui::search::capability::SearchSource for TubeApp {
 }
 
 impl ui::resources::PublishesResources for TubeApp {
-    /// Publish the open-resource tree (the playing video + its comments) so the
-    /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// navigation, queue, subscriptions and settings — keep only live catalogue,
+    /// watch context, history/search and device-sync extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        #[cfg(feature = "grayjay-sync")]
+        let device = self.device_sync_view();
+        #[cfg(not(feature = "grayjay-sync"))]
+        let device_default = crate::sync::SyncView::default();
+        #[cfg(not(feature = "grayjay-sync"))]
+        let device = &device_default;
+        let model = self.model_ref();
+        if self.actions.is_hosted() {
+            return crate::actions::live_presentation_resources(model, device);
+        }
+        let shared = crate::resource::shared_for_publish(model, doc);
+        let mut root =
+            ui::tilo_resource::publish::<crate::resource::Tube>("tube.app", "Tube", &shared);
+        // The watch page is what the person is looking at, so it stays ahead of
+        // the library in a bounded palette.
+        let mut children = crate::actions::live_presentation_resources(model, device);
+        children.append(&mut root.children);
+        root.children = children;
+        vec![root]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the application door.
+        if self.actions.is_hosted() && id == "tube.app" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -3075,7 +3130,7 @@ mod tests {
     fn dispatch_control(app: &mut TubeApp, doc: &mut AutoCommit) {
         let intent = ui::widget::controls::take_control_invocation(app)
             .expect("custom control emitted an action-native invocation");
-        let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(app, doc);
+        let resources = TubeApp::publish_resources(app, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("fresh resource surface resolves the control address");
         let encoded = spec
@@ -3135,7 +3190,7 @@ mod tests {
                     .is_empty(),
                 "the local field is wiped once its Secret argument is queued"
             );
-            let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+            let resources = TubeApp::publish_resources(&app, &doc);
             let spec = tilo_actions::door::resolve(&resources, &invocation.address)
                 .expect("fresh resource tree resolves Pair");
             assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);

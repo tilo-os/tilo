@@ -30,9 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
-    ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
-    ResultSpec, RetryPolicy,
+    ActionFailure, ActionOutput, InvocationId, InvocationUpdate, OperationKind, Resource,
 };
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
@@ -205,7 +203,7 @@ pub struct MapsApp {
     /// place, clear the route, add/remove an offline region) goes through this so
     /// it brackets one undo boundary and replays byte-identically on peers — the
     /// same path a Ctrl+K palette dispatch takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
@@ -735,7 +733,7 @@ impl MapsApp {
             basemap,
             rect: Rect::ZERO,
             node: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             last_mouse: Point::ZERO,
             map_controls: MapControls::default(),
             search: SearchBox::new(),
@@ -1265,12 +1263,86 @@ impl MapsApp {
     ///
     /// The host applies the same canonical binding used by resources and
     /// on-screen controls. Local presentation state is never pre-flushed.
+    fn has_durable_map(&self) -> bool {
+        !self.model.places.is_empty()
+            || !self.model.regions.is_empty()
+            || !self.model.recents.is_empty()
+            || !self.model.transit.is_empty()
+            || self.model.route.is_some()
+    }
+
+    /// Publish a sample or offline map through the existing map actions.
+    /// Live empty maps stay unpublished until a later action.
+    fn publish_durable(&mut self, doc: &mut AutoCommit) {
+        let places = self.model.places.clone();
+        let recents = self.model.recents.clone();
+        let regions = self.model.regions.clone();
+        let route = self.model.route.clone();
+        let transit = self.model.transit.clone();
+        let mode = self.model.mode;
+        let transit_time = self.model.transit_time;
+        let origin = self.model.origin;
+        let origin_name = self.model.origin_name.clone();
+        let dest = self.model.dest;
+        let dest_name = self.model.dest_name.clone();
+        if !places.is_empty() {
+            self.dispatch_map(doc, &MapsAction::UpsertPlaces { places });
+        }
+        for query in recents.into_iter().rev() {
+            self.dispatch_map(doc, &MapsAction::CommitSearch { query });
+        }
+        self.dispatch_map(doc, &MapsAction::SetTravelMode { mode });
+        self.dispatch_map(
+            doc,
+            &MapsAction::SetTransitTime {
+                value: transit_time,
+            },
+        );
+        for region in regions {
+            self.dispatch_map(doc, &MapsAction::AddRegion(region));
+        }
+        if let Some(route) = route {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetRoute {
+                    route,
+                    origin,
+                    origin_name: origin_name.clone(),
+                    dest,
+                    dest_name: dest_name.clone(),
+                    mode,
+                },
+            );
+        }
+        if !transit.is_empty() {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetTransit {
+                    transit,
+                    origin,
+                    origin_name,
+                    dest,
+                    dest_name,
+                },
+            );
+        }
+    }
+
+    fn dispatch_map(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            MAPS_ACTION_TYPE,
+            action,
+            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
+        );
+    }
+
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         // Test/standalone callers may invoke an action before the widget's
         // first sync. Seed once only; ordinary interactions never mirror local
         // presentation back into an existing document.
-        if MapsDoc::load(doc).is_none() {
-            MapsDoc::save(doc, &self.model);
+        if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() && self.has_durable_map() {
+            self.publish_durable(doc);
         }
         self.actions.dispatch_with_context(
             doc,
@@ -1279,6 +1351,45 @@ impl MapsApp {
             tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
         );
         MapsDoc::apply_durable(doc, &mut self.model);
+    }
+
+    /// Show the places, routes and regions the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &MapModel) {
+        self.model.places.clone_from(&state.places);
+        self.model.recents.clone_from(&state.recents);
+        self.model.route.clone_from(&state.route);
+        self.model.transit.clone_from(&state.transit);
+        self.model.mode = state.mode;
+        self.model.origin = state.origin;
+        self.model.origin_name.clone_from(&state.origin_name);
+        self.model.dest = state.dest;
+        self.model.dest_name.clone_from(&state.dest_name);
+        self.model.transit_time = state.transit_time;
+        self.model.regions.clone_from(&state.regions);
+        self.loaded = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Maps>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test helper: stage ranked search hits that are not document state.
+    #[cfg(test)]
+    pub(crate) fn seed_search_results_for_test(&mut self, results: Vec<crate::model::Place>) {
+        self.model.results = results;
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -5163,12 +5274,14 @@ impl Widget for MapsApp {
             // panel, selection and ranked results never mirror back into it.
             MapsDoc::apply_durable(state, &mut self.model);
         } else {
-            if MapsDoc::load(state).is_some() {
-                // Workspace resources merge into this window; the camera,
-                // panel, draft, selection and status remain local.
+            if MapsDoc::load(state).is_some() || self.actions.is_hosted() || !self.has_durable_map()
+            {
+                // The hosted record is the library. An empty live map stays
+                // empty until a map action writes it. Sample places still
+                // publish on the offline path.
                 MapsDoc::apply_durable(state, &mut self.model);
             } else {
-                MapsDoc::save(state, &self.model);
+                self.publish_durable(state);
             }
             self.loaded = true;
         }
@@ -5767,32 +5880,27 @@ impl Widget for MapsApp {
 }
 
 impl ui::resources::PublishesResources for MapsApp {
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
-    /// places, the active route, and the offline regions currently in the shared
-    /// document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only live search hits and POIs.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        use ui::tilo_resource::Resource as _;
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        let mut resources = self.publish_resources(doc);
         if resources.is_empty() {
-            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
+            let state = crate::resource::Maps::read(doc).unwrap_or_default();
+            resources.push(ui::tilo_resource::publish::<crate::resource::Maps>(
+                "maps.workspace",
+                "Maps",
+                &state,
+            ));
         }
         if let Some(workspace) = resources.first_mut() {
             workspace
                 .children
-                .extend(self.model.results.iter().take(12).map(|place| {
-                    Resource::new(
-                        format!("maps.search-result:{}", place.id),
-                        "maps.search-result",
-                        place.name.clone(),
-                    )
-                }));
-            workspace.children.extend(
-                self.nearby_pois()
-                    .into_iter()
-                    .take(12)
-                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
-            );
+                .extend(self.live_search_and_poi_resources_undecorated());
         }
         for resource in &mut resources {
             self.decorate_live_resource(resource);
@@ -5817,10 +5925,22 @@ impl ui::resources::PublishesResources for MapsApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        use ui::tilo_resource::Resource as _;
+        // The framework root already owns the workspace door.
+        if self.is_hosted() && id == "maps.workspace" {
+            return None;
+        }
+        let mut resource = self
+            .publish_resource(doc, id)
             .or_else(|| {
-                (id == "maps.workspace")
-                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
+                (id == "maps.workspace").then(|| {
+                    let state = crate::resource::Maps::read(doc).unwrap_or_default();
+                    ui::tilo_resource::publish::<crate::resource::Maps>(
+                        "maps.workspace",
+                        "Maps",
+                        &state,
+                    )
+                })
             })
             .or_else(|| {
                 id.strip_prefix("maps.search-result:").and_then(|place_id| {

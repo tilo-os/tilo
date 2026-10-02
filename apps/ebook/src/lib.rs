@@ -51,6 +51,7 @@ pub mod paint;
 mod reader_bubble;
 pub mod reader_theme;
 mod reading_settings;
+pub mod resource;
 pub mod search_provider;
 mod shelf_controls;
 #[cfg(test)]
@@ -80,3 +81,5 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+pub use resource::launch_spec;
+pub use resource::{Ebook, EbookShell, EbookState, standalone_launch};

@@ -2,6 +2,7 @@
 //! publishes the resource and its actions, forwards edits to the host, and
 //! indexes the resource for search.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use ui_core::widget::{AppModel, ModelPath};
@@ -42,6 +43,9 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     content: Element,
+    /// View and effect operations of the app's presentation, attached to the
+    /// published resource. Document specs are dropped.
+    presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's search entries at one live revision, indexed.
     search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
 }
@@ -71,8 +75,14 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages: cx.stages,
             content,
+            presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
         }
+    }
+
+    pub(crate) fn with_presentation(mut self, operations: Vec<tilo_actions::ActionSpec>) -> Self {
+        self.presentation = operations;
+        self
     }
 
     /// Stage a screenshot scenario's view state: every view's
@@ -255,8 +265,61 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
 
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.dispatch.take_action_revert()
+    }
+
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
+
+    /// Resource and app presentation doors publish effect/view actions; their
+    /// operation types must be in the retained handler table or publication
+    /// withdraws the whole component surface.
+    fn resource_operation_handlers(&self) -> HashSet<String> {
+        let mut handlers = self.inner().resource_operation_handlers();
+        for spec in R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+        {
+            if let Some(type_id) = spec.operation_type {
+                handlers.insert(type_id);
+            }
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui_core::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
+            return Ok(Some(started));
+        }
+        // View openers from the resource/presentation catalogue (e.g.
+        // `tilo.rich-text.view` editor/compact) are already mounted; accept
+        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if request.kind != tilo_actions::OperationKind::View {
+            return Ok(None);
+        }
+        let known = R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+        if known {
+            Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
@@ -293,11 +356,22 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
+        let mut resource =
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &self.live.get());
+        for spec in &self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        let mut resources = vec![resource];
         resources.extend(ui_core::resources::resources_for(
             self.content.as_ref(),
             participant,

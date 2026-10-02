@@ -403,9 +403,12 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 pub struct RecordKind(String);
 
 /// Kinds records were once stamped with, as the kind they are now. Writer's
-/// documents were `document` until its native app and its hosted and browser
-/// renderers settled on the rich-text resource kind they share.
-const FORMER_KINDS: [(&str, &str); 1] = [("document", "qdoc.rich-text")];
+/// documents were `document`, then `qdoc.rich-text`, until its native app and
+/// its hosted and browser renderers settled on `tilo.rich-text`.
+const FORMER_KINDS: [(&str, &str); 2] = [
+    ("document", "tilo.rich-text"),
+    ("qdoc.rich-text", "tilo.rich-text"),
+];
 
 impl RecordKind {
     /// A kind by name; a former name is the kind it became.
@@ -3594,9 +3597,14 @@ mod tests {
     /// as the rich-text kind, and opening it rewrites nothing.
     #[test]
     fn a_record_stamped_with_a_former_kind_opens_as_the_current_one() {
-        let current = RecordKind::new("qdoc.rich-text");
+        let current = RecordKind::new("tilo.rich-text");
         assert_eq!(RecordKind::new("document"), current);
-        assert!(current.names("document") && current.names("qdoc.rich-text"));
+        assert_eq!(RecordKind::new("qdoc.rich-text"), current);
+        assert!(
+            current.names("document")
+                && current.names("qdoc.rich-text")
+                && current.names("tilo.rich-text")
+        );
         let id = RecordId::for_tab(7);
         let mut doc = AutoCommit::new();
         init(&mut doc, &id, &current, "room");

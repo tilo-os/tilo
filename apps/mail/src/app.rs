@@ -410,6 +410,33 @@ pub struct MailApp {
 }
 
 impl MailApp {
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
+    ) {
+        self.shared.borrow_mut().actions.attach(dispatcher.clone());
+        self.compose.attach_framework(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.shared.borrow().actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&self) {
+        self.shared.borrow_mut().actions.mark_hosted_for_test();
+    }
+
+    pub(crate) fn has_pending_send(&self) -> bool {
+        self.pending_send.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mailbox_message_count(&self) -> usize {
+        self.shared.borrow().mailbox.messages.len()
+    }
+
     /// The hermetic constructor used by `--shots` and tests: the bundled
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
@@ -1424,10 +1451,7 @@ impl MailApp {
         {
             let mut st = self.shared.borrow_mut();
             st.mailbox.insert(msg);
-            // The durable draft action already carries the user-authored
-            // content. This is only a local Drafts projection, so register its
-            // target without manufacturing flag writes outside an action.
-            MailDoc::register_message(doc, &id.to_string());
+            st.register_message_target(doc, &id.to_string());
         }
         id
     }
@@ -2368,8 +2392,8 @@ impl MailApp {
         messages: Vec<Message>,
     ) {
         let count = messages.len();
+        st.ingest_messages(doc, &messages);
         for message in messages {
-            MailDoc::ingest_message_flags(doc, &message);
             st.mailbox.insert(message);
         }
         if st.folder == folder && st.selected.is_none() {
@@ -2427,7 +2451,7 @@ impl MailApp {
                 .order
                 .retain(|message_id| *message_id != draft_id);
         }
-        MailDoc::ingest_message_flags(doc, &pending.message);
+        st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
         self.editing_draft = None;
         self.compose.close();
@@ -2571,13 +2595,15 @@ impl MailApp {
     /// external ingestion, not a user mutation: it never writes flags from a
     /// presentation cache into the collaborative document.
     fn register_hydrated_messages(&self, doc: &mut AutoCommit) {
-        let st = self.shared.borrow();
-        let ids: Vec<_> = st.mailbox.messages.keys().copied().collect();
-        for id in ids {
-            if let Some(message) = st.mailbox.get(id) {
-                MailDoc::ingest_message_flags(doc, message);
-            }
-        }
+        let messages: Vec<_> = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .cloned()
+            .collect();
+        self.shared.borrow_mut().ingest_messages(doc, &messages);
     }
 
     /// Flush an active-account change to the device-local shared account store.
@@ -4882,6 +4908,9 @@ impl Widget for MailApp {
             self.hydrate_domain_state(state);
         } else {
             self.register_hydrated_messages(state);
+            // Seeding baselines is not a user undo bracket; discard so a
+            // subsequent View (InspectMessage) is not mistaken for a commit.
+            let _ = self.shared.borrow_mut().take_committed_action();
             self.hydrate_domain_state(state);
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
@@ -5433,12 +5462,14 @@ impl ui::search::capability::SearchSource for MailApp {
 }
 
 impl ui::resources::PublishesResources for MailApp {
-    /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// folder/message Document ops ride [`tilo_resource::publish`]; this
+    /// returns only live extras — never a second `mail.mailbox` Document door.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.shared.borrow().actions.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
@@ -5446,17 +5477,29 @@ impl ui::resources::PublishesResources for MailApp {
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        if self.shared.borrow().actions.is_hosted() {
+            // Document mailbox root is ResourceRoot's publish, not a second page.
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
-                .into_iter()
-                .collect(),
+            resources: if cursor.is_empty() && max_results > 0 {
+                self.publish_resources(doc)
+            } else {
+                Vec::new()
+            },
             next_cursor: Vec::new(),
             exhausted: true,
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == "mail.mailbox" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

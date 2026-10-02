@@ -1,6 +1,7 @@
 //! A small, responsive internet speed test.
 
 pub mod app;
+pub mod resource;
 
 use ui::widget::Widget;
 
@@ -16,3 +17,4 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub fn shot_root(scenario: &str) -> Box<dyn Widget> {
     Box::new(app::SpeedTestApp::demo(scenario))
 }
+pub use resource::{SpeedTest, SpeedTestShell};

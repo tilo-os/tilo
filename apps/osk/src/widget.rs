@@ -297,6 +297,7 @@ pub struct OskWidget {
     /// `take_structure_dirty`.
     structure_dirty: bool,
     drafts: PreferenceDrafts,
+    actions: crate::resource::ActionSink,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -402,6 +403,7 @@ impl OskWidget {
             on_toolbar: None,
             structure_dirty: false,
             drafts: PreferenceDrafts::default(),
+            actions: crate::resource::ActionSink::default(),
             visible: true,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
@@ -747,6 +749,101 @@ impl OskWidget {
     /// The in-progress word at the caret (letters since the last boundary).
     pub fn current_word(&self) -> &str {
         &self.current_word
+    }
+
+    /// Preferred alphabetic layout name (e.g. `"qwerty"`).
+    pub fn preferred_text_layout(&self) -> &str {
+        &self.preferred_text_layout
+    }
+
+    /// Label of the pressed or hovered key, when one is highlighted.
+    pub(crate) fn highlighted_key_label(&self) -> Option<String> {
+        let id = self.pressed_key.or(self.hovered_key)?;
+        self.current_layout()
+            .key(id)
+            .map(|key| key.display_label(self.shift))
+    }
+
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Osk>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative prefs when present — never clear a local layout
+    /// that has not been published.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::OskPreferences) {
+        if let Some(layout) = state.layout.as_deref() {
+            self.select_text_layout_from_sync(layout);
+        }
+        if let Some(enabled) = state.suggestions {
+            self.set_suggestions_enabled_from_sync(enabled);
+        }
+        if let Some(enabled) = state.personalization {
+            self.set_personalization_enabled_from_sync(enabled);
+        }
+    }
+
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut choices = self
+            .layouts
+            .keys()
+            .filter(|name| name.as_str() != "symbols")
+            .cloned()
+            .collect::<Vec<_>>();
+        choices.sort();
+        // Layout, suggestions, and personalization are the document. The
+        // installed layout list stays on this device. An unwritten field
+        // still uses the widget until sync stores it.
+        let from_doc = <crate::resource::Osk as ui::tilo_resource::Resource>::read(doc).ok();
+        let state = crate::resource::OskPreferences {
+            layout: from_doc
+                .as_ref()
+                .and_then(|state| state.layout.clone())
+                .or_else(|| Some(self.preferred_text_layout.clone())),
+            suggestions: from_doc
+                .as_ref()
+                .and_then(|state| state.suggestions)
+                .or(Some(self.suggestions_enabled)),
+            personalization: from_doc
+                .as_ref()
+                .and_then(|state| state.personalization)
+                .or(Some(self.personalization_enabled)),
+            layout_choices: choices,
+        };
+        crate::resource::provide_resources(&state)
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn commit_preference(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::actions::SetPreference,
+    ) {
+        self.actions.dispatch(doc, action);
+        match &action.value {
+            Preference::Layout(value) => self.select_text_layout_from_sync(value),
+            Preference::Suggestions(value) => self.set_suggestions_enabled_from_sync(*value),
+            Preference::Personalization(value) => {
+                self.set_personalization_enabled_from_sync(*value);
+            }
+            Preference::EmojiRecents(value) => self.set_emoji_recents_from_sync(value.clone()),
+        }
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     // --- programmatic activation (test/host helpers) -------------------
@@ -2715,15 +2812,27 @@ impl Widget for OskWidget {
 }
 
 impl ui::resources::PublishesResources for OskWidget {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut layouts = self
-            .layouts
-            .keys()
-            .filter(|name| name.as_str() != "symbols")
-            .cloned()
-            .collect::<Vec<_>>();
-        layouts.sort();
-        crate::actions::resources(layouts, &self.preferred_text_layout)
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the keyboard door — keep only live compose / key-highlight extras.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.is_hosted() && id == crate::actions::KEYBOARD_RESOURCE_ID {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
+            self.is_hosted().then(|| {
+                crate::resource::live_extras(self)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
@@ -2814,6 +2923,18 @@ fn read_config_text(state: &impl ReadDoc, path: &ObjId, key: &str) -> Option<Str
 #[cfg(test)]
 fn read_config_bool(state: &impl ReadDoc, path: &ObjId, key: &str) -> Option<bool> {
     read_bool(state, path, key)
+}
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -3114,6 +3235,10 @@ mod tests {
         assert!(!osk.take_structure_dirty(), "flag is rising-edge");
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one a11y sweep covers painted keys, configuration doors, and host extras"
+    )]
     #[test]
     fn resources_and_accessibility_expose_configuration_not_keystrokes() {
         eprintln!("phase accessibility_exposes_and_operates_each_painted_key");
@@ -3155,8 +3280,17 @@ mod tests {
             let resources = ui::resources::resources(&osk, &AutoCommit::new());
             let keyboard = resources.first().expect("keyboard resource");
             assert!(
-                keyboard.actions.is_empty(),
-                "typing is not a replayable action"
+                keyboard.actions.iter().all(|action| {
+                    action.id == ui::tilo_resource::APPLY
+                        || action.id == ui::tilo_resource::GROUP
+                        || action.id.starts_with("set-")
+                }),
+                "root carries preference declarations and programmatic apply/group, not keystrokes: {:?}",
+                keyboard
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>()
             );
             assert_eq!(keyboard.children.len(), 3);
             let layout = keyboard

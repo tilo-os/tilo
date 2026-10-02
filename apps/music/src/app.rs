@@ -600,7 +600,7 @@ pub struct MusicApp {
     /// affordance's [`crate::actions`] action, and remembers the last one so a
     /// test can prove a button and the Ctrl+K
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical action.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
@@ -828,7 +828,7 @@ impl MusicApp {
             offline_invocation: None,
             offline_results: Vec::new(),
             offline_errors: HashMap::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             #[cfg(test)]
             _test_cache_dir: test_cache_dir,
         }
@@ -1216,6 +1216,41 @@ impl MusicApp {
             action,
             crate::actions::history_context(action),
         );
+    }
+
+    /// Show the shared library, keeping this device's cache.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
+        if state.tracks.is_empty()
+            && state.albums.is_empty()
+            && state.artists.is_empty()
+            && state.playlists.is_empty()
+            && (!self.lib.tracks.is_empty()
+                || !self.lib.albums.is_empty()
+                || !self.lib.artists.is_empty()
+                || !self.lib.playlists.is_empty())
+        {
+            return;
+        }
+        let searchable = self.lib.tracks != state.tracks
+            || self.lib.albums != state.albums
+            || self.lib.artists != state.artists
+            || self.lib.playlists != state.playlists;
+        let cache = self.device_cache.clone();
+        self.lib = state.clone();
+        self.lib.cache = cache;
+        if searchable {
+            self.refresh_library_search_provider();
+        }
+        self.sync_playlist_covers();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Music>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's

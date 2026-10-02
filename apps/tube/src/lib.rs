@@ -54,6 +54,7 @@ pub mod history_store;
 pub mod images;
 pub mod model;
 pub mod recommend;
+pub mod resource;
 pub mod sample;
 pub mod screens;
 pub mod search_type;
@@ -110,6 +111,8 @@ pub fn app_root_narrow_shot() -> Box<dyn Widget> {
 pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
 }
+
+pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};
 
 #[cfg(test)]
 mod tests {

@@ -203,6 +203,25 @@ pub(crate) struct LiveLayout {
     pub drag: Option<LiveDragState>,
     /// A modal desktop activity covers the windows: no focus is published.
     pub covered: bool,
+    /// Carets and selections of the focused window's editors
+    /// ([`ui::presence::capability::subtree_presence`]).
+    pub window_presence: Vec<(PresenceKey, PresencePayload)>,
+}
+
+/// The selection a mount publishes: the keyboard-focused widget's when it
+/// is one of the focused window's (or mount's) editors, else that window's
+/// first editor caret. Keyboard focus can stay behind in another window, or
+/// an action can move a caret without focus.
+pub(crate) fn published_selection(
+    focused: Option<(PresenceKey, PresencePayload)>,
+    window: &[(PresenceKey, PresencePayload)],
+) -> Option<(PresenceKey, PresencePayload)> {
+    match focused {
+        Some(focused) if window.is_empty() || window.iter().any(|(key, _)| *key == focused.0) => {
+            Some(focused)
+        }
+        _ => window.first().cloned(),
+    }
 }
 impl LiveLayout {
     pub(crate) fn drag_from_row(
@@ -540,6 +559,38 @@ mod tests {
         assert_eq!(decode_selection(&anchor, &head), Some((key, 17, 17)));
     }
 
+    #[test]
+    fn the_focused_window_caret_wins_over_keyboard_focus_left_elsewhere() {
+        let writer = writer_block("2@5f3a9c01d2e4b6a8");
+        let elsewhere = writer_block("9@0000000000000001");
+        let window = vec![(writer.clone(), PresencePayload::Caret { pos: 40 })];
+        let stray = Some((elsewhere, PresencePayload::Caret { pos: 0 }));
+        assert_eq!(published_selection(stray, &window), window.first().cloned());
+        let own = Some((writer, PresencePayload::Caret { pos: 41 }));
+        assert_eq!(published_selection(own.clone(), &window), own);
+        assert_eq!(published_selection(own.clone(), &[]), own);
+        assert_eq!(published_selection(None, &[]), None);
+    }
+
+    #[test]
+    fn single_record_snapshot_names_its_record_and_caret() {
+        let key = writer_block("2@5f3a9c01d2e4b6a8");
+        let snapshot = record_snapshot_json(
+            "so.tilo.writer",
+            "",
+            Some((key.clone(), PresencePayload::Caret { pos: 4 })),
+        );
+        assert_eq!(
+            snapshot["focus"],
+            serde_json::json!({"app": "so.tilo.writer", "record": PACKAGE_PRIMARY_RECORD})
+        );
+        assert!(snapshot["focusRect"].is_null());
+        let anchor = unhex(snapshot["selection"]["anchor"].as_str().unwrap()).unwrap();
+        let head = unhex(snapshot["selection"]["head"].as_str().unwrap()).unwrap();
+        assert_eq!(decode_selection(&anchor, &head), Some((key, 4, 4)));
+        assert!(record_snapshot_json("", "r", None)["focus"].is_null());
+    }
+
     /// Notes names blocks by their stable UUID; both its caret key and its
     /// cross-block selection key fit the live anchor bound.
     #[test]
@@ -652,6 +703,7 @@ mod tests {
                 offset: (25.0, -4.0),
             }),
             covered: false,
+            window_presence: Vec::new(),
         };
         let records = BTreeMap::from([
             (

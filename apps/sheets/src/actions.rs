@@ -43,8 +43,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::doc::SheetsDoc;
@@ -2042,26 +2041,20 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
     }
 }
 
-/// Build the resource tree Sheets currently has open: the workbook (always
-/// present, exporting "New sheet") and one `sheets.sheet:<idx>` per sheet, each
-/// exporting rename / delete / insert-row / insert-column. Every operation is
-/// the same action the on-screen affordance dispatches.
+/// Stable workbook root for directory paging: the published door without nested
+/// sheets/cells (those stay on the retained search provider).
 #[allow(
-    clippy::too_many_lines,
-    clippy::missing_panics_doc,
     clippy::expect_used,
-    reason = "resource surface is deliberately co-located and serializes owned enum values"
+    clippy::missing_panics_doc,
+    reason = "SheetsOperation encode is infallible for known variants"
 )]
-/// Stable workbook root only. Dynamic sheets and cells are exposed by the
-/// retained index/provider rather than being materialized for remote browse.
-pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
-    let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
-    // Keep the established workbook command ordering for keyboard users while
-    // publishing the same envelopes under the selected range as well. The
-    // duplicate presentation has no second mutation route: both resources
-    // dispatch the exact same encoded action.
-    workbook.actions.extend(ctx.palette_actions.clone());
-
+pub fn workbook_root(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Resource {
+    let state = sheets_state_for_publish(ctx, doc);
+    let mut root = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
+        "sheets.workbook",
+        "Workbook",
+        &state,
+    );
     for (id, label, kind, variant) in [
         ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
         (
@@ -2092,15 +2085,14 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
         ("commands", "Open command palette", OperationKind::View, 6),
     ] {
         if variant == 6 {
-            workbook = workbook.with_action(operation(
-                id,
-                label,
-                kind,
-                SheetsOperation::OpenCommandPalette,
-            ));
+            replace_workbook_action(
+                &mut root,
+                operation(id, label, kind, SheetsOperation::OpenCommandPalette),
+            );
             continue;
         }
-        workbook = workbook.with_action(
+        replace_workbook_action(
+            &mut root,
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -2133,281 +2125,349 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
             .returns(ResultSpec::Job),
         );
     }
+    root.children.clear();
+    root
+}
 
-    // Workbook-level: create a new sheet. The default name is resolved from the
-    // current sheet count at authoring time, so replay stays deterministic.
-    let count = ctx.sheet_names.len();
-    workbook = workbook.with_action(ActionSpec::prompted(
-        "new-sheet",
-        "New sheet",
+/// The directory page lists import and export once. Publish already declared
+/// them; a second copy with the same id is the same action.
+fn replace_workbook_action(root: &mut Resource, spec: ActionSpec) {
+    if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+        *existing = spec;
+    } else {
+        root.actions.push(spec);
+    }
+}
+
+/// Sheet / chart / comment children for [`tilo_resource::publish`]. Selection
+/// and selection-bound palette rows stay on the widget when hosted.
+#[allow(
+    clippy::too_many_lines,
+    clippy::missing_panics_doc,
+    clippy::expect_used,
+    reason = "resource surface is deliberately co-located and serializes owned enum values"
+)]
+pub(crate) fn document_children(state: &crate::resource::SheetsState) -> Vec<Resource> {
+    state
+        .sheets
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, sheet)| {
+            if sheet.id.is_empty() {
+                return None;
+            }
+            Some(sheet_document_resource(idx, sheet))
+        })
+        .collect()
+}
+
+/// Live selection range. Published beside the framework root when hosted —
+/// never a second copy of the workbook document door.
+pub(crate) fn live_presentation_resources(ctx: &SheetsResourceCtx) -> Vec<Resource> {
+    let Some(range_ctx) = &ctx.selection else {
+        return Vec::new();
+    };
+    let mut range = Resource::new(
+        format!("sheets.range:{}:{}", range_ctx.sheet_id, range_ctx.label),
+        "sheets.range",
+        range_ctx.label.clone(),
+    );
+    range.actions.extend(range_ctx.actions.clone());
+    vec![range]
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "sheet document surface still lists every cell/view action inline"
+)]
+fn sheet_document_resource(idx: usize, sheet: &crate::resource::SheetInfo) -> Resource {
+    let name = &sheet.name;
+    let label = if name.trim().is_empty() {
+        format!("Sheet{}", idx + 1)
+    } else {
+        name.clone()
+    };
+    // Never publish a positional fallback: after a concurrent reorder it
+    // could make an old address operate on a different sheet. Legacy or
+    // malformed rows without a durable identity remain usable on-screen,
+    // but are deliberately absent from the headless action surface.
+    let stable = sheet.id.clone();
+    let mut resource = Resource::new(sheet_resource_id(&stable), "sheets.sheet", label)
+        .with_action(operation(
+            "open",
+            "Open sheet",
+            OperationKind::View,
+            SheetsOperation::RevealSheet {
+                sheet_id: stable.clone(),
+            },
+        ));
+
+    // Rename — a prompted action carrying the new name.
+    resource = resource.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename sheet",
         "Name",
         "sheet name…",
         ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let name = name.trim();
-            let name = if name.is_empty() {
-                format!("Sheet{}", count + 1)
-            } else {
-                name.to_string()
-            };
-            encode(&add_sheet_action(&name))
+        {
+            let stable = stable.clone();
+            move |new_name: &str| encode(&rename_sheet_action(idx, stable.clone(), new_name.trim()))
         },
     ));
 
-    workbook
+    // Delete the whole sheet (a final sheet is deliberately a no-op).
+    resource = resource.with_action(immediate_spec(
+        "delete",
+        "Delete sheet",
+        &delete_sheet_action(idx, stable.clone()),
+    ));
+
+    // Insert a blank row above a given 1-based row number (default: the top).
+    resource = resource.with_action(ActionSpec::prompted(
+        "insert-row",
+        "Insert row above…",
+        "Row",
+        "1-based row number (e.g. 5)",
+        ExecutionLocus::ClientLocal,
+        {
+            let stable = stable.clone();
+            move |arg: &str| {
+                let at = arg
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .map_or(0, |n| n.saturating_sub(1));
+                encode(&insert_row_action(idx, stable.clone(), at))
+            }
+        },
+    ));
+
+    // Insert a blank column left of a given column letter (default: A).
+    resource = resource.with_action(ActionSpec::prompted(
+        "insert-column",
+        "Insert column left…",
+        "Column",
+        "column letter (e.g. C)",
+        ExecutionLocus::ClientLocal,
+        {
+            let stable = stable.clone();
+            move |arg: &str| {
+                let at = letters_to_col(arg.trim()).unwrap_or(0);
+                encode(&insert_column_action(idx, stable.clone(), at))
+            }
+        },
+    ));
+
+    for spec in crate::cell_actions::sheet_actions(idx, &stable, &sheet.cells) {
+        resource = resource.with_action(spec);
+    }
+
+    // Charts and threads are canonical children, not popup-only state.
+    // Each carries its UUID resource identity through deletion/resolution.
+    for chart in &sheet.charts {
+        let chart_id = chart.id.clone();
+        let current_form = format!(
+            "{} | {} | {}:{}",
+            chart.title,
+            chart.kind.code(),
+            crate::model::addr_to_a1(chart.start.0, chart.start.1),
+            crate::model::addr_to_a1(chart.end.0, chart.end.1),
+        );
+        let chart_resource = Resource::new(
+            chart_resource_id(&stable, &chart_id),
+            "sheets.chart",
+            chart.title.clone(),
+        )
+        .with_action(operation(
+            "open",
+            "Open chart range",
+            OperationKind::View,
+            SheetsOperation::RevealCell {
+                sheet_id: stable.clone(),
+                col: chart.start.0,
+                row: chart.start.1,
+            },
+        ))
+        .with_action(ActionSpec::prompted(
+            "edit",
+            "Edit chart",
+            "Title | type | source range",
+            format!("Current: {current_form}"),
+            ExecutionLocus::ClientLocal,
+            {
+                let stable = stable.clone();
+                let chart_id = chart_id.clone();
+                move |form: &str| {
+                    edit_chart_form_action(idx, stable.clone(), chart_id.clone(), form).map_or_else(
+                        || {
+                            encode(&SheetsAction::PutChart {
+                                sheet: idx,
+                                sheet_id: stable.clone(),
+                                chart_id: chart_id.clone(),
+                                title: String::new(),
+                                kind: "invalid".into(),
+                                c0: 1,
+                                r0: 1,
+                                c1: 0,
+                                r1: 0,
+                            })
+                        },
+                        |action| encode(&action),
+                    )
+                }
+            },
+        ))
+        .with_action(immediate_spec(
+            "delete",
+            "Delete chart",
+            &SheetsAction::DeleteChart {
+                sheet: idx,
+                sheet_id: stable.clone(),
+                chart_id,
+            },
+        ));
+        resource = resource.with_child(chart_resource);
+    }
+    for thread in &sheet.comments {
+        let comment_id = thread.id.clone();
+        let action =
+            set_comment_resolved_action(idx, stable.clone(), comment_id.clone(), !thread.resolved);
+        let label = if thread.resolved {
+            "Reopen comment"
+        } else {
+            "Resolve comment"
+        };
+        let comment = Resource::new(
+            comment_resource_id(&stable, &comment_id),
+            "sheets.comment",
+            format!("{}{}", column_label(thread.start.0), thread.start.1 + 1),
+        )
+        .with_action(operation(
+            "open",
+            "Open comment anchor",
+            OperationKind::View,
+            SheetsOperation::RevealCell {
+                sheet_id: stable.clone(),
+                col: thread.start.0,
+                row: thread.start.1,
+            },
+        ))
+        .with_action(ActionSpec::prompted(
+            "edit",
+            "Edit comment",
+            "Comment",
+            "comment…",
+            ExecutionLocus::ClientLocal,
+            {
+                let stable = stable.clone();
+                let comment_id = comment_id.clone();
+                move |body: &str| {
+                    encode(&edit_comment_action(
+                        idx,
+                        stable.clone(),
+                        comment_id.clone(),
+                        body.trim(),
+                    ))
+                }
+            },
+        ))
+        .with_action(ActionSpec::prompted(
+            "reply",
+            "Reply to comment",
+            "Reply",
+            "reply…",
+            ExecutionLocus::ClientLocal,
+            {
+                let stable = stable.clone();
+                let comment_id = comment_id.clone();
+                move |body: &str| {
+                    encode(&reply_comment_action(
+                        idx,
+                        stable.clone(),
+                        comment_id.clone(),
+                        "You",
+                        body.trim(),
+                    ))
+                }
+            },
+        ))
+        .with_action(immediate_spec("toggle-resolved", label, &action))
+        .with_action(immediate_spec(
+            "delete",
+            "Delete comment",
+            &delete_comment_action(idx, stable.clone(), comment_id),
+        ));
+        resource = resource.with_child(comment);
+    }
+
+    resource
 }
 
+fn sheets_state_for_publish(
+    ctx: &SheetsResourceCtx,
+    doc: &AutoCommit,
+) -> crate::resource::SheetsState {
+    match <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::read(doc) {
+        Ok(state) if !state.sheets.is_empty() => state.with_ctx_cells(ctx),
+        _ if !ctx.searchable_sheets.is_empty() => crate::resource::SheetsState::from_ctx(ctx),
+        Ok(state) => state,
+        Err(_) => crate::resource::SheetsState::from_ctx(ctx),
+    }
+}
+
+fn attach_live_selection(workbook: &mut Resource, ctx: &SheetsResourceCtx) {
+    let Some(range_ctx) = &ctx.selection else {
+        return;
+    };
+    let wanted = sheet_resource_id(&range_ctx.sheet_id);
+    let Some(sheet) = workbook
+        .children
+        .iter_mut()
+        .find(|sheet| sheet.id.0 == wanted)
+    else {
+        return;
+    };
+    let mut range = Resource::new(
+        format!("sheets.range:{}:{}", range_ctx.sheet_id, range_ctx.label),
+        "sheets.range",
+        range_ctx.label.clone(),
+    );
+    range.actions.extend(range_ctx.actions.clone());
+    sheet.children.insert(0, range);
+}
+
+/// Standalone / `--shots` / unit-test tree: [`tilo_resource::publish`] owns the
+/// workbook door; selection-bound palette rows are attached for the local host.
 #[allow(
     clippy::too_many_lines,
     reason = "one canonical resource tree keeps every agent and Ctrl+K operation addressable from the same projection"
 )]
 pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut projection = doc.clone();
-    let mut workbook = workbook_root(ctx);
-    for (idx, searchable) in ctx.searchable_sheets.iter().enumerate() {
-        let name = &searchable.name;
-        let label = if name.trim().is_empty() {
-            format!("Sheet{}", idx + 1)
-        } else {
-            name.clone()
-        };
-        // Never publish a positional fallback: after a concurrent reorder it
-        // could make an old address operate on a different sheet. Legacy or
-        // malformed rows without a durable identity remain usable on-screen,
-        // but are deliberately absent from the headless action surface.
-        let stable = searchable.id.clone();
-        let mut sheet = Resource::new(sheet_resource_id(&stable), "sheets.sheet", label)
-            .with_action(operation(
-                "open",
-                "Open sheet",
-                OperationKind::View,
-                SheetsOperation::RevealSheet {
-                    sheet_id: stable.clone(),
-                },
-            ));
-
-        if let Some(range_ctx) = ctx
-            .selection
-            .as_ref()
-            .filter(|range| range.sheet_id == stable)
+    let state = sheets_state_for_publish(ctx, doc);
+    let mut workbook = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
+        "sheets.workbook",
+        "Workbook",
+        &state,
+    );
+    // Selection-bound commands replace a published action with the same id so
+    // the palette does not list it twice. New ids stay at the end. Views
+    // already on `local_operations` are not duplicated here.
+    for action in ctx
+        .palette_actions
+        .iter()
+        .filter(|action| action.id != "go-to-cell" && action.id != "toggle-formula-view")
+    {
+        if let Some(existing) = workbook
+            .actions
+            .iter_mut()
+            .find(|existing| existing.id == action.id)
         {
-            let mut range = Resource::new(
-                format!("sheets.range:{stable}:{}", range_ctx.label),
-                "sheets.range",
-                range_ctx.label.clone(),
-            );
-            range.actions.extend(range_ctx.actions.clone());
-            sheet = sheet.with_child(range);
+            *existing = action.clone();
+        } else {
+            workbook.actions.push(action.clone());
         }
-
-        // Rename — a prompted action carrying the new name.
-        sheet = sheet.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename sheet",
-            "Name",
-            "sheet name…",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                move |new_name: &str| {
-                    encode(&rename_sheet_action(idx, stable.clone(), new_name.trim()))
-                }
-            },
-        ));
-
-        // Delete the whole sheet (a final sheet is deliberately a no-op).
-        sheet = sheet.with_action(immediate_spec(
-            "delete",
-            "Delete sheet",
-            &delete_sheet_action(idx, stable.clone()),
-        ));
-
-        // Insert a blank row above a given 1-based row number (default: the top).
-        sheet = sheet.with_action(ActionSpec::prompted(
-            "insert-row",
-            "Insert row above…",
-            "Row",
-            "1-based row number (e.g. 5)",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                move |arg: &str| {
-                    let at = arg
-                        .trim()
-                        .parse::<u32>()
-                        .ok()
-                        .map_or(0, |n| n.saturating_sub(1));
-                    encode(&insert_row_action(idx, stable.clone(), at))
-                }
-            },
-        ));
-
-        // Insert a blank column left of a given column letter (default: A).
-        sheet = sheet.with_action(ActionSpec::prompted(
-            "insert-column",
-            "Insert column left…",
-            "Column",
-            "column letter (e.g. C)",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                move |arg: &str| {
-                    let at = letters_to_col(arg.trim()).unwrap_or(0);
-                    encode(&insert_column_action(idx, stable.clone(), at))
-                }
-            },
-        ));
-
-        for spec in crate::cell_actions::sheet_actions(idx, &stable, &searchable.cells) {
-            sheet = sheet.with_action(spec);
-        }
-
-        // Charts and threads are canonical children, not popup-only state.
-        // Each carries its UUID resource identity through deletion/resolution.
-        for chart in SheetsDoc::charts(&mut projection, idx) {
-            let chart_id = chart.id.clone();
-            let current_form = format!(
-                "{} | {} | {}:{}",
-                chart.title,
-                chart.kind.code(),
-                crate::model::addr_to_a1(chart.start.0, chart.start.1),
-                crate::model::addr_to_a1(chart.end.0, chart.end.1),
-            );
-            let chart_resource = Resource::new(
-                chart_resource_id(&stable, &chart_id),
-                "sheets.chart",
-                chart.title.clone(),
-            )
-            .with_action(operation(
-                "open",
-                "Open chart range",
-                OperationKind::View,
-                SheetsOperation::RevealCell {
-                    sheet_id: stable.clone(),
-                    col: chart.start.0,
-                    row: chart.start.1,
-                },
-            ))
-            .with_action(ActionSpec::prompted(
-                "edit",
-                "Edit chart",
-                "Title | type | source range",
-                format!("Current: {current_form}"),
-                ExecutionLocus::ClientLocal,
-                {
-                    let stable = stable.clone();
-                    let chart_id = chart_id.clone();
-                    move |form: &str| {
-                        edit_chart_form_action(idx, stable.clone(), chart_id.clone(), form)
-                            .map_or_else(
-                                || {
-                                    encode(&SheetsAction::PutChart {
-                                        sheet: idx,
-                                        sheet_id: stable.clone(),
-                                        chart_id: chart_id.clone(),
-                                        title: String::new(),
-                                        kind: "invalid".into(),
-                                        c0: 1,
-                                        r0: 1,
-                                        c1: 0,
-                                        r1: 0,
-                                    })
-                                },
-                                |action| encode(&action),
-                            )
-                    }
-                },
-            ))
-            .with_action(immediate_spec(
-                "delete",
-                "Delete chart",
-                &SheetsAction::DeleteChart {
-                    sheet: idx,
-                    sheet_id: stable.clone(),
-                    chart_id,
-                },
-            ));
-            sheet = sheet.with_child(chart_resource);
-        }
-        for thread in SheetsDoc::comments(&mut projection, idx) {
-            let comment_id = thread.id.clone();
-            let action = set_comment_resolved_action(
-                idx,
-                stable.clone(),
-                comment_id.clone(),
-                !thread.resolved,
-            );
-            let label = if thread.resolved {
-                "Reopen comment"
-            } else {
-                "Resolve comment"
-            };
-            let comment = Resource::new(
-                comment_resource_id(&stable, &comment_id),
-                "sheets.comment",
-                format!("{}{}", column_label(thread.start.0), thread.start.1 + 1),
-            )
-            .with_action(operation(
-                "open",
-                "Open comment anchor",
-                OperationKind::View,
-                SheetsOperation::RevealCell {
-                    sheet_id: stable.clone(),
-                    col: thread.start.0,
-                    row: thread.start.1,
-                },
-            ))
-            .with_action(ActionSpec::prompted(
-                "edit",
-                "Edit comment",
-                "Comment",
-                "comment…",
-                ExecutionLocus::ClientLocal,
-                {
-                    let stable = stable.clone();
-                    let comment_id = comment_id.clone();
-                    move |body: &str| {
-                        encode(&edit_comment_action(
-                            idx,
-                            stable.clone(),
-                            comment_id.clone(),
-                            body.trim(),
-                        ))
-                    }
-                },
-            ))
-            .with_action(ActionSpec::prompted(
-                "reply",
-                "Reply to comment",
-                "Reply",
-                "reply…",
-                ExecutionLocus::ClientLocal,
-                {
-                    let stable = stable.clone();
-                    let comment_id = comment_id.clone();
-                    move |body: &str| {
-                        encode(&reply_comment_action(
-                            idx,
-                            stable.clone(),
-                            comment_id.clone(),
-                            "You",
-                            body.trim(),
-                        ))
-                    }
-                },
-            ))
-            .with_action(immediate_spec("toggle-resolved", label, &action))
-            .with_action(immediate_spec(
-                "delete",
-                "Delete comment",
-                &delete_comment_action(idx, stable.clone(), comment_id),
-            ));
-            sheet = sheet.with_child(comment);
-        }
-
-        workbook = workbook.with_child(sheet);
     }
-
+    attach_live_selection(&mut workbook, ctx);
     vec![workbook]
 }
 
@@ -2430,12 +2490,13 @@ pub(crate) fn searchable_cell_resource(sheet_id: &str, cell: &SearchableCell) ->
     ))
 }
 
-impl ResourceProvider for crate::app::SheetsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SheetsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.sheets_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.sheets_resource_ctx();
         let eager = provide_resources(&ctx, doc);
         let workbook = eager.first()?;
@@ -2718,6 +2779,49 @@ mod tests {
                 .expect("moved sheet remains published");
             assert_eq!(moved.id.0, format!("sheets.sheet:{stable}"));
         }
+    }
+
+    /// Hosted surfaces keep only the live selection; sheet tabs come from publish.
+    #[test]
+    fn hosted_resources_are_selection_extras_beside_publish() {
+        let mut doc = seeded();
+        let mut ctx = ctx_from(&mut doc);
+        let action = immediate_spec(
+            "format-percent",
+            "Format as percent",
+            &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
+        );
+        let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
+        ctx.selection = Some(RangeResourceCtx {
+            sheet_id: sheet_id.clone(),
+            label: "A1".into(),
+            actions: vec![action],
+        });
+
+        let published = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
+            "sheets.workbook",
+            "Workbook",
+            &sheets_state_for_publish(&ctx, &doc),
+        );
+        assert_eq!(published.kind, "sheets.workbook");
+        assert!(published.actions.iter().any(|a| a.id == "new-sheet"));
+        assert!(published.actions.iter().any(|a| a.id == "import-csv"));
+        assert!(published.actions.iter().any(|a| a.id == "go-to-cell"));
+        assert_eq!(published.children.len(), 2);
+        assert!(published.children.iter().all(|c| c.kind == "sheets.sheet"));
+        assert!(
+            published
+                .children
+                .iter()
+                .flat_map(|c| c.children.iter())
+                .all(|c| c.kind != "sheets.range"),
+            "selection is not document state"
+        );
+
+        let extras = live_presentation_resources(&ctx);
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "sheets.range");
+        assert_eq!(extras[0].id.0, format!("sheets.range:{sheet_id}:A1"));
     }
 
     /// Deleting a formula range's first or last row/column shrinks it;

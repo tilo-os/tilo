@@ -525,6 +525,64 @@ const fn flag(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+/// Folder import as a resource. Choices stay local view operations; the palette
+/// is still [`tilo_resource::publish`].
+pub struct ImportGuide;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ImportDocumentAction {}
+
+impl ui::tilo_actions::Action for ImportDocumentAction {
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "empty document action enum has no variants"
+    )]
+    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ui::tilo_actions::ActionError> {
+        match *self {}
+    }
+}
+
+impl ui::tilo_resource::Resource for ImportGuide {
+    const KIND: &'static str = "imager.import";
+    const LABEL: &'static str = "Folder import";
+    const ACTION_TYPE: &'static str = "imager.import.document";
+
+    type State = ImportProjection;
+    type Action = ImportDocumentAction;
+
+    fn register(registry: &mut tilo_actions::ActionRegistry) {
+        registry.register::<ImportDocumentAction>(Self::ACTION_TYPE);
+    }
+
+    fn read(
+        _doc: &ui::tilo_resource::Doc,
+    ) -> Result<ImportProjection, ui::tilo_resource::ModelError> {
+        Ok(ImportProjection {
+            phase: ImportStatusPhase::Ready,
+            status_is_error: false,
+            selection: SelectionProjection {
+                source_selected: false,
+                destination_selected: false,
+                review_ready: false,
+            },
+            active_operation: None,
+            operations: Vec::new(),
+            continuation: None,
+            picker_available: false,
+            clear_available: false,
+            prepare_review_available: false,
+        })
+    }
+
+    fn bound_actions(state: &ImportProjection) -> Vec<ActionSpec> {
+        resource(state).actions
+    }
+
+    fn children(state: &ImportProjection) -> Vec<Resource> {
+        resource(state).children
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

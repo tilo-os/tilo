@@ -1,9 +1,9 @@
 use crate::component_support::*;
 use automerge::AutoCommit;
 use notes::{actions, doc::NotesDoc};
-use qdoc_rich_text::RichTextAction;
-use qdoc_rich_text::action::RegionKind;
 use tilo_automerge::ApplyIncoming;
+use tilo_document::RichTextAction;
+use tilo_document::action::RegionKind;
 
 type Rows = Vec<(String, String, String, String, u64)>;
 

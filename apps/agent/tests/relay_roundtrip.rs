@@ -64,10 +64,10 @@ fn seed_document() -> AutoCommit {
 fn seed_document_as(actor: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(actor.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -94,10 +94,10 @@ fn seed_document_as(actor: &str) -> AutoCommit {
 fn seed_sequence_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -117,10 +117,10 @@ fn seed_sequence_document() -> AutoCommit {
 fn seed_unanswerable_sequence_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -153,10 +153,10 @@ const COLLIDING_ACTOR: &str = "files-2";
 fn seed_foreign() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(COLLIDING_ACTOR.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -177,9 +177,9 @@ fn seed_colliding_document() -> AutoCommit {
     seed_document_as(COLLIDING_ACTOR)
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 /// The live resource tree the Word Processor publishes for this document.
@@ -342,7 +342,7 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
     let b = blocks(replica);
     assert_eq!(b[0].kind, "heading");
     assert_eq!(b[0].text, "Launch plan");
-    let cells: Vec<&qdoc::BlockView> = b.iter().filter(|x| x.kind == "cell").collect();
+    let cells: Vec<&tilo_doc::BlockView> = b.iter().filter(|x| x.kind == "cell").collect();
     assert_eq!(cells.len(), 4, "insert-table declares a 2x2 table");
     assert!(cells.iter().all(|cell| cell.text.is_empty()));
     assert_eq!(
@@ -352,10 +352,10 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
     );
 
     // Every change the agent made is attributed to it. Filtered rather than
-    // positionally skipped: `qdoc::model::init` adopts the schema from its
+    // positionally skipped: `tilo_doc::model::init` adopts the schema from its
     // own shared genesis, under a fixed well-known actor, ahead of the
     // seed's own commit — both pre-date anything the agent did.
-    let genesis = qdoc::model::schema_genesis_actor_hex();
+    let genesis = tilo_doc::model::schema_genesis_actor_hex();
     let seed = hex::encode("ada");
     let actors: std::collections::HashSet<String> = tilo_resource::history::versions(replica)
         .into_iter()
@@ -924,7 +924,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     replica.load_incoming(&data).unwrap();
                     let b = blocks(&replica);
                     let title_aligned = b.first().is_some_and(|x| {
-                        matches!(x.attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center")
+                        matches!(x.attrs.get("align"), Some(tilo_doc::AttrVal::Str(v)) if v == "center")
                     });
                     let has_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
                     let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
@@ -951,7 +951,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         assert_eq!(b[0].kind, "paragraph");
         assert_eq!(b[0].text, "Launch plan");
         assert!(
-            matches!(b[0].attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center"),
+            matches!(b[0].attrs.get("align"), Some(tilo_doc::AttrVal::Str(v)) if v == "center"),
             "the first catalogue action aligned the title"
         );
         assert_eq!(

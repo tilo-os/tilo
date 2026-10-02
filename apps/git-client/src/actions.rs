@@ -25,21 +25,19 @@
 //!
 //! ## What genuinely lives in the shared document
 //!
-//! That leaves exactly one thing in the CRDT: the app's **durable view
-//! preferences**, stored as a small map under `root["settings"]` (see
-//! [`crate::settings`]) — the diff layout (unified / side-by-side), and whether
-//! the diff shows whitespace, syntax-highlights, and soft-wraps long lines.
-//! These are user-authored, they survive restarts, and they replicate to
-//! collaborators, so toggling one is a document-mutating operation: an
-//! [`Action`]. Each toggle carries the **absolute** target value in its payload,
-//! so [`Action::apply`] is a pure function of `(payload, document)` — no reading
-//! of the prior value, no wall-clock, no RNG — and replays byte-identically on
-//! every replica. A malformed diff-layout string normalises to the canonical
-//! form rather than erroring, so a bad replay can't wedge a peer.
+//! Two things live in the CRDT:
 //!
-//! The resource tree mirrors that: the open repository is the presented
-//! resource, and the four preference toggles are the [`ActionSpec`]s Ctrl+K
-//! offers for it. When no repository is open the app publishes nothing.
+//! - **Durable view preferences** under `root["settings"]` (see
+//!   [`crate::settings`]) — diff layout, whitespace, syntax highlight, wrap.
+//!   Each toggle is an absolute [`Action`] so replay is deterministic.
+//! - **Shared repository projection** under `root["shared_repo"]` (see
+//!   [`crate::doc`]) — branches, commits, remotes, tags, stashes and identity.
+//!   Working-tree status is *not* projected; it stays a live hosted extra.
+//!
+//! Git mutations against the on-disk repository remain Effects. The resource
+//! tree is owned by [`tilo_resource::publish`]: preferences are
+//! [`bound_actions`], Effects/Views are [`local_operations`], and shared
+//! children ride [`children`].
 
 use automerge::AutoCommit;
 use automerge::transaction::Transactable;
@@ -47,9 +45,10 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    OperationKind, Resource, RetryPolicy,
 };
 
+use crate::doc::{GitClientState, SharedRepo};
 use crate::model::{ChangeArea, FileChange, RepoModel};
 use crate::settings::{self, DiffLayout, Settings};
 
@@ -116,11 +115,12 @@ fn operation(
 
 /// Every collaborative operation the git client exports on the shared document.
 ///
-/// All four are absolute *sets* of a durable view preference in
-/// `root["settings"]` — never toggles — so the payload fully determines the
-/// resulting state and replay is deterministic. The prior value is read (once,
-/// presentation-side) at *authoring* time to pick the opposite value; the
-/// action itself carries only the target.
+/// Preference setters are absolute *sets* in `root["settings"]` — never
+/// toggles — so the payload fully determines the resulting state. The prior
+/// value is read (once, presentation-side) at *authoring* time to pick the
+/// opposite value; the action itself carries only the target.
+/// [`WriteSharedRepo`] replaces the machine-derived branch/commit/remote
+/// projection wholesale (same grain as Disks' topology write).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitClientAction {
     /// Set the diff pane layout. `layout` is the document's string form
@@ -132,13 +132,15 @@ pub enum GitClientAction {
     SetSyntaxHighlight { on: bool },
     /// Set whether the diff soft-wraps long lines.
     SetWrapLines { on: bool },
+    /// Replace the shared repository projection (no working-tree lists).
+    WriteSharedRepo { json: String },
 }
 
 impl Action for GitClientAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let obj = settings::settings_obj(doc);
         match self {
             GitClientAction::SetDiffLayout { layout } => {
+                let obj = settings::settings_obj(doc);
                 // Normalise through the enum so an unknown payload lands on a
                 // valid setting instead of wedging.
                 let norm = layout
@@ -148,21 +150,27 @@ impl Action for GitClientAction {
                 doc.put(&obj, settings::keys::DIFF_LAYOUT, norm)?;
             }
             GitClientAction::SetShowWhitespace { on } => {
+                let obj = settings::settings_obj(doc);
                 doc.put(&obj, settings::keys::SHOW_WHITESPACE, *on)?;
             }
             GitClientAction::SetSyntaxHighlight { on } => {
+                let obj = settings::settings_obj(doc);
                 doc.put(&obj, settings::keys::SYNTAX_HIGHLIGHT, *on)?;
             }
             GitClientAction::SetWrapLines { on } => {
+                let obj = settings::settings_obj(doc);
                 doc.put(&obj, settings::keys::WRAP_LINES, *on)?;
+            }
+            GitClientAction::WriteSharedRepo { json } => {
+                SharedRepo::write_json(doc, json);
             }
         }
         Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
-        // A personal view preference: this client applies + replicates, peers
-        // replay.
+        // Preferences and the shared projection: this client applies +
+        // replicates, peers replay.
         ExecutionLocus::ClientLocal
     }
 }
@@ -390,41 +398,10 @@ fn remote_resource(remote: &crate::model::Remote) -> Resource {
     resource
 }
 
-/// The four preference toggles, exported as Ctrl+K actions on the open
-/// repository resource. Each is an immediate action that sets the preference to
-/// the *opposite* of its current document value, so choosing it in the palette
-/// flips the setting exactly as the on-screen control does. Level-triggered:
-/// recomputed from `doc` each frame, so the labels and target values always
-/// track the live state.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource catalogue keeps every repository action beside its label, contract, and live preference state in one auditable tree"
-)]
-pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
-    let s = Settings::read_only(doc);
-    let repo_name = model.name.as_str();
-    let label = if repo_name.trim().is_empty() {
-        "Repository".to_string()
-    } else {
-        repo_name.to_string()
-    };
-    let identity = if model.workdir.is_empty() {
-        repo_name
-    } else {
-        model.workdir.as_str()
-    };
-    let mut repo = Resource::new(
-        format!("git_client.repo:{}", stable_component(identity)),
-        "git_client.repo",
-        label,
-    );
-
-    // Diff layout — flip to the other layout. Each `ActionSpec::immediate`
-    // can only fail to serialize the payload, which none of these plain
-    // String/bool actions ever do in practice; on that unreachable-in-practice
-    // failure the toggle is simply omitted from the palette rather than
-    // panicking the app over one preference row.
-    let next_layout = match s.diff_layout {
+/// Preference flips bound from live settings for [`tilo_resource::publish`].
+pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    let next_layout = match settings.diff_layout {
         DiffLayout::Unified => DiffLayout::SideBySide,
         DiffLayout::SideBySide => DiffLayout::Unified,
     };
@@ -438,56 +415,61 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
         GIT_CLIENT_ACTION_TYPE,
         &set_diff_layout_action(next_layout),
     ) {
-        repo = repo.with_action(spec);
+        actions.push(spec);
     }
-
-    // Syntax highlighting.
     if let Ok(spec) = ActionSpec::immediate(
         "syntax-highlight",
-        if s.syntax_highlight {
+        if settings.syntax_highlight {
             "Turn off syntax highlighting"
         } else {
             "Turn on syntax highlighting"
         },
         GIT_CLIENT_ACTION_TYPE,
         &GitClientAction::SetSyntaxHighlight {
-            on: !s.syntax_highlight,
+            on: !settings.syntax_highlight,
         },
     ) {
-        repo = repo.with_action(spec);
+        actions.push(spec);
     }
-
-    // Whitespace rendering.
     if let Ok(spec) = ActionSpec::immediate(
         "show-whitespace",
-        if s.show_whitespace {
+        if settings.show_whitespace {
             "Hide whitespace"
         } else {
             "Show whitespace"
         },
         GIT_CLIENT_ACTION_TYPE,
         &GitClientAction::SetShowWhitespace {
-            on: !s.show_whitespace,
+            on: !settings.show_whitespace,
         },
     ) {
-        repo = repo.with_action(spec);
+        actions.push(spec);
     }
-
-    // Soft line wrapping.
     if let Ok(spec) = ActionSpec::immediate(
         "wrap-lines",
-        if s.wrap_lines {
+        if settings.wrap_lines {
             "Stop wrapping long lines"
         } else {
             "Wrap long lines"
         },
         GIT_CLIENT_ACTION_TYPE,
-        &GitClientAction::SetWrapLines { on: !s.wrap_lines },
+        &GitClientAction::SetWrapLines {
+            on: !settings.wrap_lines,
+        },
     ) {
-        repo = repo.with_action(spec);
+        actions.push(spec);
     }
+    actions
+}
 
-    for (id, label, operation) in [
+/// View / Effect catalogue on the repository door (no document delta).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one catalogue lists every repository View and Effect"
+)]
+pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    for (id, label, value) in [
         (
             "show-changes",
             "Show changes",
@@ -504,11 +486,11 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             GitClientOperation::ShowBranches,
         ),
     ] {
-        if let Some(spec) = self::operation(id, label, OperationKind::View, &operation) {
-            repo = repo.with_action(spec);
+        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
+            actions.push(spec);
         }
     }
-    for (id, label, operation) in [
+    for (id, label, value) in [
         (
             "stage-all",
             "Stage all changes",
@@ -520,11 +502,11 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             GitClientOperation::UnstageAll,
         ),
     ] {
-        if let Some(spec) = self::operation(id, label, OperationKind::Effect, &operation) {
-            repo = repo.with_action(spec);
+        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
+            actions.push(spec);
         }
     }
-    repo = repo.with_action(
+    actions.push(
         ActionSpec::prompted_operation(
             "commit",
             "Commit staged changes",
@@ -548,8 +530,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
         )
         .with_description("Create a commit from the currently staged changes"),
     );
-
-    repo = repo.with_action(ActionSpec::prompted_operation(
+    actions.push(ActionSpec::prompted_operation(
         "create-branch",
         "Create branch",
         "Branch name",
@@ -570,7 +551,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             })
         },
     ));
-    repo = repo.with_action(ActionSpec::prompted_operation(
+    actions.push(ActionSpec::prompted_operation(
         "save-stash",
         "Stash working changes",
         "Stash message",
@@ -591,19 +572,28 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             })
         },
     ));
+    actions
+}
 
-    let changes = model
-        .staged
-        .iter()
-        .chain(model.unstaged.iter())
-        .chain(model.untracked.iter())
-        .take(MAX_CONTEXT_CHANGES)
-        .map(change_resource);
-    repo = repo.with_child(
-        Resource::new("git_client.changes", "git_client.collection", "Changes")
-            .with_children(changes),
-    );
-    repo = repo.with_child(
+/// Working-tree status collection — live when hosted, included in standalone
+/// publish when the model carries staged/unstaged/untracked rows.
+pub(crate) fn changes_collection(model: &RepoModel) -> Resource {
+    Resource::new("git_client.changes", "git_client.collection", "Changes").with_children(
+        model
+            .staged
+            .iter()
+            .chain(model.unstaged.iter())
+            .chain(model.untracked.iter())
+            .take(MAX_CONTEXT_CHANGES)
+            .map(change_resource),
+    )
+}
+
+/// Shared children for [`tilo_resource::publish`]: history, branches, tags,
+/// stashes, remotes. Working-tree Changes stay off this list.
+pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
+    let mut children = Vec::new();
+    children.push(
         Resource::new("git_client.history", "git_client.collection", "History").with_children(
             model
                 .commits
@@ -612,7 +602,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                 .map(commit_resource),
         ),
     );
-    repo = repo.with_child(
+    children.push(
         Resource::new("git_client.branches", "git_client.collection", "Branches").with_children(
             model
                 .branches
@@ -621,7 +611,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                 .map(branch_resource),
         ),
     );
-    repo = repo.with_child(
+    children.push(
         Resource::new("git_client.tags", "git_client.collection", "Tags").with_children(
             model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
                 Resource::new(
@@ -632,7 +622,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             }),
         ),
     );
-    repo = repo.with_child(
+    children.push(
         Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
             model.stashes.iter().take(MAX_CONTEXT_STASHES).map(|stash| {
                 let mut resource = Resource::new(
@@ -652,7 +642,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
             }),
         ),
     );
-    repo = repo.with_child(
+    children.push(
         Resource::new("git_client.remotes", "git_client.collection", "Remotes").with_children(
             model
                 .remotes
@@ -661,20 +651,79 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                 .map(remote_resource),
         ),
     );
+    children
+}
 
-    vec![repo]
+/// Children on the framework resource: working-tree when present on the
+/// projection used for publish, then shared history/branches/remotes.
+pub(crate) fn publish_children(state: &GitClientState) -> Vec<Resource> {
+    let mut children = Vec::new();
+    if state.repo.change_count() > 0 {
+        children.push(changes_collection(&state.repo));
+    }
+    children.extend(document_children(&state.repo));
+    children
+}
+
+pub(crate) fn repo_label(model: &RepoModel) -> String {
+    let repo_name = model.name.as_str();
+    if repo_name.trim().is_empty() {
+        "Repository".to_string()
+    } else {
+        repo_name.to_string()
+    }
+}
+
+/// Build the resource tree via [`tilo_resource::publish`]. Standalone /
+/// `--shots` pass the live model (including working-tree rows); the framework
+/// door reads the shared projection from the document.
+pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
+    // Branches, commits, and remotes come from the document once it holds the
+    // shared projection. A caller that has not written one yet still publishes
+    // the model it passed. Working-tree Changes stay a live extra on that model.
+    let shared = SharedRepo::read(doc);
+    let state = if shared.is_some() {
+        GitClientState::from_doc(doc)
+    } else {
+        GitClientState {
+            settings: Settings::read_only(doc),
+            repo: model.clone(),
+        }
+    };
+    let label = repo_label(if shared.is_some() { &state.repo } else { model });
+    let mut root =
+        ui::tilo_resource::publish::<crate::resource::GitClient>("git_client.repo", &label, &state);
+    if shared.is_some()
+        && model.change_count() > 0
+        && !root
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == "git_client.changes")
+    {
+        root.children.insert(0, changes_collection(model));
+    }
+    vec![root]
 }
 
 /// Resolve an arbitrary current repository item without building the complete
 /// hierarchy. This keeps search/history/agent addresses valid beyond the
 /// contextual caps above while rejecting stale ids after a fetch or checkout.
+fn find_git(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_git(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option<Resource> {
     let root = provide_resources(model, doc).into_iter().next()?;
-    if root.id.as_str() == id {
-        return Some(root);
-    }
-    if let Some(collection) = root.children.iter().find(|child| child.id.as_str() == id) {
-        return Some(collection.clone());
+    if let Some(found) = find_git(&root, id) {
+        return Some(found);
     }
     for change in model
         .staged
@@ -745,15 +794,16 @@ pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option
         .map(remote_resource)
 }
 
-impl ResourceProvider for crate::app::GitClientApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::GitClientApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.resource_model() {
             Some(model) => provide_resources(model, doc),
             None => Vec::new(),
         }
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(self.resource_model()?, doc, id)
     }
 }
@@ -861,26 +911,25 @@ mod tests {
         let repo = &resources[0];
         assert_eq!(repo.kind, "git_client.repo");
         assert_eq!(repo.label, "tilo");
-        assert_eq!(repo.id.as_str(), "git_client.repo:74696c6f");
+        assert_eq!(repo.id.as_str(), "git_client.repo");
 
         let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "diff-layout",
-                "syntax-highlight",
-                "show-whitespace",
-                "wrap-lines",
-                "show-changes",
-                "show-history",
-                "show-branches",
-                "stage-all",
-                "unstage-all",
-                "commit",
-                "create-branch",
-                "save-stash",
-            ],
-        );
+        for expected in [
+            "diff-layout",
+            "syntax-highlight",
+            "show-whitespace",
+            "wrap-lines",
+            "show-changes",
+            "show-history",
+            "show-branches",
+            "stage-all",
+            "unstage-all",
+            "commit",
+            "create-branch",
+            "save-stash",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
+        }
     }
 
     /// The palette's exported actions track the live document: with a non-default

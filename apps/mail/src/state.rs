@@ -13,15 +13,14 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ChangeHash};
 use vello::kurbo::{Point, Rect};
 
+use ui::ImageStore;
 use ui::icons::Icon;
-use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
 use crate::actions::{
     MAIL_ACTION_TYPE, MailAction, move_action, purge_action, save_draft_action, set_read_action,
     set_starred_action,
 };
-use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
 use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
 
@@ -238,7 +237,7 @@ pub struct MailState {
     /// through here so it brackets one undo boundary, replays byte-identically on
     /// peers, and shares its [`crate::actions::MailAction`] with the Ctrl+K
     /// palette. See [`crate::actions`].
-    pub actions: ActionHost,
+    pub(crate) actions: crate::resource::ActionSink,
 
     intents: Vec<Intent>,
 }
@@ -293,7 +292,7 @@ impl MailState {
             seeded: false,
             last_mouse: Point::ZERO,
             dirty: true,
-            actions: ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             intents: Vec::new(),
         }
     }
@@ -317,13 +316,44 @@ impl MailState {
         );
     }
 
+    /// Record server baselines as one document action. Existing flags win, so a
+    /// later fetch cannot overwrite a `MailAction`. Standalone and hosted both
+    /// submit [`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines).
+    pub(crate) fn ingest_messages(
+        &mut self,
+        doc: &mut AutoCommit,
+        messages: &[crate::model::Message],
+    ) {
+        if messages.is_empty() {
+            return;
+        }
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: messages
+                    .iter()
+                    .map(crate::actions::IngestBaseline::from_message)
+                    .collect(),
+            },
+        );
+    }
+
+    pub(crate) fn register_message_target(&mut self, doc: &mut AutoCommit, id: &str) {
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: vec![crate::actions::IngestBaseline::register_only(id)],
+            },
+        );
+    }
+
     /// Ensure an action target discovered in the already-loaded external
     /// corpus has an eligibility record before emitting its action. Normal UI
     /// flow seeds these records during sync; this tiny idempotent bridge also
     /// covers a just-hydrated message acted on before the next frame.
-    fn register_loaded_target(&self, doc: &mut AutoCommit, id: MessageId) {
+    fn register_loaded_target(&mut self, doc: &mut AutoCommit, id: MessageId) {
         if self.mailbox.get(id).is_some() {
-            MailDoc::register_message(doc, &id.to_string());
+            self.register_message_target(doc, &id.to_string());
         }
     }
 
@@ -913,6 +943,31 @@ mod tests {
 
     fn first_inbox_id(st: &MailState) -> Option<MessageId> {
         st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
+    }
+
+    /// A standalone ingest is the same baseline action a hosted mailbox submits.
+    #[test]
+    fn a_standalone_ingest_is_a_mail_action() {
+        let mut st = state();
+        let message = st
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .next()
+            .cloned()
+            .expect("sample inbox");
+        let mut doc = automerge::AutoCommit::new();
+        assert!(!st.actions.is_hosted());
+        st.ingest_messages(&mut doc, std::slice::from_ref(&message));
+        let recorded = st
+            .actions
+            .last_dispatched()
+            .expect("ingest is submitted through the action sink");
+        assert_eq!(recorded.type_id.as_str(), crate::actions::MAIL_ACTION_TYPE);
+        assert_eq!(
+            crate::doc::MailDoc::get_read(&doc, &message.id.to_string()),
+            Some(message.read)
+        );
     }
 
     #[test]

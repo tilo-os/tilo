@@ -33,8 +33,8 @@ taffy.workspace = true
 anyhow.workspace = true
 # Spreadsheet interchange (.xlsx/.ods) through qdoc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["xlsx", "ods"] }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 uuid.workspace = true
 
 [dev-dependencies]

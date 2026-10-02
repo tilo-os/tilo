@@ -1,12 +1,12 @@
-//! Diff's exported **actions** and the **resource tree** it publishes to Ctrl+K.
+//! Diff's exported **actions** and the helpers that feed [`tilo_resource::publish`].
 //!
 //! The document-mutating surface of a merge is the *merge result*: the resolved
 //! output (an Automerge `Text`) plus the per-hunk resolution choices (ours/
 //! theirs/both), converging across peers as [`DiffmergeAction`]s. The exact
 //! same [`EncodedAction`] is what the on-panel chips and Ctrl+K both dispatch —
-//! one source of truth, one replay path. The resource tree mirrors this: the
-//! merge owns its hunks, each exporting take-ours/theirs/both plus a prompted
-//! custom-text resolve; the root exports a "replace merged output" edit.
+//! one source of truth, one replay path. Shared conflict children,
+//! `edit-merged`, and View/Effect ops live on the framework resource; local
+//! two-way comparisons stay live extras when hosted.
 //!
 //! Everything else — scroll, focus, the active hunk, sync-scroll, loading the
 //! input blobs and recomputing the diff — is plain app code, never an action.
@@ -16,11 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
 
-use crate::doc::MergeDoc;
+use crate::doc::{MergeDoc, MergeState};
 use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};
 
 /// Registry `type_id` for every Diff action.
@@ -84,13 +83,13 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperati
     }
 }
 
+/// View / Effect catalogue on the workspace door (no document delta).
 #[allow(
     clippy::expect_used,
     reason = "the typed local operation has an infallible serde shape"
 )]
-fn workspace_operations() -> Resource {
-    let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
-    root = root.with_action(
+pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
+    let mut actions = vec![
         ActionSpec::typed_operation(
             "open-files",
             "Open files",
@@ -120,7 +119,7 @@ fn workspace_operations() -> Resource {
         )
         .execution(ExecutionMode::Background { cancellable: true })
         .returns(ResultSpec::Job),
-    );
+    ];
     for (id, label, kind, value) in [
         (
             "show-diff",
@@ -153,9 +152,96 @@ fn workspace_operations() -> Resource {
             DiffmergeOperation::LoadSample,
         ),
     ] {
-        root = root.with_action(operation(id, label, kind, value));
+        actions.push(operation(id, label, kind, value));
+    }
+    actions
+}
+
+/// Standalone / empty-workspace door used by tests that still speak the old
+/// resource shape. Prefer [`tilo_resource::publish`] via [`provide_resources`].
+#[allow(dead_code, reason = "framework migration test helper")]
+pub(crate) fn workspace_operations() -> Resource {
+    let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
+    for spec in root_local_operations() {
+        root = root.with_action(spec);
     }
     root
+}
+
+/// Document actions bound from live merge state for [`tilo_resource::publish`].
+pub(crate) fn document_bound_actions(_state: &MergeState) -> Vec<ActionSpec> {
+    vec![ActionSpec::prompted(
+        "edit-merged",
+        "Replace merged output",
+        "Merged text",
+        "the merged result…",
+        ExecutionLocus::ClientLocal,
+        move |text: &str| encode(&set_merged_action(&ensure_trailing_newline(text))),
+    )]
+}
+
+/// Conflict / change children for [`tilo_resource::publish`].
+pub(crate) fn document_children(state: &MergeState) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let mut ordinal = 0usize;
+    let mut identities = std::collections::BTreeMap::<String, usize>::new();
+    for (i, h) in state.model.hunks.iter().enumerate() {
+        if !h.is_change {
+            continue;
+        }
+        ordinal += 1;
+        let tag = if h.resolution.is_conflict() {
+            "Conflict"
+        } else {
+            "Change"
+        };
+        let preview = hunk_preview(h);
+        let label = if preview.is_empty() {
+            format!("{tag} {ordinal}")
+        } else {
+            format!("{tag} {ordinal}: {preview}")
+        };
+
+        let identity = hunk_resource_id(h, 0);
+        let occurrence = identities.entry(identity).or_default();
+        let resource_id = hunk_resource_id(h, *occurrence);
+        *occurrence = occurrence.saturating_add(1);
+        let mut hunk_res = Resource::new(resource_id, "diffmerge.conflict", label);
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &state.model,
+            i,
+            HunkChoice::Ours,
+            "take-ours",
+            "Take ours",
+        ));
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &state.model,
+            i,
+            HunkChoice::Theirs,
+            "take-theirs",
+            "Take theirs",
+        ));
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &state.model,
+            i,
+            HunkChoice::Both,
+            "take-both",
+            "Take both",
+        ));
+
+        let model = state.model.clone();
+        hunk_res = hunk_res.with_action(ActionSpec::prompted(
+            "resolve",
+            "Resolve with custom text",
+            "Replacement",
+            "type the resolved line(s)…",
+            ExecutionLocus::ClientLocal,
+            move |text: &str| encode(&set_merged_action(&compose_custom(&model, i, text))),
+        ));
+
+        children.push(hunk_res);
+    }
+    children
 }
 
 /// Which side a conflict/change hunk resolution takes. A strict subset of
@@ -229,6 +315,12 @@ pub enum DiffmergeAction {
     /// resolution lands). Splice-diffed against the current text, so the CRDT
     /// records a minimal edit.
     SetMerged { merged: String },
+    /// Open a new merge: drop resolutions that belonged to the previous inputs
+    /// and install the provisional merged buffer. One history step.
+    SeedMerge { merged: String },
+    /// Replace the shared three-way input projection (same grain as git-client's
+    /// shared repo write). Local two-way comparisons are never projected.
+    WriteSharedMerge { json: String },
 }
 
 impl Action for DiffmergeAction {
@@ -244,6 +336,13 @@ impl Action for DiffmergeAction {
             }
             DiffmergeAction::SetMerged { merged } => {
                 MergeDoc::set_merged(doc, merged);
+            }
+            DiffmergeAction::SeedMerge { merged } => {
+                MergeDoc::clear_resolutions(doc);
+                MergeDoc::set_merged(doc, merged);
+            }
+            DiffmergeAction::WriteSharedMerge { json } => {
+                crate::doc::SharedMerge::write_json(doc, json);
             }
         }
         Ok(())
@@ -424,18 +523,18 @@ fn diff_block_resource_id(block: &ChangeBlock, fingerprint: &str, occurrence: us
     format!("diffmerge.diff-block:{kind}:{fingerprint}:{occurrence}")
 }
 
-/// Bounded, canonical children for navigable two-way change blocks. The
-/// source files are local input, while a block address is a view target only;
-/// it neither synchronizes nor exposes a filesystem path.
-pub fn provide_diff_resources(ctx: &DiffResourceCtx) -> Vec<Resource> {
+/// Local two-way comparison resource — live when hosted, never document state.
+pub fn local_comparison_resource(ctx: &DiffResourceCtx) -> Resource {
     let title = if ctx.left_label.is_empty() && ctx.right_label.is_empty() {
         "Local comparison".into()
     } else {
         format!("{} ↔ {}", ctx.left_label, ctx.right_label)
     };
-    let mut root = workspace_operations();
-    root.label = title;
-    root.kind = "diffmerge.local-comparison".into();
+    let mut root = Resource::new(
+        "diffmerge.local-comparison",
+        "diffmerge.local-comparison",
+        title,
+    );
     let mut fingerprint_occurrences = std::collections::HashMap::<String, usize>::new();
     for (index, block) in ctx
         .model
@@ -478,6 +577,17 @@ pub fn provide_diff_resources(ctx: &DiffResourceCtx) -> Vec<Resource> {
                 action,
             )),
         );
+    }
+    root
+}
+
+/// Bounded, canonical children for navigable two-way change blocks. Standalone
+/// surfaces attach View/Effect workspace ops on the same root for convenience;
+/// hosted surfaces publish only [`local_comparison_resource`] as a live extra.
+pub fn provide_diff_resources(ctx: &DiffResourceCtx) -> Vec<Resource> {
+    let mut root = local_comparison_resource(ctx);
+    for spec in root_local_operations() {
+        root.actions.push(spec);
     }
     vec![root]
 }
@@ -539,121 +649,19 @@ fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
     format!("diffmerge.conflict:{hash:016x}:{occurrence}")
 }
 
-/// Build the resource tree Diff currently has open: the merge, its change/
-/// conflict hunks (each exporting the take-a-side and custom-resolve actions),
-/// and a merged-output edit at the root — every document-mutating operation
-/// exported as an action.
-pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("diffmerge.merge", "diffmerge.merge", ctx.title.clone());
-
-    for (id, label, kind, value) in [
-        (
-            "show-diff",
-            "Show two-way diff",
-            OperationKind::View,
-            DiffmergeOperation::ShowDiff,
-        ),
-        (
-            "show-merge",
-            "Show three-way merge",
-            OperationKind::View,
-            DiffmergeOperation::ShowMerge,
-        ),
-        (
-            "previous-change",
-            "Previous change",
-            OperationKind::View,
-            DiffmergeOperation::PreviousChange,
-        ),
-        (
-            "next-change",
-            "Next change",
-            OperationKind::View,
-            DiffmergeOperation::NextChange,
-        ),
-        (
-            "load-sample",
-            "Load sample",
-            OperationKind::Effect,
-            DiffmergeOperation::LoadSample,
-        ),
-    ] {
-        root = root.with_action(operation(id, label, kind, value));
-    }
-
-    // Merge-level: replace the whole shared merged buffer with typed text — the
-    // merged-output edit. A future in-place editor dispatches the same action.
-    root = root.with_action(ActionSpec::prompted(
-        "edit-merged",
-        "Replace merged output",
-        "Merged text",
-        "the merged result…",
-        ExecutionLocus::ClientLocal,
-        move |text: &str| encode(&set_merged_action(&ensure_trailing_newline(text))),
-    ));
-
-    let mut ordinal = 0usize;
-    let mut identities = std::collections::BTreeMap::<String, usize>::new();
-    for (i, h) in ctx.model.hunks.iter().enumerate() {
-        if !h.is_change {
-            continue;
-        }
-        ordinal += 1;
-        let tag = if h.resolution.is_conflict() {
-            "Conflict"
-        } else {
-            "Change"
-        };
-        let preview = hunk_preview(h);
-        let label = if preview.is_empty() {
-            format!("{tag} {ordinal}")
-        } else {
-            format!("{tag} {ordinal}: {preview}")
-        };
-
-        let identity = hunk_resource_id(h, 0);
-        let occurrence = identities.entry(identity).or_default();
-        let resource_id = hunk_resource_id(h, *occurrence);
-        *occurrence = occurrence.saturating_add(1);
-        let mut hunk_res = Resource::new(resource_id, "diffmerge.conflict", label);
-        hunk_res = hunk_res.with_action(immediate_choice(
-            &ctx.model,
-            i,
-            HunkChoice::Ours,
-            "take-ours",
-            "Take ours",
-        ));
-        hunk_res = hunk_res.with_action(immediate_choice(
-            &ctx.model,
-            i,
-            HunkChoice::Theirs,
-            "take-theirs",
-            "Take theirs",
-        ));
-        hunk_res = hunk_res.with_action(immediate_choice(
-            &ctx.model,
-            i,
-            HunkChoice::Both,
-            "take-both",
-            "Take both",
-        ));
-
-        // Resolve with custom text — a prompted merged-output edit scoped to this
-        // hunk: the typed lines replace the hunk in the recomposed output.
-        let model = ctx.model.clone();
-        hunk_res = hunk_res.with_action(ActionSpec::prompted(
-            "resolve",
-            "Resolve with custom text",
-            "Replacement",
-            "type the resolved line(s)…",
-            ExecutionLocus::ClientLocal,
-            move |text: &str| encode(&set_merged_action(&compose_custom(&model, i, text))),
-        ));
-
-        root = root.with_child(hunk_res);
-    }
-
-    vec![root]
+/// Build the resource tree via [`tilo_resource::publish`]. Standalone /
+/// `--shots` overlay the live merge model; the framework host reads the same
+/// shape from the shared projection in the document.
+pub fn provide_resources(ctx: &MergeResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut state = MergeState::from_doc(doc);
+    state.title.clone_from(&ctx.title);
+    state.model = ctx.model.clone();
+    crate::doc::apply_resolutions(&mut state.model, doc);
+    vec![ui::tilo_resource::publish::<crate::resource::Diffmerge>(
+        "diffmerge.workspace",
+        &state.title,
+        &state,
+    )]
 }
 
 /// The merged buffer stores each line newline-terminated; a prompted edit that
@@ -666,16 +674,57 @@ fn ensure_trailing_newline(text: &str) -> String {
     }
 }
 
-impl ResourceProvider for crate::app::DiffMergeApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::DiffMergeApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.merge_resource_ctx(doc) {
-            Some(ctx) => provide_resources(&ctx, doc),
+            Some(ctx) => {
+                let mut resources = provide_resources(&ctx, doc);
+                if let Some(diff) = self.diff_resource_ctx() {
+                    resources.push(local_comparison_resource(&diff));
+                }
+                resources
+            }
             None => self.diff_resource_ctx().map_or_else(
-                || vec![workspace_operations()],
-                |ctx| provide_diff_resources(&ctx),
+                || {
+                    let state = MergeState::from_doc(doc);
+                    vec![ui::tilo_resource::publish::<crate::resource::Diffmerge>(
+                        "diffmerge.workspace",
+                        "Diff & Merge",
+                        &state,
+                    )]
+                },
+                |ctx| {
+                    let state = MergeState::from_doc(doc);
+                    let mut root = ui::tilo_resource::publish::<crate::resource::Diffmerge>(
+                        "diffmerge.workspace",
+                        "Diff & Merge",
+                        &state,
+                    );
+                    root = root.with_child(local_comparison_resource(&ctx));
+                    vec![root]
+                },
             ),
         }
     }
+
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.publish_resources(doc)
+            .into_iter()
+            .find_map(|root| find_resource(&root, id))
+    }
+}
+
+fn find_resource(root: &Resource, id: &str) -> Option<Resource> {
+    if root.id.as_str() == id {
+        return Some(root.clone());
+    }
+    for child in &root.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -832,7 +881,7 @@ mod tests {
                 let (ctx, hunk) = conflict_ctx();
                 encode(&set_merged_action(&compose_custom(&ctx.model, hunk, "CUSTOM")))
             }),
-            edit_merged => ("diffmerge.merge", "edit-merged", arg: "a\nmerged\nc", |_, _| {
+            edit_merged => ("diffmerge.workspace", "edit-merged", arg: "a\nmerged\nc", |_, _| {
                 encode(&set_merged_action("a\nmerged\nc\n"))
             }),
         ],
@@ -850,16 +899,17 @@ mod tests {
         sample_triple_exposes_a_conflict_resource();
     }
 
-    /// Ctrl+K on a merge yields the tree: the merge root (with a merged-output
+    /// Ctrl+K on a merge yields the tree: the workspace root (with a merged-output
     /// edit) → one conflict resource exporting take-ours/theirs/both + resolve.
     fn ctrl_k_publishes_the_merge_tree() {
         let (ctx, _hunk) = conflict_ctx();
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        assert_eq!(resources.len(), 1, "one merge root");
+        assert_eq!(resources.len(), 1, "one workspace root");
         let merge = &resources[0];
-        assert_eq!(merge.kind, "diffmerge.merge");
+        assert_eq!(merge.kind, "diffmerge.workspace");
         let root_actions: Vec<&str> = merge.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(root_actions.contains(&"edit-merged"), "{root_actions:?}");
+        assert!(root_actions.contains(&"show-diff"), "{root_actions:?}");
 
         let conflict = merge
             .children

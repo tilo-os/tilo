@@ -98,7 +98,7 @@ pub struct NewMessage {
     pub ts: i64,
     pub text: String,
     /// The body as written; empty stores only `text`.
-    pub body: Vec<qdoc_rich_text::ClipBlock>,
+    pub body: Vec<tilo_document::ClipBlock>,
     pub parent: Option<String>,
     pub reactions: Vec<(String, Vec<String>)>,
     pub attachment: Option<Attachment>,
@@ -883,7 +883,7 @@ impl ChatDoc {
 
     /// The body as written, as rich text under the message's `rich` map;
     /// nothing for an empty body (the plain text is the whole message).
-    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[qdoc_rich_text::ClipBlock]) {
+    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[tilo_document::ClipBlock]) {
         if body.is_empty() {
             let _ = doc.delete(block, "rich");
             return;
@@ -891,7 +891,7 @@ impl ChatDoc {
         let Ok(root) = doc.put_object(block, "rich", ObjType::Map) else {
             return;
         };
-        let written = qdoc_rich_text::RichText::initialize_under(doc, &root).is_ok()
+        let written = tilo_document::RichText::initialize_under(doc, &root).is_ok()
             && tilo_rich_text::fill_clips_under(doc, &root, body).is_ok();
         if !written {
             // The plain text still stands for the message.
@@ -1526,17 +1526,17 @@ impl ChatDoc {
         channel: &str,
         msg_id: &str,
         new_text: &str,
-        body: &[qdoc_rich_text::ClipBlock],
+        body: &[tilo_document::ClipBlock],
         ts: i64,
     ) {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
         let old = read_text(doc, &block, "text").unwrap_or_default();
-        let old_body: Vec<qdoc_rich_text::ClipBlock> = map_at(doc, &block, "rich")
-            .and_then(|root| qdoc::model::open(doc, &root).ok())
+        let old_body: Vec<tilo_document::ClipBlock> = map_at(doc, &block, "rich")
+            .and_then(|root| tilo_doc::model::open(doc, &root).ok())
             .map(|containers| {
-                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
                     .iter()
                     .map(tilo_rich_text::clip_block)
                     .collect()
@@ -1579,6 +1579,10 @@ impl ChatDoc {
     /// The rich text the composer for `key` edits, created when missing.
     /// Drafts two peers created at once are joined into one, winner first,
     /// so no one's keystrokes are hidden.
+    pub fn rich_draft_is_settled(doc: &AutoCommit, key: &str) -> bool {
+        Self::rich_draft_candidates(doc, key).len() == 1
+    }
+
     pub fn ensure_rich_draft(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
         let candidates = Self::rich_draft_candidates(doc, key);
         if let [only] = candidates.as_slice() {
@@ -1603,7 +1607,7 @@ impl ChatDoc {
         }
         let drafts = get_or_map(doc, &ROOT, RICH_DRAFTS);
         let root = doc.put_object(&drafts, key, ObjType::Map).ok()?;
-        qdoc_rich_text::RichText::initialize_under(doc, &root).ok()?;
+        tilo_document::RichText::initialize_under(doc, &root).ok()?;
         let blocks: Vec<ui::widget::BlockContent> = blocks
             .iter()
             .map(|block| ui::widget::BlockContent {
@@ -1641,12 +1645,12 @@ impl ChatDoc {
     }
 
     /// The draft for `key` as an action carries it.
-    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<qdoc_rich_text::ClipBlock> {
+    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<tilo_document::ClipBlock> {
         Self::distinct_drafts(doc, key)
             .iter()
-            .filter_map(|(root, _)| qdoc::model::open(doc, root).ok())
+            .filter_map(|(root, _)| tilo_doc::model::open(doc, root).ok())
             .flat_map(|containers| {
-                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
             })
             .map(|view| tilo_rich_text::clip_block(&view))
             .collect()
@@ -1729,6 +1733,27 @@ impl ChatDoc {
             wrote = true;
         }
         wrote
+    }
+
+    /// Whether the roster row already matches this peer. Does not create maps.
+    pub fn user_is_current(
+        doc: &AutoCommit,
+        id: &str,
+        name: &str,
+        initials: &str,
+        color: usize,
+        status: Presence,
+    ) -> bool {
+        let Some(users) = map_at(doc, &ROOT, "users") else {
+            return false;
+        };
+        let Some(user) = map_at(doc, &users, id) else {
+            return false;
+        };
+        read_str(doc, &user, "name").unwrap_or_default() == name
+            && read_str(doc, &user, "initials").unwrap_or_default() == initials
+            && read_i64_coerced(doc, &user, "color_idx").unwrap_or(0) == color as i64
+            && read_str(doc, &user, "status").unwrap_or_default() == status.as_str()
     }
 
     /// The peer's `read` watermark map (channel → count), created on demand
@@ -2921,8 +2946,8 @@ mod tests {
     fn type_into(doc: &mut AutoCommit, key: &str, at: usize, text: &str) {
         let root = ChatDoc::ensure_rich_draft(doc, key).unwrap();
         let block = ChatDoc::draft_blocks(doc, key)[0].id.clone();
-        qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block,
             at,
             del: 0,
@@ -2981,14 +3006,14 @@ mod tests {
     #[test]
     fn a_rich_body_is_stored_beside_its_plain_text_and_edited_as_written() {
         let mut doc = seeded();
-        let body = vec![qdoc_rich_text::ClipBlock {
+        let body = vec![tilo_document::ClipBlock {
             kind: "paragraph".into(),
             text: "hi @Ada".into(),
-            marks: vec![qdoc::document::MarkSpan {
+            marks: vec![tilo_doc::document::MarkSpan {
                 start: 3,
                 end: 7,
                 name: "mention".into(),
-                value: qdoc::document::MarkValue::Str("u-ada".into()),
+                value: tilo_doc::document::MarkValue::Str("u-ada".into()),
             }],
             level: None,
             ordered: None,
@@ -3021,11 +3046,11 @@ mod tests {
             )]
         );
         let mut bold = body;
-        bold[0].marks.push(qdoc::document::MarkSpan {
+        bold[0].marks.push(tilo_doc::document::MarkSpan {
             start: 0,
             end: 2,
             name: "strong".into(),
-            value: qdoc::document::MarkValue::Bool(true),
+            value: tilo_doc::document::MarkValue::Bool(true),
         });
         ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "hi @Ada", &bold, NOW + 5);
         let edited = read(&doc);
@@ -3721,5 +3746,68 @@ mod tests {
                 "merge must choose one complete authored transition, not a hybrid: {merged:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_composer_draft_is_created_by_the_action() {
+        use tilo_actions::Action as _;
+        let mut doc = ui::automerge::AutoCommit::new();
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::rich_draft_is_settled(&doc, "channel-1"));
+        let first = ChatDoc::ensure_rich_draft(&mut doc, "channel-1");
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::ensure_rich_draft(&mut doc, "channel-1"),
+            first,
+            "a second ensure keeps the same draft"
+        );
+        assert!(
+            crate::actions::ChatAction::EnsureRichDraft { key: String::new() }
+                .apply(&mut doc)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_new_chat_record_starts_from_the_seed_action() {
+        use tilo_actions::Action as _;
+        let mut doc = automerge::AutoCommit::new();
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::is_seeded(&doc));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|channel| channel.name == "general")
+        );
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .filter(|channel| channel.name == "general")
+                .count(),
+            1
+        );
     }
 }

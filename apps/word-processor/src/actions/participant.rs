@@ -95,10 +95,13 @@ impl ParticipantView {
     /// A collapsed caret at the end of the body's last block, or `None` for a
     /// document without body blocks. The default spawn position of an agent.
     pub fn at_document_end(doc: &AutoCommit) -> Option<Self> {
-        let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-        let block =
-            qdoc::model::region_blocks_in_order(doc, &containers, qdoc::model::Region::Body)
-                .pop()?;
+        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let block = tilo_doc::model::region_blocks_in_order(
+            doc,
+            &containers,
+            tilo_doc::model::Region::Body,
+        )
+        .pop()?;
         let offset = block_chars(doc, &containers, RegionKind::Body, &block);
         Some(Self::at(ViewPoint::new(block, offset), RegionKind::Body))
     }
@@ -137,7 +140,7 @@ impl ParticipantView {
     /// [`Self::settle`] reading the body's order from `body`, the kept order
     /// of `doc`, so a body caret settles without listing the body.
     #[must_use]
-    pub fn settle_in(&self, doc: &AutoCommit, body: Option<&qdoc_rich_text::BodyOrder>) -> Self {
+    pub fn settle_in(&self, doc: &AutoCommit, body: Option<&tilo_document::BodyOrder>) -> Self {
         let mut out = self.clone();
         let Some(pending) = out.pending.take() else {
             return out;
@@ -150,11 +153,11 @@ impl ParticipantView {
             body.position(&pending.after)
                 .map(|index| at(&|i| body.id_at(i).map(str::to_owned), index))
         } else {
-            let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+            let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
                 return out;
             };
             let order =
-                qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
+                tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
             order
                 .iter()
                 .position(|block| *block == pending.after)
@@ -177,8 +180,9 @@ impl ParticipantView {
         if self.pending.is_some() {
             return self.settle(doc).selection(doc);
         }
-        let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-        let order = qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
+        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let order =
+            tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         self.ordered_selection(&order)
             .map(|(start, end)| SelectionTarget {
                 start_block: start.block.clone(),
@@ -228,8 +232,9 @@ impl ParticipantView {
         if self.caret.block.is_empty() {
             return None;
         }
-        let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-        let order = qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
+        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let order =
+            tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         if !order.contains(&self.caret.block) {
             return None;
         }
@@ -288,12 +293,12 @@ impl ParticipantView {
 
 pub(super) fn block_chars(
     doc: &AutoCommit,
-    containers: &qdoc::Containers,
+    containers: &tilo_doc::Containers,
     region: RegionKind,
     block: &str,
 ) -> usize {
-    qdoc::model::region_block_obj(doc, containers, region.to_region(), block)
-        .and_then(|obj| qdoc::model::block_text_on(doc, &obj))
+    tilo_doc::model::region_block_obj(doc, containers, region.to_region(), block)
+        .and_then(|obj| tilo_doc::model::block_text_on(doc, &obj))
         .map_or(0, |text| text.chars().count())
 }
 
@@ -303,9 +308,9 @@ mod tests {
 
     fn doc_with(paragraphs: &[&str]) -> (AutoCommit, Vec<String>) {
         let mut doc = AutoCommit::new();
-        let containers = qdoc::model::init(&mut doc, &automerge::ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&doc, &containers);
-        let mut dm = qdoc::DocMut {
+        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &containers,
             ids: &mut ids,

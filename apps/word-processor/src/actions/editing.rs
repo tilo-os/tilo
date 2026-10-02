@@ -34,7 +34,7 @@ use tilo_actions::{
     ExecutionLocus, ParamType, Resource,
 };
 
-use qdoc_rich_text::{BodyOrder, ClipAttr};
+use tilo_document::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
@@ -226,7 +226,7 @@ type Range3 = (String, usize, usize);
 /// block touch only that block (keystroke latency).
 struct RegionDoc<'a> {
     doc: &'a AutoCommit,
-    containers: qdoc::Containers,
+    containers: tilo_doc::Containers,
     region: RegionKind,
     /// The kept body order, in step with `doc`; used only for the body.
     body: Option<&'a BodyOrder>,
@@ -244,7 +244,7 @@ impl<'a> RegionDoc<'a> {
         region: RegionKind,
     ) -> Result<Self, EditingError> {
         let containers =
-            qdoc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+            tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
         Ok(Self {
             doc,
             containers,
@@ -256,7 +256,11 @@ impl<'a> RegionDoc<'a> {
 
     fn listed(&self) -> &[String] {
         self.listed.get_or_init(|| {
-            qdoc::model::region_blocks_in_order(self.doc, &self.containers, self.region.to_region())
+            tilo_doc::model::region_blocks_in_order(
+                self.doc,
+                &self.containers,
+                self.region.to_region(),
+            )
         })
     }
 
@@ -303,14 +307,14 @@ impl<'a> RegionDoc<'a> {
         self.block_len(block).unwrap_or(0)
     }
 
-    fn block(&self, block: &str) -> Option<qdoc::snapshot::BlockView> {
+    fn block(&self, block: &str) -> Option<tilo_doc::snapshot::BlockView> {
         match self.region {
             RegionKind::Body => {
-                qdoc::model::materialize_blocks(self.doc, &self.containers, &[block.to_owned()])
+                tilo_doc::model::materialize_blocks(self.doc, &self.containers, &[block.to_owned()])
                     .pop()
             }
             region => {
-                qdoc::model::materialize_region(self.doc, &self.containers, region.to_region())
+                tilo_doc::model::materialize_region(self.doc, &self.containers, region.to_region())
                     .into_iter()
                     .find(|view| view.id == block)
             }
@@ -461,7 +465,7 @@ impl Resolved<'_> {
 
     fn has_mark_over_region(&self, block: &str, start: usize, end: usize, name: &str) -> bool {
         match self.rd.region {
-            RegionKind::Body => qdoc::model::has_mark_over(
+            RegionKind::Body => tilo_doc::model::has_mark_over(
                 self.rd.doc,
                 &self.rd.containers,
                 block,
@@ -761,7 +765,7 @@ impl MarkTarget {
                 let spans: Vec<_> = font_ranges.iter().filter(|(_, s, e)| s < e).collect();
                 !spans.is_empty()
                     && spans.iter().all(|(b, s, e)| {
-                        qdoc::model::has_mark_over(
+                        tilo_doc::model::has_mark_over(
                             r.rd.doc,
                             &r.rd.containers,
                             b,
@@ -834,7 +838,8 @@ impl StyleTarget {
             .selected_block_ids()
             .into_iter()
             .filter(|id| {
-                qdoc::model::block_kind(r.rd.doc, &r.rd.containers, id).as_deref() != Some("cell")
+                tilo_doc::model::block_kind(r.rd.doc, &r.rd.containers, id).as_deref()
+                    != Some("cell")
             })
             .collect();
         Self {
@@ -1019,7 +1024,7 @@ pub fn new_paragraph_in(
     let ordered = block
         .as_ref()
         .and_then(|entry| match entry.attrs.get("ordered") {
-            Some(qdoc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
+            Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
             _ => None,
         });
     let new_kind = if kind == "list_item" {
@@ -1164,7 +1169,7 @@ impl AppendTarget {
             pending: None,
             ..view.clone()
         };
-        let end = qdoc::model::open(doc, &automerge::ROOT)
+        let end = tilo_doc::model::open(doc, &automerge::ROOT)
             .ok()
             .and_then(|c| match body {
                 Some(body) => body
@@ -1402,8 +1407,9 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
         next.find = FindState::default();
         return Ok((Vec::new(), next));
     }
-    let containers = qdoc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
-    let blocks = qdoc::model::materialize(doc, &containers).blocks;
+    let containers =
+        tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+    let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
     next.find = FindState::new(query, literal_matches(&blocks, query));
     if let Some(first) = next.find.hits.first().cloned() {
         next.region = RegionKind::Body;
@@ -1419,7 +1425,7 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
 
 /// The Find bar's default literal search (case-insensitive, not whole-word),
 /// stopping at the resource bound.
-fn literal_matches(blocks: &[qdoc::snapshot::BlockView], query: &str) -> Vec<SearchTarget> {
+fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec<SearchTarget> {
     let needle: Vec<char> = query.to_lowercase().chars().collect();
     let mut hits = Vec::new();
     if needle.is_empty() {
@@ -1476,22 +1482,22 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    use qdoc_codecs::FormatProvider;
+    use tilo_doc_codecs::FormatProvider;
     if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
     let mut scratch = AutoCommit::new();
-    let containers = qdoc::model::init(&mut scratch, &automerge::ROOT);
-    let mut ids = qdoc::model::try_seeded_id_gen(&scratch, &containers)
+    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
+    let mut ids = tilo_doc::model::try_seeded_id_gen(&scratch, &containers)
         .map_err(|error| EditingError::Invalid(error.to_string()))?;
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut scratch,
             c: &containers,
             ids: &mut ids,
         };
         // Pasted Markdown references no content this document keeps.
-        qdoc_codecs::MarkdownCodec
+        tilo_doc_codecs::MarkdownCodec
             .import(
                 markdown.as_bytes(),
                 &mut dm,
@@ -1499,23 +1505,23 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
             )
             .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     }
-    let snapshot = qdoc::model::materialize(&scratch, &containers);
+    let snapshot = tilo_doc::model::materialize(&scratch, &containers);
     let mut blocks: Vec<ClipBlock> = snapshot
         .blocks
         .into_iter()
         .map(|block| {
             let int = |key: &str| match block.attrs.get(key) {
-                Some(qdoc::AttrVal::Int(value)) => Some(*value),
+                Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
                 _ => None,
             };
             let flag = |key: &str| match block.attrs.get(key) {
-                Some(qdoc::AttrVal::Bool(value)) => Some(*value),
+                Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
                 _ => None,
             };
             let cell = block.kind == "cell";
             let mut attrs = std::collections::BTreeMap::default();
             if cell {
-                if let Some(qdoc::AttrVal::Str(table)) = block.attrs.get("table") {
+                if let Some(tilo_doc::AttrVal::Str(table)) = block.attrs.get("table") {
                     attrs.insert("table".to_owned(), ClipAttr::Str(table.clone()));
                 }
                 for key in ["row", "col"] {
@@ -1537,7 +1543,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                     .iter()
                     .filter(|mark| {
                         mark.name != "link"
-                            || matches!(&mark.value, qdoc::document::MarkValue::Str(target) if valid_hyperlink_target(target))
+                            || matches!(&mark.value, tilo_doc::document::MarkValue::Str(target) if valid_hyperlink_target(target))
                     })
                     .cloned()
                     .collect(),
@@ -1666,8 +1672,12 @@ pub(super) fn add_operations(
         .is_some_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS);
     let guard = |spec: ActionSpec| spec.reversible().requires(ContextRequirement::Caret);
     let publish = |root: &mut Resource, spec: ActionSpec, handler: &'static str| {
-        root.actions
-            .push(continuation::pure(spec, handler, domain.clone()));
+        let spec = continuation::pure(spec, handler, domain.clone());
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
     };
 
     let typing = r.as_ref().map(TypeTarget::new);
@@ -2172,13 +2182,13 @@ mod tests {
     }
 
     fn order(doc: &AutoCommit) -> Vec<String> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c)
     }
 
     fn texts(doc: &AutoCommit) -> Vec<String> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.text)
@@ -2264,9 +2274,9 @@ mod tests {
     // pinned to what the keyboard dispatches today even while the widget is
     // being switched over to call them.
 
-    fn body_block(doc: &AutoCommit, id: &str) -> Option<qdoc::snapshot::BlockView> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+    fn body_block(doc: &AutoCommit, id: &str) -> Option<tilo_doc::snapshot::BlockView> {
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .find(|block| block.id == id)
@@ -2318,7 +2328,7 @@ mod tests {
         let ordered = block
             .as_ref()
             .and_then(|entry| match entry.attrs.get("ordered") {
-                Some(qdoc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
+                Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
                 _ => None,
             });
         let new_kind = if kind == "list_item" {
@@ -2906,7 +2916,7 @@ mod tests {
         reason = "one table-driven parity proof over every published editing operation"
     )]
     fn catalogue_schema_is_view_independent_and_covers_every_participant_tree() {
-        use tilo_actions::{ResourceProvider as _, catalogue_schema, catalogue_schema_bytes, door};
+        use tilo_actions::{catalogue_schema, catalogue_schema_bytes, door};
         // Nothing published fires an unregistered envelope: a fixed encoding
         // must be a real Writer action or operation (a sentinel would make
         // the host drop the whole surface).
@@ -2946,7 +2956,7 @@ mod tests {
             at(&ids[2], 2),
         ] {
             place(&mut wp, &view);
-            let schema = wp.catalogue_schema(doc);
+            let schema = wp.publish_catalogue_schema(doc);
             published.push(catalogue_schema_bytes(&catalogue_schema(&door::survey(
                 &schema,
             ))));
@@ -3004,7 +3014,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(
-            requirement("word_processor.document", "replace-selection"),
+            requirement("tilo.rich-text", "replace-selection"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
@@ -3012,11 +3022,11 @@ mod tests {
             [ContextRequirement::Selection]
         );
         assert_eq!(
-            requirement("word_processor.document", "set-hyperlink"),
+            requirement("tilo.rich-text", "set-hyperlink"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
-            requirement("word_processor.document", "add-comment"),
+            requirement("tilo.rich-text", "add-comment"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
@@ -3024,7 +3034,7 @@ mod tests {
             [ContextRequirement::FindHits]
         );
         assert_eq!(
-            requirement("word_processor.document", "type-text"),
+            requirement("tilo.rich-text", "type-text"),
             [ContextRequirement::Caret]
         );
     }
@@ -3426,14 +3436,14 @@ mod tests {
             .unwrap();
             apply_all(&mut state.doc, &actions);
         }
-        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
-        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
         let rows: Vec<_> = blocks
             .iter()
             .map(|block| {
                 let attr = |key: &str| match block.attrs.get(key) {
-                    Some(qdoc::AttrVal::Int(value)) => value.to_string(),
-                    Some(qdoc::AttrVal::Str(value)) => value.clone(),
+                    Some(tilo_doc::AttrVal::Int(value)) => value.to_string(),
+                    Some(tilo_doc::AttrVal::Str(value)) => value.clone(),
                     _ => String::new(),
                 };
                 (
@@ -3465,7 +3475,7 @@ mod tests {
         let tables: std::collections::BTreeSet<_> = blocks
             .iter()
             .filter_map(|block| match block.attrs.get("table") {
-                Some(qdoc::AttrVal::Str(table)) => Some(table.clone()),
+                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
                 _ => None,
             })
             .collect();
@@ -3676,11 +3686,11 @@ mod tests {
     #[test]
     fn in_block_keystrokes_do_not_scan_the_whole_document() {
         let mut doc = AutoCommit::new();
-        let containers = qdoc::model::init(&mut doc, &automerge::ROOT);
-        let mut next_ids = qdoc::model::seeded_id_gen(&doc, &containers);
+        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let mut next_ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
         let mut ids = Vec::new();
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &containers,
                 ids: &mut next_ids,
@@ -3705,11 +3715,11 @@ mod tests {
         let local = started.elapsed();
         let started = ui::time::now();
         for _ in 0..20 {
-            let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-            std::hint::black_box(qdoc::model::region_blocks_in_order(
+            let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+            std::hint::black_box(tilo_doc::model::region_blocks_in_order(
                 doc,
                 &c,
-                qdoc::model::Region::Body,
+                tilo_doc::model::Region::Body,
             ));
         }
         let scans = started.elapsed();

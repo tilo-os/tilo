@@ -1694,6 +1694,9 @@ pub(crate) fn execute_resource_operation(
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
+        // Before apply, so a delete can still read the row it removes. Undo
+        // of this span applies the compensating action instead of patches.
+        note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
         let applied = match execute_document(
             doc,
             action.as_ref(),
@@ -2185,6 +2188,10 @@ struct OperationSpan {
     cursor: Option<Vec<ChangeHash>>,
     effect: bool,
     violation: bool,
+    /// Compensating document action captured before `apply`, for undo.
+    undo_via: Option<tilo_actions::EncodedAction>,
+    /// The forward action, so redo runs through `apply` as well.
+    redo_via: Option<tilo_actions::EncodedAction>,
 }
 
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
@@ -2262,6 +2269,33 @@ pub(crate) fn authorize_current_resource_action(
     }
 }
 
+/// Stash the compensating action on the open span. `report_typed_action`
+/// records it with the undo entry. No span (a standalone widget) leaves the
+/// `ActionHost` path to record its own pair.
+fn note_compensating_action(
+    doc: &AutoCommit,
+    undo_via: Option<tilo_actions::EncodedAction>,
+    redo_via: tilo_actions::EncodedAction,
+) {
+    if undo_via.is_none() {
+        return;
+    }
+    let Some(handle) = operation_frame(doc) else {
+        return;
+    };
+    let mut owned = handle.borrow_mut();
+    let Some(frame) = owned.as_mut() else {
+        return;
+    };
+    let Some(operation) = frame.operations.last_mut() else {
+        return;
+    };
+    if operation.undo_via.is_none() {
+        operation.undo_via = undo_via;
+        operation.redo_via = Some(redo_via);
+    }
+}
+
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `ActionHost` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
@@ -2313,12 +2347,19 @@ pub(crate) fn report_typed_action(
                 .is_some_and(|cursor| cursor != &before);
         operation.cursor = Some(after.clone());
     }
-    frame.history.record_committed_span_in(
+    let (undo_via, redo_via) = frame
+        .operations
+        .last_mut()
+        .map(|operation| (operation.undo_via.take(), operation.redo_via.take()))
+        .unwrap_or((None, None));
+    frame.history.record_committed_span_with_inverse(
         before,
         after.clone(),
         None,
-        binding.author.clone(),
-        binding.instance_id,
+        None,
+        Some(binding.author.clone()),
+        Some(binding.instance_id),
+        crate::state::CommittedSpanInverse { undo_via, redo_via },
     );
     frame.reset_operation_baseline(&binding, after);
     frame.state.generation = frame
@@ -2361,6 +2402,8 @@ impl<'a> BoundOperation<'a> {
                 cursor,
                 effect,
                 violation: false,
+                undo_via: None,
+                redo_via: None,
             });
             depth
         };
@@ -2724,6 +2767,7 @@ impl CallbackBinding {
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
+            || self.admission_route().as_ref() == Some(route)
     }
     pub(crate) fn drain_owned_tree(
         &self,
@@ -2851,6 +2895,15 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         request: crate::undo::UndoRequest,
     ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
+        self.history_request_with_registry(outer, request, None)
+    }
+
+    pub(crate) fn history_request_with_registry(
+        &self,
+        outer: &mut AutoCommit,
+        request: crate::undo::UndoRequest,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
         self.with_document(outer, |doc, _| {
             self.finish_action_boundary(doc)?;
             let handle = ACTIVE
@@ -2861,16 +2914,22 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             let entry = match request {
-                crate::undo::UndoRequest::Undo => {
-                    frame
-                        .history
-                        .undo_in(doc, &self.author, self.instance_id, None, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    frame
-                        .history
-                        .redo_in(doc, &self.author, self.instance_id, None, None)
-                }
+                crate::undo::UndoRequest::Undo => frame.history.undo_in_with_registry(
+                    doc,
+                    &self.author,
+                    self.instance_id,
+                    None,
+                    None,
+                    registry,
+                ),
+                crate::undo::UndoRequest::Redo => frame.history.redo_in_with_registry(
+                    doc,
+                    &self.author,
+                    self.instance_id,
+                    None,
+                    None,
+                    registry,
+                ),
             };
             frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));
             Ok(entry)

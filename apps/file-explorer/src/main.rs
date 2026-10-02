@@ -105,38 +105,42 @@ extern crate runtime_dylib;
 /// offscreen frame (a taffy layout error, or writing the output PNG).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    ui::launch::run(
-        &LaunchSpec::new_with_args("so.tilo.file-explorer", live_root)
-            .history(&file_explorer::framework_history::HISTORY)
-            .open_state(open_state)
-            .shot_handler(shot_handler)
-            .allowed_options(&["--size", "--path"])
-            .allowed_live_flags(&["--open-share-stdin"])
-            .max_positionals(1)
-            .scenarios(&[
-                "archive",
-                "archive-menu",
-                "context-menu",
-                "dropmove",
-                "error",
-                "grid",
-                "history",
-                "loading",
-                "menu",
-                "pindrag",
-                "places",
-                "remote-account",
-                "rename",
-                "reorder",
-                "select",
-                "status",
-                "sync",
-                "thumbnails",
-                "thumbnails-fs",
-                "undo-trash",
-            ]),
-    )?;
+    // Each window keeps a stable, distinct Automerge actor. The framework
+    // shell does not, so two Files windows would share one replica identity.
+    ui::launch::run(&standalone_launch_spec())?;
     Ok(())
+}
+
+fn standalone_launch_spec() -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.file-explorer", live_root)
+        .history(&file_explorer::framework_history::HISTORY)
+        .open_state(open_state)
+        .shot_handler(shot_handler)
+        .allowed_options(&["--size", "--path"])
+        .allowed_live_flags(&["--open-share-stdin"])
+        .max_positionals(1)
+        .scenarios(&[
+            "archive",
+            "archive-menu",
+            "context-menu",
+            "dropmove",
+            "error",
+            "grid",
+            "history",
+            "loading",
+            "menu",
+            "pindrag",
+            "places",
+            "remote-account",
+            "rename",
+            "reorder",
+            "select",
+            "status",
+            "sync",
+            "thumbnails",
+            "thumbnails-fs",
+            "undo-trash",
+        ])
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {

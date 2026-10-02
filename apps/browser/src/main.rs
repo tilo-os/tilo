@@ -87,6 +87,9 @@ pub fn main() {
         unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
     }
 
+    // The live handler installs the WebKit frame waker, and the dmabuf
+    // compositor when that path is on. The framework shell never wakes the
+    // window, so a page would sit until some other event.
     ui::launch::run_or_exit(&launch_spec());
 }
 

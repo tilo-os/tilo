@@ -51,31 +51,46 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.maps", maps::app_root)
-            .shot_root(shot_root)
-            .shot_handler(shot_handler)
-            .allowed_flags(&[
-                "--nav-closed",
-                "--empty",
-                "--edit-from",
-                "--transit-arrive",
-                "--search",
-                "--pois",
-                "--traffic",
-                "--offline",
-                "--menu",
-                "--attribution",
-                "--error",
-                "--floating-navigation",
-                "--floating-navigation-attached",
-                "--floating-navigation-hover",
-                "--floating-navigation-returning",
-                "--floating-navigation-returned",
-            ])
-            .allowed_options(&["--panel"])
-            .configure_app(|app| maps::actions::register(app.action_registry_mut())),
-    );
+    if standalone_capture() {
+        ui::launch::run_or_exit(&shot_launch_spec());
+        return;
+    }
+    ui::framework::run::<maps::MapsShell>();
+}
+
+fn standalone_capture() -> bool {
+    std::env::args().any(|arg| {
+        arg == "--shots"
+            || arg.starts_with("--shots=")
+            || arg == "--responsive-matrix"
+            || arg.starts_with("--responsive-matrix=")
+    })
+}
+
+fn shot_launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.maps", maps::app_root)
+        .shot_root(shot_root)
+        .shot_handler(shot_handler)
+        .allowed_flags(&[
+            "--nav-closed",
+            "--empty",
+            "--edit-from",
+            "--transit-arrive",
+            "--search",
+            "--pois",
+            "--traffic",
+            "--offline",
+            "--menu",
+            "--attribution",
+            "--error",
+            "--floating-navigation",
+            "--floating-navigation-attached",
+            "--floating-navigation-hover",
+            "--floating-navigation-returning",
+            "--floating-navigation-returned",
+        ])
+        .allowed_options(&["--panel"])
+        .configure_app(|app| maps::actions::register(app.action_registry_mut()))
 }
 
 #[allow(

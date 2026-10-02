@@ -76,7 +76,7 @@ mime = [
 # Every extension qdoc has a rich-text codec for. An extension the
 # format registry calls a document but no installed package claims is a
 # reportable dead end ("nothing here opens .html") rather than an open,
-# so the list is kept in step with `qdoc_codecs::DOCUMENT_EXTENSIONS`.
+# so the list is kept in step with `tilo_doc_codecs::DOCUMENT_EXTENSIONS`.
 # `html`/`htm` and `rtf` are import-only there; opening them still works,
 # saving back to the same format does not yet.
 ext  = [

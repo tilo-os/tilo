@@ -1,8 +1,8 @@
 //! Spreadsheet interchange: the [`SheetTable`] Sheets imports and exports, and
 //! Excel `.xlsx` import and export.
 //!
-//! Both package formats go through qdoc's codecs ([`qdoc_codecs::XlsxCodec`] here,
-//! [`qdoc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
+//! Both package formats go through qdoc's codecs ([`tilo_doc_codecs::XlsxCodec`] here,
+//! [`tilo_doc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
 //! shared zip-bomb and DTD/XXE bounds into plain cells, never through a
 //! dense grid, and only then materialised — within
 //! [`MAX_MATERIALIZED_SLOTS`] — as a table. The exchange unit is a dense grid
@@ -16,10 +16,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use qdoc::sheet::a1::{make_ref, parse_ref};
-use qdoc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
-use qdoc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
-use qdoc_codecs::{ParsedSheet, XlsxCodec};
+use tilo_doc::sheet::a1::{make_ref, parse_ref};
+use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
+use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
+use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
 use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
 
@@ -393,8 +393,8 @@ pub(crate) fn snapshot_of(
         })
         .collect();
     WorkbookSnapshot {
-        schema: qdoc::sheet::schema::SHEET_SCHEMA_ID.to_string(),
-        schema_version: qdoc::sheet::schema::SHEET_SCHEMA_VERSION,
+        schema: tilo_doc::sheet::schema::SHEET_SCHEMA_ID.to_string(),
+        schema_version: tilo_doc::sheet::schema::SHEET_SCHEMA_VERSION,
         sheets,
         properties: BTreeMap::new(),
     }

@@ -41,13 +41,13 @@
 //! a peer.
 
 use automerge::AutoCommit;
-use qdoc_rich_text::RichTextAction;
 use serde::{Deserialize, Serialize};
+use tilo_document::RichTextAction;
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::attachment_store;
@@ -348,6 +348,38 @@ pub enum MailAction {
     StartDraftBody(DraftBodySeed),
     /// One edit of the in-progress draft's body.
     EditDraftBody(RichTextAction),
+    /// First baseline for messages hydrated from the mail server. Existing
+    /// flags win, so a later fetch cannot overwrite a `MailAction`.
+    IngestBaselines { messages: Vec<IngestBaseline> },
+}
+
+/// A message id plus the server flags used only when the document has none yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngestBaseline {
+    pub id: String,
+    pub read: Option<bool>,
+    pub starred: Option<bool>,
+    pub folder: Option<String>,
+}
+
+impl IngestBaseline {
+    pub fn from_message(message: &crate::model::Message) -> Self {
+        Self {
+            id: message.id.to_string(),
+            read: Some(message.read),
+            starred: Some(message.starred),
+            folder: Some(message.folder.as_key().to_string()),
+        }
+    }
+
+    pub fn register_only(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            read: None,
+            starred: None,
+            folder: None,
+        }
+    }
 }
 
 /// What a draft body starts from: the HTML part when there is one, else the
@@ -387,6 +419,10 @@ impl DraftBodySeed {
 }
 
 impl Action for MailAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mail CRDT mutations stay in one Action::apply match"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MailAction::SetRead { ids, read } => {
@@ -486,6 +522,18 @@ impl Action for MailAction {
                 let body = MailDoc::draft_body(doc)
                     .ok_or_else(|| ActionError::Refused("the draft has no body".into()))?;
                 edit.apply_under(doc, &body)?;
+            }
+            MailAction::IngestBaselines { messages } => {
+                for message in messages {
+                    let folder = message.folder.as_deref().and_then(Folder::from_key);
+                    MailDoc::ingest_baseline(
+                        doc,
+                        &message.id,
+                        message.read,
+                        message.starred,
+                        folder,
+                    );
+                }
             }
         }
         Ok(())
@@ -941,73 +989,14 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
     })
 }
 
-/// Build Mail's resource tree: the mailbox root (exporting "New folder"),
-/// every system folder with its loaded messages nested (each exporting
-/// read / flag / move / delete + label actions), and one `mail.folder:<id>` per
-/// user-defined local folder (rename / delete). The Drafts folder additionally
-/// exports "Discard draft" when a draft is in progress. Every operation is the
-/// same action the on-screen affordance dispatches.
-/// Stable mailbox root. Accounts, folders and messages are dynamic children
-/// served through Mail's retained provider rather than root browse pages.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the mailbox resource catalogue is intentionally kept together so its typed action surface can be audited as one unit"
-)]
-pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
-    let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
-
-    root = root.with_action(view_spec(
+/// Compose, refresh, and calendar invitation. [`tilo_resource::publish`] keeps
+/// these Views and Effects. Account availability is overlaid afterwards.
+pub(crate) fn mailbox_local_operations() -> Vec<ActionSpec> {
+    let mut specs = vec![view_spec(
         "compose",
         "Compose message",
         &MailOperation::ComposeNew,
-    ));
-
-    // Search, history and agents need one *typed*, bounded operation for the
-    // same atomic batch work the selection toolbar performs.  These are kept
-    // as distinct operations (rather than a vague "delete" command with a
-    // hidden mode) so their risk and result are legible before execution.
-    root = root.with_action(bulk_spec(
-        "archive-messages",
-        "Archive messages",
-        "Stable ids of loaded messages to archive together",
-        true,
-        |ids| move_action(ids, Folder::Archive),
-    ));
-    root = root.with_action(bulk_spec(
-        "move-messages-to-trash",
-        "Move messages to Trash",
-        "Stable ids of loaded messages to move to Trash together",
-        true,
-        |ids| move_action(ids, Folder::Trash),
-    ));
-    root = root.with_action(bulk_spec(
-        "mark-messages-read",
-        "Mark messages read",
-        "Stable ids of loaded messages to mark read together",
-        true,
-        |ids| set_read_action(ids, true),
-    ));
-    root = root.with_action(bulk_spec(
-        "mark-messages-unread",
-        "Mark messages unread",
-        "Stable ids of loaded messages to mark unread together",
-        true,
-        |ids| set_read_action(ids, false),
-    ));
-    // Purge is intentionally not coupled to move-to-Trash.  It is a separate
-    // destructive, confirmed capability and the reducer below additionally
-    // refuses every id not currently in Trash.
-    root = root.with_action(
-        bulk_spec(
-            "purge-trashed-messages",
-            "Delete trashed messages permanently",
-            "Stable ids of messages already in Trash to delete permanently",
-            false,
-            purge_action,
-        )
-        .destructive(),
-    );
-
+    )];
     if let Ok(refresh) = ActionSpec::operation(
         "refresh",
         "Refresh current folder",
@@ -1015,174 +1004,271 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         MAIL_OPERATION_TYPE,
         &MailOperation::RefreshCurrentFolder,
     ) {
-        let refresh = refresh.with_contract(ActionContract {
+        specs.push(refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
             execution: ExecutionMode::Background { cancellable: false },
             result: ResultSpec::Job,
             tags: vec!["network".into(), "mail".into(), "refresh".into()],
             ..ActionContract::default()
-        });
-        root = root.with_action(if ctx.can_sync {
-            refresh
-        } else {
-            refresh.unavailable("account_offline", "No connected mail account is available")
-        });
+        }));
     }
-
-    // Mailbox-level: create a new local folder. The id is minted once when the
-    // name is committed, then baked into the envelope, so replay stays
-    // deterministic.
-    root = root.with_action(
-        ActionSpec::prompted(
-            "new-folder",
-            "New folder",
-            "Name",
-            "folder name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let id = uuid::Uuid::new_v4().to_string();
-                encode(&create_folder_action(&id, name.trim()))
+    specs.push(
+        ActionSpec::typed_operation(
+            "prepare-calendar-invitation",
+            "Prepare calendar invitation",
+            "recipient, subject and calendar payload",
+            OperationKind::Effect,
+            MAIL_OPERATION_TYPE,
+            vec![
+                ActionParam::required("to", ParamType::Text, "Invitation recipient"),
+                ActionParam::required("subject", ParamType::Text, "Invitation subject"),
+                ActionParam::required("body", ParamType::Text, "Plain-text invitation message"),
+                ActionParam::required(
+                    "calendar_ics",
+                    ParamType::Text,
+                    "Bounded text/calendar METHOD:REQUEST payload",
+                ),
+            ],
+            |args| {
+                prepare_calendar_invitation_operation(
+                    args.text("to").unwrap_or_default(),
+                    args.text("subject").unwrap_or_default(),
+                    args.text("body").unwrap_or_default(),
+                    args.text("calendar_ics").unwrap_or_default(),
+                )
             },
         )
-        .reversible(),
+        .with_contract(ActionContract {
+            permission: PermissionRequirement::Invite,
+            retry: RetryPolicy::Idempotent,
+            result: ResultSpec::Resource {
+                resource_kind: "mail.draft".into(),
+            },
+            tags: vec![
+                "mail".into(),
+                "calendar".into(),
+                "invitation".into(),
+                "device-local-sensitive".into(),
+            ],
+            ..ActionContract::default()
+        }),
     );
-
-    let invitation = ActionSpec::typed_operation(
-        "prepare-calendar-invitation",
-        "Prepare calendar invitation",
-        "recipient, subject and calendar payload",
-        OperationKind::Effect,
-        MAIL_OPERATION_TYPE,
-        vec![
-            ActionParam::required("to", ParamType::Text, "Invitation recipient"),
-            ActionParam::required("subject", ParamType::Text, "Invitation subject"),
-            ActionParam::required("body", ParamType::Text, "Plain-text invitation message"),
-            ActionParam::required(
-                "calendar_ics",
-                ParamType::Text,
-                "Bounded text/calendar METHOD:REQUEST payload",
-            ),
-        ],
-        |args| {
-            prepare_calendar_invitation_operation(
-                args.text("to").unwrap_or_default(),
-                args.text("subject").unwrap_or_default(),
-                args.text("body").unwrap_or_default(),
-                args.text("calendar_ics").unwrap_or_default(),
-            )
-        },
-    )
-    .with_contract(ActionContract {
-        permission: PermissionRequirement::Invite,
-        retry: RetryPolicy::Idempotent,
-        result: ResultSpec::Resource {
-            resource_kind: "mail.draft".into(),
-        },
-        tags: vec![
-            "mail".into(),
-            "calendar".into(),
-            "invitation".into(),
-            "device-local-sensitive".into(),
-        ],
-        ..ActionContract::default()
-    });
-    root = root.with_action(if ctx.can_sync {
-        invitation
-    } else {
-        invitation.unavailable(
-            "account_offline",
-            "Connect a Mail account before preparing an invitation",
-        )
-    });
-
-    root
+    specs
 }
 
-pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = mailbox_root(ctx);
-    root = root.with_child(
-        Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
-            ctx.accounts.iter().map(|(id, label, active)| {
-                Resource::new(
-                    format!("mail.account:{id}"),
-                    "mail.account",
-                    if *active {
-                        format!("{label} · Active")
-                    } else {
-                        label.clone()
-                    },
-                )
-                .with_action(view_spec(
-                    "open",
-                    "Open account",
-                    &MailOperation::RevealAccount { id: id.clone() },
-                ))
-            }),
+fn overlay_account_availability(root: &mut Resource, can_sync: bool) {
+    if can_sync {
+        return;
+    }
+    for (id, reason) in [
+        ("refresh", "No connected mail account is available"),
+        (
+            "prepare-calendar-invitation",
+            "Connect a Mail account before preparing an invitation",
         ),
-    );
-
-    // Every searchable system folder and loaded message gets a stable address.
-    // The supplied rows are already the current folder's projection (including
-    // virtual Starred), so they must not be filtered again by physical folder.
-    for folder in Folder::ALL {
-        let mut folder_node = system_folder_resource(folder, ctx.has_draft);
-        if folder == ctx.current_folder {
-            let mut threads: Vec<(String, String, Vec<&MessageRow>)> = Vec::new();
-            for message in ctx.messages.iter().rev().take(OPEN_MESSAGE_LIMIT) {
-                if let Some((_, _, messages)) = threads
-                    .iter_mut()
-                    .find(|(id, _, _)| id == &message.thread_id)
-                {
-                    messages.push(message);
-                } else {
-                    threads.push((
-                        message.thread_id.clone(),
-                        message.thread_subject.clone(),
-                        vec![message],
-                    ));
-                }
-            }
-            for (thread_id, thread_subject, messages) in threads {
-                let stable = thread_resource_key(folder, &thread_id);
-                folder_node = folder_node.with_child(
-                    Resource::new(
-                        format!("mail.thread:{stable}"),
-                        "mail.thread",
-                        if thread_subject.is_empty() {
-                            "(no subject)".into()
-                        } else {
-                            thread_subject
-                        },
-                    )
-                    .with_children(messages.into_iter().map(message_resource)),
-                );
-            }
+    ] {
+        if let Some(index) = root.actions.iter().position(|action| action.id == id) {
+            let spec = root.actions.remove(index);
+            root.actions
+                .insert(index, spec.unavailable("account_offline", reason));
         }
-        root = root.with_child(folder_node);
     }
+}
 
-    // User-defined local folders — rename / delete.
-    for (id, name) in &ctx.custom_folders {
-        let rid = id.clone();
-        let mut f = Resource::new(format!("mail.folder:{id}"), "mail.folder", name.clone());
-        f = f.with_action(
-            ActionSpec::prompted(
-                "rename",
-                "Rename folder",
-                "Name",
-                "folder name…",
-                ExecutionLocus::ClientLocal,
-                move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
+fn accounts_collection(ctx: &MailResourceCtx) -> Resource {
+    Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
+        ctx.accounts.iter().map(|(id, label, active)| {
+            Resource::new(
+                format!("mail.account:{id}"),
+                "mail.account",
+                if *active {
+                    format!("{label} · Active")
+                } else {
+                    label.clone()
+                },
             )
-            .reversible(),
-        );
-        f = f.with_action(
-            immediate_spec("delete-folder", "Delete folder", &delete_folder_action(id))
-                .destructive(),
-        );
-        root = root.with_child(f);
-    }
+            .with_action(view_spec(
+                "open",
+                "Open account",
+                &MailOperation::RevealAccount { id: id.clone() },
+            ))
+        }),
+    )
+}
 
+/// Threads for the folder the user has open. `ctx.messages` is already that
+/// folder's projection, including virtual Starred, so it is not filtered again.
+/// A message [`tilo_resource::publish`] already listed keeps that document
+/// action; open, reply, and attachments are added beside it.
+fn current_folder_threads(
+    folder: Folder,
+    ctx: &MailResourceCtx,
+    published_messages: &[Resource],
+) -> Vec<Resource> {
+    let mut threads: Vec<(String, String, Vec<&MessageRow>)> = Vec::new();
+    for message in ctx.messages.iter().rev().take(OPEN_MESSAGE_LIMIT) {
+        if let Some((_, _, messages)) = threads
+            .iter_mut()
+            .find(|(id, _, _)| id == &message.thread_id)
+        {
+            messages.push(message);
+        } else {
+            threads.push((
+                message.thread_id.clone(),
+                message.thread_subject.clone(),
+                vec![message],
+            ));
+        }
+    }
+    threads
+        .into_iter()
+        .map(|(thread_id, thread_subject, messages)| {
+            let stable = thread_resource_key(folder, &thread_id);
+            Resource::new(
+                format!("mail.thread:{stable}"),
+                "mail.thread",
+                if thread_subject.is_empty() {
+                    "(no subject)".into()
+                } else {
+                    thread_subject
+                },
+            )
+            .with_children(
+                messages
+                    .into_iter()
+                    .map(|message| overlay_published_message(message, published_messages)),
+            )
+        })
+        .collect()
+}
+
+/// The thread row for one message. The published message is the row; open,
+/// reply, and attachments are added when that row does not already have them.
+fn overlay_published_message(message: &MessageRow, published_messages: &[Resource]) -> Resource {
+    let live = message_resource(message);
+    let id = format!("mail.message:{}", message.id);
+    let Some(published) = published_messages
+        .iter()
+        .find(|child| child.id.as_str() == id)
+    else {
+        return live;
+    };
+    let mut resource = published.clone();
+    for action in live.actions {
+        if !resource.actions.iter().any(|have| have.id == action.id) {
+            resource.actions.push(action);
+        }
+    }
+    for child in live.children {
+        if !resource.children.iter().any(|have| have.id == child.id) {
+            resource.children.push(child);
+        }
+    }
+    resource
+}
+
+fn system_folder_key(id: &str) -> Option<Folder> {
+    let key = id.strip_prefix("mail.folder:")?;
+    Folder::ALL
+        .into_iter()
+        .find(|folder| folder.as_key() == key)
+}
+
+/// Open, and the draft affordances, on a folder [`tilo_resource::publish`]
+/// already emitted. The open folder's children become the live thread page.
+fn overlay_published_folder(folder_node: &mut Resource, folder: Folder, ctx: &MailResourceCtx) {
+    if !folder_node.actions.iter().any(|action| action.id == "open") {
+        folder_node.actions.push(view_spec(
+            "open",
+            "Open folder",
+            &MailOperation::RevealFolder {
+                folder: folder.as_key().to_string(),
+            },
+        ));
+    }
+    if folder == Folder::Drafts && ctx.has_draft {
+        if !folder_node
+            .actions
+            .iter()
+            .any(|action| action.id == "discard-draft")
+        {
+            folder_node.actions.push(
+                immediate_spec("discard-draft", "Discard draft", &discard_draft_action())
+                    .destructive(),
+            );
+        }
+        if !folder_node
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == "mail.draft:current")
+        {
+            folder_node.children.push(
+                Resource::new("mail.draft:current", "mail.draft", "Current draft")
+                    .with_action(view_spec(
+                        "open",
+                        "Continue editing",
+                        &MailOperation::RevealDraft,
+                    ))
+                    .with_action(
+                        immediate_spec("discard", "Discard draft", &discard_draft_action())
+                            .destructive(),
+                    ),
+            );
+        }
+    }
+    if folder == ctx.current_folder {
+        let draft = folder_node
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "mail.draft:current")
+            .cloned();
+        let published_messages: Vec<Resource> = folder_node
+            .children
+            .iter()
+            .filter(|child| child.kind == "mail.message")
+            .cloned()
+            .collect();
+        folder_node.children = current_folder_threads(folder, ctx, &published_messages);
+        if let Some(draft) = draft {
+            folder_node.children.insert(0, draft);
+        }
+    }
+}
+
+pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let state =
+        <crate::resource::Mail as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut root = ui::tilo_resource::publish::<crate::resource::Mail>(
+        "mail.mailbox",
+        &ctx.mailbox_label,
+        &state,
+    );
+    overlay_account_availability(&mut root, ctx.can_sync);
+    // Accounts are the signed-in session, not mailbox document rows.
+    if !root
+        .children
+        .iter()
+        .any(|child| child.id.as_str() == "mail.accounts")
+    {
+        root.children.insert(0, accounts_collection(ctx));
+    }
+    for child in &mut root.children {
+        if let Some(folder) = system_folder_key(child.id.as_str()) {
+            overlay_published_folder(child, folder, ctx);
+        }
+    }
+    // A custom folder the live context knows and the document has not published.
+    for (id, name) in &ctx.custom_folders {
+        let resource_id = format!("mail.folder:{id}");
+        if root
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == resource_id)
+        {
+            continue;
+        }
+        root.children.push(publish_custom_folder_document(id, name));
+    }
     vec![root]
 }
 
@@ -1223,6 +1309,189 @@ pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resourc
     folder_node
 }
 
+/// Mailbox-level Document ops for [`tilo_resource::publish`] — bulk triage and
+/// new-folder. Compose, refresh, and the invitation are Views and Effects on
+/// [`mailbox_local_operations`].
+pub(crate) fn mailbox_bound_document_actions() -> Vec<ActionSpec> {
+    vec![
+        bulk_spec(
+            "archive-messages",
+            "Archive messages",
+            "Stable ids of loaded messages to archive together",
+            true,
+            |ids| move_action(ids, Folder::Archive),
+        ),
+        bulk_spec(
+            "move-messages-to-trash",
+            "Move messages to Trash",
+            "Stable ids of loaded messages to move to Trash together",
+            true,
+            |ids| move_action(ids, Folder::Trash),
+        ),
+        bulk_spec(
+            "mark-messages-read",
+            "Mark messages read",
+            "Stable ids of loaded messages to mark read together",
+            true,
+            |ids| set_read_action(ids, true),
+        ),
+        bulk_spec(
+            "mark-messages-unread",
+            "Mark messages unread",
+            "Stable ids of loaded messages to mark unread together",
+            true,
+            |ids| set_read_action(ids, false),
+        ),
+        bulk_spec(
+            "purge-trashed-messages",
+            "Delete trashed messages permanently",
+            "Stable ids of messages already in Trash to delete permanently",
+            false,
+            purge_action,
+        )
+        .destructive(),
+        ActionSpec::prompted(
+            "new-folder",
+            "New folder",
+            "Name",
+            "folder name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let id = uuid::Uuid::new_v4().to_string();
+                encode(&create_folder_action(&id, name.trim()))
+            },
+        )
+        .reversible(),
+    ]
+}
+
+/// Message Document ops for [`tilo_resource::publish`] — read / star / archive /
+/// delete / labels. Open / reply / forward / save-attachment stay Views/Effects.
+pub(crate) fn publish_message_document(message: &MessageRow) -> Resource {
+    let mut resource = Resource::new(
+        format!("mail.message:{}", message.id),
+        "mail.message",
+        message_label(message),
+    );
+    resource = resource.with_action(immediate_spec(
+        "read",
+        if message.read {
+            "Mark unread"
+        } else {
+            "Mark read"
+        },
+        &set_read_action(vec![message.id.clone()], !message.read),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "star",
+        if message.starred { "Unstar" } else { "Star" },
+        &set_starred_action(vec![message.id.clone()], !message.starred),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "archive",
+        "Archive",
+        &move_action(vec![message.id.clone()], Folder::Archive),
+    ));
+    let delete = if message.folder == Folder::Trash {
+        immediate_spec(
+            "delete",
+            "Delete permanently",
+            &purge_action(vec![message.id.clone()]),
+        )
+    } else {
+        immediate_spec(
+            "delete",
+            "Delete",
+            &move_action(vec![message.id.clone()], Folder::Trash),
+        )
+    };
+    resource = resource.with_action(delete.destructive());
+
+    let message_id = message.id.clone();
+    resource = resource.with_action(ActionSpec::prompted(
+        "add-label",
+        "Add label…",
+        "Label",
+        "label…",
+        ExecutionLocus::ClientLocal,
+        move |label: &str| encode(&add_label_action(vec![message_id.clone()], label.trim())),
+    ));
+    for (index, label) in message.labels.iter().enumerate() {
+        resource = resource.with_action(immediate_spec(
+            &format!("remove-label-{index}"),
+            &format!("Remove label “{label}”"),
+            &remove_label_action(vec![message.id.clone()], label),
+        ));
+    }
+    resource
+}
+
+fn publish_system_folder_document(folder: Folder, has_draft: bool) -> Resource {
+    let mut folder_node = Resource::new(
+        format!("mail.folder:{}", folder.as_key()),
+        "mail.folder",
+        folder.title().to_string(),
+    );
+    if folder == Folder::Drafts && has_draft {
+        folder_node = folder_node.with_action(
+            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
+        );
+        folder_node = folder_node.with_child(
+            Resource::new("mail.draft:current", "mail.draft", "Current draft").with_action(
+                immediate_spec("discard", "Discard draft", &discard_draft_action()).destructive(),
+            ),
+        );
+    }
+    folder_node
+}
+
+fn publish_custom_folder_document(id: &str, name: &str) -> Resource {
+    let rid = id.to_owned();
+    Resource::new(format!("mail.folder:{id}"), "mail.folder", name.to_owned())
+        .with_action(
+            ActionSpec::prompted(
+                "rename",
+                "Rename folder",
+                "Name",
+                "folder name…",
+                ExecutionLocus::ClientLocal,
+                move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
+            )
+            .reversible(),
+        )
+        .with_action(
+            immediate_spec("delete-folder", "Delete folder", &delete_folder_action(id))
+                .destructive(),
+        )
+}
+
+/// Folder / message Document children for [`tilo_resource::publish`]. Bounded
+/// like the standalone eager page; subjects stay on the contextual tree.
+pub(crate) fn publish_document_children(state: &crate::resource::MailboxState) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let mut remaining = OPEN_MESSAGE_LIMIT;
+    for folder in Folder::ALL {
+        let mut folder_node = publish_system_folder_document(folder, state.has_draft);
+        if remaining > 0 {
+            let folder_messages: Vec<&MessageRow> = state
+                .messages
+                .iter()
+                .filter(|message| message.folder == folder)
+                .take(remaining)
+                .collect();
+            for message in folder_messages {
+                folder_node = folder_node.with_child(publish_message_document(message));
+                remaining = remaining.saturating_sub(1);
+            }
+        }
+        children.push(folder_node);
+    }
+    for (id, name) in &state.custom_folders {
+        children.push(publish_custom_folder_document(id, name));
+    }
+    children
+}
+
 pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
     // The RFC References root (or the model's documented legacy fallback) is
     // a stable domain identity. Scoping it to the folder prevents virtual
@@ -1231,8 +1500,9 @@ pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
     format!("{}:{thread_id}", folder.as_key())
 }
 
-impl ResourceProvider for crate::app::MailApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MailApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut roots = provide_resources(&self.mail_resource_ctx(doc), doc);
         if let Some(error) = self.mail_search_error()
             && let Some(mailbox) = roots
@@ -1248,7 +1518,7 @@ impl ResourceProvider for crate::app::MailApp {
         roots
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -1261,13 +1531,23 @@ impl ResourceProvider for crate::app::MailApp {
             None
         }
 
+        if id.starts_with("mail.attachment:") || id.starts_with("mail.thread:") {
+            // A row already on the published mailbox keeps that document
+            // action. The builders below cover a row the open page did
+            // not materialise.
+            if let Some(found) = find(self.publish_resources(doc), id) {
+                return Some(found);
+            }
+        }
         if let Some(message_id) = id.strip_prefix("mail.message:") {
-            // The open tree carries only a small current-folder prefix. Do
-            // not make the remainder of a loaded mailbox unreachable to an
-            // agent or a canonical search address merely because it was not
-            // among those materialised rows.
+            // Document children only carry triage ops; View ops (open/reply/…)
+            // live on `message_resource`. Overlay so search/lazy resolve never
+            // returns a mail.message without `open`.
             let row = self.resource_message_row(message_id)?;
-            return Some(message_resource(&row));
+            let published = find(self.publish_resources(doc), id)
+                .map(|resource| vec![resource])
+                .unwrap_or_default();
+            return Some(overlay_published_message(&row, &published));
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')
@@ -1522,12 +1802,9 @@ mod tests {
                 "messages are grouped under searchable thread resources"
             );
             let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
-            let message = <MailApp as ResourceProvider>::resource(
-                &app,
-                &state.doc,
-                &format!("mail.message:{id}"),
-            )
-            .expect("a message remains addressable outside the snapshot");
+            let message =
+                MailApp::publish_resource(&app, &state.doc, &format!("mail.message:{id}"))
+                    .expect("a message remains addressable outside the snapshot");
             let msg_actions: Vec<&str> = message.actions.iter().map(|a| a.id.as_str()).collect();
             for want in ["read", "star", "archive", "delete", "add-label"] {
                 assert!(
@@ -1568,9 +1845,8 @@ mod tests {
                     .any(|resource| resource.id.as_str() == "mail.search-status"),
                 "the persistent index failure is published, not just shown in a toast"
             );
-            let status =
-                <MailApp as ResourceProvider>::resource(&app, &state.doc, "mail.search-status")
-                    .expect("diagnostic resource resolves exactly");
+            let status = MailApp::publish_resource(&app, &state.doc, "mail.search-status")
+                .expect("diagnostic resource resolves exactly");
             assert_eq!(status.kind, "mail.search_status");
 
             app.refresh_mail_search_for_test()
@@ -1807,7 +2083,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: mailbox_seed(),
         registry: registry(),
-        resources: |doc| with_seeded(|seeded| ResourceProvider::resources(&seeded.app, doc)),
+        resources: |doc| with_seeded(|seeded| seeded.app.publish_resources(doc)),
         palette: ["New folder", "Compose message", "Archive", "Rename folder", "Discard draft"],
         replay: [
             set_starred => |doc| {
@@ -2008,7 +2284,7 @@ mod tests {
 
     #[test]
     fn the_draft_body_is_rich_text_started_and_edited_by_actions() {
-        use qdoc_rich_text::action::RegionKind;
+        use tilo_document::action::RegionKind;
         let text = |doc: &mut AutoCommit| {
             let body = MailDoc::draft_body(doc).expect("a body");
             tilo_rich_text::blocks_under(doc, &body)

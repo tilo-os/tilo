@@ -24,9 +24,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
-};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -766,6 +764,14 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Set by [`ResourceSurface::attach`]. The framework root already publishes
+    /// the session door; this widget then returns only the live transcript.
+    framework_hosted: bool,
+    /// Dispatcher stored by [`ResourceSurface::attach`]. Document-level session
+    /// actions submit through it while this widget is hosted.
+    framework_dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
+    /// Standalone session actions submit through this host.
+    session_actions: ui::ActionHost,
     /// Identifies the local PTY whose presentation is mirrored into this
     /// record. A terminal tab is durable, but its process is not: after a
     /// logout the next login spawns a new shell. Without an incarnation
@@ -799,6 +805,10 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "terminal MainBody wires many host services at construction"
+    )]
     pub fn new(
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -906,6 +916,9 @@ impl TerminalWidget {
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            framework_hosted: false,
+            framework_dispatch: None,
+            session_actions: ui::ActionHost::new(),
             local_session_id: None,
             local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
@@ -948,18 +961,10 @@ impl TerminalWidget {
         // the tab. Delete the old objects atomically before `init_crdt`
         // creates blank replacements for the new process. Notes/editor data
         // and the tab itself are separate records and remain untouched.
-        for key in [
-            "terminal_grid",
-            "terminal_grid_alt",
-            "cursor",
-            "terminal_links",
-            "terminal_images",
-            "terminal_title",
-            "terminal_pane_id",
-        ] {
-            let _ = state.delete(root, key);
-        }
-        let _ = state.put(root, "terminal_local_session", session_id);
+        let action = crate::resource::TerminalAction::BindLocalSession {
+            session_id: session_id.to_string(),
+        };
+        self.apply_session_action(state, &action);
 
         self.grid_id = None;
         self.alt_grid_id = None;
@@ -1189,102 +1194,65 @@ impl TerminalWidget {
         transcript
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of an owned String is infallible"
-    )]
     fn session_resource(&self) -> Resource {
+        self.session_resource_with(None)
+    }
+
+    /// Title and pane come from the document once it stores them. Paste and
+    /// the context menu, which have no document, keep the widget session.
+    fn session_resource_with(&self, doc: Option<&AutoCommit>) -> Resource {
+        let (title, pane_id) = self.published_session(doc);
         let disconnected = self.is_disconnected();
         let unavailable_reason =
             "The terminal process has ended or its PTY failed; input cannot be sent.";
-        let label = if self.title == "Terminal" {
+        let label = if title == "Terminal" {
             "Terminal session".to_string()
         } else {
-            format!("Terminal — {}", self.title)
+            format!("Terminal — {title}")
         };
-        let mut terminal = Resource::new(self.terminal_resource_id(), "terminal.session", label);
-        for (id, label, prompt, placeholder, type_id) in [
-            ("send", "Send text", "Text to send", "text", "terminal.send"),
-            (
-                "run",
-                "Run command",
-                "Command to run",
-                "command",
-                "terminal.run",
-            ),
-        ] {
-            let mut spec = ActionSpec::prompted_operation(
-                id,
-                label,
-                prompt,
-                placeholder,
-                OperationKind::Effect,
-                type_id,
-                move |text| {
-                    EncodedAction::encode_operation(type_id, &text).expect("string payload")
-                },
-            )
-            .with_description(if id == "run" {
-                "Runs one reviewed command in this live process; confirmation is required."
-            } else {
-                "Writes reviewed text without pressing Enter; confirmation is required."
-            })
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                spec = spec.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(spec);
-        }
-        for (id, label) in [
-            ("interrupt", "Interrupt process"),
-            ("clear", "Clear screen"),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
-                if disconnected {
-                    control = control.unavailable("session_disconnected", unavailable_reason);
+        let resource_id = if pane_id.is_empty() {
+            self.terminal_resource_id()
+        } else {
+            format!("terminal:{pane_id}")
+        };
+        let state = crate::resource::SessionState { title, pane_id };
+        let mut terminal =
+            ui::tilo_resource::publish::<crate::resource::Terminal>(&resource_id, &label, &state);
+        if disconnected {
+            for action in &mut terminal.actions {
+                if matches!(
+                    action.id.as_str(),
+                    "send" | "run" | "interrupt" | "clear" | "paste" | "paste-primary"
+                ) {
+                    let current = action.clone();
+                    *action = current.unavailable("session_disconnected", unavailable_reason);
                 }
-                terminal.actions.push(control);
             }
-        }
-        for (id, label) in [
-            ("paste", "Paste"),
-            ("paste-primary", "Paste primary selection"),
-        ] {
-            let mut paste = ActionSpec::typed_operation(
-                id,
-                label,
-                "text",
-                OperationKind::Effect,
-                "terminal.paste",
-                vec![ActionParam::required(
-                    "text",
-                    ParamType::Text,
-                    "Exact text to paste after confirmation",
-                )],
-                |args| {
-                    EncodedAction::encode_operation(
-                        "terminal.paste",
-                        &args.text("text").unwrap_or_default(),
-                    )
-                    .expect("a borrowed string always serializes")
-                },
-            )
-            .with_description(
-                "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
-            )
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                paste = paste.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(paste);
         }
         terminal.children.push(self.transcript_resource());
         terminal
+    }
+
+    fn published_session(&self, doc: Option<&AutoCommit>) -> (String, String) {
+        let widget = (self.title.clone(), self.pane_id.clone());
+        let Some(doc) = doc else {
+            return widget;
+        };
+        let recorded = automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_title")
+            .ok()
+            .flatten()
+            .is_some()
+            || automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_pane_id")
+                .ok()
+                .flatten()
+                .is_some();
+        if !recorded {
+            return widget;
+        }
+        match <crate::resource::Terminal as ui::tilo_resource::Resource>::read(doc) {
+            Ok(state) => (state.title, state.pane_id),
+            Err(_) => widget,
+        }
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -2042,7 +2010,8 @@ impl TerminalWidget {
         if let Some(t) = title_out
             && t != self.title
         {
-            let _ = state.put(root, "terminal_title", t.clone());
+            let action = crate::resource::TerminalAction::SetTitle { title: t.clone() };
+            self.apply_session_action(state, &action);
             self.title = t;
         }
 
@@ -2183,59 +2152,63 @@ impl TerminalWidget {
     }
 
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Session actions cover the document root and a code-editor terminal
+        // panel. Any other embedding still keeps its grid on that object.
+        let actions_cover = root == &automerge::ROOT
+            || matches!(
+                state.get(&automerge::ROOT, "terminal_panel"),
+                Ok(Some((_, id))) if &id == root
+            );
+        if actions_cover {
+            self.apply_session_action(state, &crate::resource::TerminalAction::EnsureStructure);
+        }
         if self.grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
-                self.grid_id = Some(id);
-            } else {
-                // If the doc rejects this `put_object` there is no grid to
-                // stand up; bail rather than unwrap into a panic.
-                let Ok(id) = state.put_object(root, "terminal_grid", ObjType::List) else {
-                    return;
-                };
-                self.grid_id = Some(id);
+            self.grid_id =
+                adopt_or_create(state, root, "terminal_grid", ObjType::List, actions_cover);
+            if self.grid_id.is_none() {
+                return;
             }
         }
         let Some(grid_id) = self.grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &grid_id, self.height, &mut self.line_ids);
+        Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) =
-                state.get(root, "terminal_grid_alt")
-            {
-                self.alt_grid_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_grid_alt", ObjType::List) else {
-                    return;
-                };
-                self.alt_grid_id = Some(id);
+            self.alt_grid_id = adopt_or_create(
+                state,
+                root,
+                "terminal_grid_alt",
+                ObjType::List,
+                actions_cover,
+            );
+            if self.alt_grid_id.is_none() {
+                return;
             }
         }
         let Some(alt_grid_id) = self.alt_grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &alt_grid_id, self.height, &mut self.alt_line_ids);
+        Self::ensure_lines(
+            state,
+            &alt_grid_id,
+            true,
+            self.height,
+            &mut self.alt_line_ids,
+        );
 
         if self.links_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
-                self.links_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_links", ObjType::Map) else {
-                    return;
-                };
-                self.links_id = Some(id);
+            self.links_id =
+                adopt_or_create(state, root, "terminal_links", ObjType::Map, actions_cover);
+            if self.links_id.is_none() {
+                return;
             }
         }
         if self.images_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
-            {
-                self.images_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_images", ObjType::List) else {
-                    return;
-                };
-                self.images_id = Some(id);
+            self.images_id =
+                adopt_or_create(state, root, "terminal_images", ObjType::List, actions_cover);
+            if self.images_id.is_none() {
+                return;
             }
         }
 
@@ -2245,6 +2218,14 @@ impl TerminalWidget {
         // to touch the doc writes its id; late joiners read it back.
         if let Some(id) = Self::shared_pane_id(state, root) {
             self.pane_id = id;
+        } else if actions_cover {
+            let action = crate::resource::TerminalAction::ClaimPane {
+                pane_id: self.pane_id.clone(),
+            };
+            self.apply_session_action(state, &action);
+            if let Some(id) = Self::shared_pane_id(state, root) {
+                self.pane_id = id;
+            }
         } else {
             let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
         }
@@ -2261,7 +2242,18 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
+            } else if actions_cover
+                && ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
+                    state,
+                )
+                .is_ok()
+                && let Ok(Some((Value::Object(ObjType::Map), cursor_id))) =
+                    state.get(root, "cursor")
+            {
+                self.cursor_id = Some(cursor_id);
+            } else if !actions_cover
+                && let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
                 && state.put(&cursor_id, "x", 0u64).is_ok()
                 && state.put(&cursor_id, "y", 0u64).is_ok()
             {
@@ -2274,23 +2266,35 @@ impl TerminalWidget {
     /// `ids` to mirror the list. Shared by the main and alternate buffers.
     /// Lines are created empty; `print` grows them on demand (see below),
     /// so no width is needed here.
-    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, ids: &mut Vec<ObjId>) {
-        let current_len = state.length(grid_id);
-        if current_len < min_len {
-            // Blank lines are created *empty*, not pre-filled with `width`
-            // spaces. Pre-filling every new line splices `width` characters
-            // into a fresh Automerge `Text` per row, and the columnar op-set
-            // insert is O(doc) per character — so seeding a full screen the
-            // first time a terminal syncs cost seconds (≈3 s in debug for an
-            // 80-col screen) and froze the whole compositor. A short/empty
-            // line renders as blank cells (the draw path already pads
-            // visually) and the write path (`print`) pads a line on demand
-            // when the cursor lands past its current end, so nothing depends
-            // on the eager fill.
-            for y in current_len..min_len {
-                // A failed insert means the doc rejected this op; further
-                // inserts at later indices would only compound the
-                // misalignment, so stop rather than push on.
+    fn ensure_lines(
+        state: &mut AutoCommit,
+        grid_id: &ObjId,
+        alternate: bool,
+        min_len: usize,
+        ids: &mut Vec<ObjId>,
+    ) {
+        // Blank lines stay empty. Pre-filling every new line with spaces
+        // splices a full row of characters into a fresh text object, and that
+        // insert is O(doc) per character — seeding an 80-column screen froze
+        // the compositor. Drawing pads visually; print grows a line when the
+        // cursor lands past its end.
+        let Some(min_len) = u32::try_from(min_len).ok() else {
+            return;
+        };
+        let key = if alternate {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(state, key, grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
+                state,
+            );
+        } else {
+            let target = min_len as usize;
+            let current_len = state.length(grid_id);
+            for y in current_len..target {
                 let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
                     break;
                 };
@@ -2307,6 +2311,40 @@ impl TerminalWidget {
             }
         }
     }
+}
+
+fn grid_is_document_root(state: &AutoCommit, key: &str, grid_id: &ObjId) -> bool {
+    let at = |parent: &ObjId| {
+        matches!(
+            state.get(parent, key),
+            Ok(Some((_, id))) if &id == grid_id
+        )
+    };
+    if at(&automerge::ROOT) {
+        return true;
+    }
+    matches!(
+        state.get(&automerge::ROOT, "terminal_panel"),
+        Ok(Some((Value::Object(ObjType::Map), panel))) if at(&panel)
+    )
+}
+
+fn adopt_or_create(
+    state: &mut AutoCommit,
+    root: &ObjId,
+    key: &str,
+    kind: ObjType,
+    at_document_root: bool,
+) -> Option<ObjId> {
+    if let Ok(Some((Value::Object(found), id))) = state.get(root, key)
+        && found == kind
+    {
+        return Some(id);
+    }
+    if at_document_root {
+        return None;
+    }
+    state.put_object(root, key, kind).ok()
 }
 
 /// Retained scrollback lines for the main buffer. Sized for a daily-driver
@@ -3240,18 +3278,88 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
     }
 }
 
+impl TerminalWidget {
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.framework_hosted = true;
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.framework_hosted = true;
+    }
+
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>,
+    ) {
+        self.framework_dispatch = Some(dispatcher);
+        self.mark_framework_hosted();
+    }
+
+    /// Document-level session action: the stored dispatcher when hosted, the
+    /// local action host otherwise.
+    pub(crate) fn apply_session_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::TerminalAction,
+    ) {
+        let context =
+            ui::tilo_actions::ActionContext::for_action("so.tilo.terminal", "Terminal", action);
+        if let Some(dispatcher) = self.framework_dispatch.clone() {
+            let _ = dispatcher.apply_now_with(doc, action, context);
+        } else {
+            self.session_actions.dispatch_with_context(
+                doc,
+                <crate::resource::Terminal as ui::tilo_resource::Resource>::ACTION_TYPE,
+                action,
+                context,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retains_framework_dispatcher(&self) -> bool {
+        self.framework_dispatch.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_session_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.session_actions.last_dispatched()
+    }
+}
+
 impl ui::resources::PublishesResources for TerminalWidget {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.session_resource()]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.framework_hosted {
+            return vec![self.transcript_resource()];
+        }
+        vec![self.session_resource_with(Some(doc))]
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
         let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| self.session_resource())
+            .then(|| {
+                if self.framework_hosted {
+                    self.transcript_resource()
+                } else {
+                    self.session_resource_with(Some(doc))
+                }
+            })
             .into_iter()
             .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
@@ -3276,13 +3384,41 @@ impl ui::resources::PublishesResources for TerminalWidget {
         }
         Some(format!("{:016x}", revision.finish()))
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == self.terminal_resource_id() {
-            return Some(self.session_resource());
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resource: &Resource, id: &str) -> Option<Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            for child in &resource.children {
+                if let Some(found) = find(child, id) {
+                    return Some(found);
+                }
+            }
+            None
         }
-        if id == self.terminal_transcript_target() {
-            return Some(self.transcript_resource());
+        if self.framework_hosted {
+            if id == self.terminal_resource_id() {
+                return None;
+            }
+            let transcript = self.transcript_resource();
+            if let Some(found) = find(&transcript, id) {
+                return Some(found);
+            }
+            return self.linked_resource(id);
         }
+        let session = self.session_resource_with(Some(doc));
+        if id == self.terminal_resource_id() || id == session.id.as_str() {
+            return Some(session);
+        }
+        if let Some(found) = session.children.iter().find_map(|child| find(child, id)) {
+            return Some(found);
+        }
+        self.linked_resource(id)
+    }
+}
+
+impl TerminalWidget {
+    fn linked_resource(&self, id: &str) -> Option<ui::tilo_actions::Resource> {
         let prefix = format!("terminal.link:{}:", self.pane_id);
         let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
         self.links
@@ -5522,9 +5658,31 @@ pub struct TerminalPerformer<'a> {
 /// other emulator action runs, or the feed ends.
 pub struct PrintBuf {
     line_obj: ObjId,
-    text_id: ObjId,
     text: String,
     attrs: Vec<u8>,
+    alternate: bool,
+    index: u32,
+}
+
+fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    let at = at.min(chars.len());
+    let end = (at + delete).min(chars.len());
+    chars.splice(at..end, insert.chars());
+    chars.into_iter().collect()
+}
+
+fn blank_attr_range(attrs: &mut [u8], from: usize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let empty = Attr::default().pack();
+    for index in from..(from + count) {
+        let start = index * ATTR_BYTES;
+        if let Some(dest) = attrs.get_mut(start..start + ATTR_BYTES) {
+            dest.copy_from_slice(&empty);
+        }
+    }
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
@@ -5556,6 +5714,9 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let Some(index) = u32::try_from(y).ok() else {
+            return;
+        };
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
@@ -5586,9 +5747,10 @@ impl Perform for TerminalPerformer<'_> {
             };
             self.print_buf = Some(PrintBuf {
                 line_obj,
-                text_id,
                 text,
                 attrs,
+                alternate: *self.alt_active,
+                index,
             });
         }
         // `need_load` above always leaves `print_buf` populated by this
@@ -5792,8 +5954,10 @@ impl Perform for TerminalPerformer<'_> {
                     && let Some(id) = self.next_link_id.checked_add(1)
                 {
                     *self.next_link_id = id;
-                    let _ = self.state.put(&self.links_id, id.to_string(), url);
-                    self.current_link_id = id;
+                    let action = crate::resource::TerminalAction::RegisterLink { id, url };
+                    if ui::tilo_actions::Action::apply(&action, self.state).is_ok() {
+                        self.current_link_id = id;
+                    }
                 }
             }
             _ => {}
@@ -5821,36 +5985,20 @@ impl TerminalPerformer<'_> {
                 return;
             }
         };
-        let index = self.state.length(&self.images_id);
-        let Ok(placement) = self
-            .state
-            .insert_object(&self.images_id, index, ObjType::Map)
-        else {
-            return;
+        let action = crate::resource::TerminalAction::PlaceImage {
+            hash,
+            mime: image.mime.to_string(),
+            byte_len: image.bytes.len() as u64,
+            row: self.absolute_y() as u64,
+            col: self.cursor_x as u64,
+            columns: u64::from(image.columns),
+            rows: u64::from(image.rows),
+            pixel_width: u64::from(image.pixel_width),
+            pixel_height: u64::from(image.pixel_height),
+            protocol_id: image.protocol_id.map(u64::from),
+            alternate_screen: *self.alt_active,
         };
-        let _ = self.state.put(&placement, "hash", hash);
-        let _ = self.state.put(&placement, "mime", image.mime);
-        let _ = self
-            .state
-            .put(&placement, "byte_len", image.bytes.len() as u64);
-        let _ = self.state.put(&placement, "row", self.absolute_y() as u64);
-        let _ = self.state.put(&placement, "col", self.cursor_x as u64);
-        let _ = self
-            .state
-            .put(&placement, "columns", u64::from(image.columns));
-        let _ = self.state.put(&placement, "rows", u64::from(image.rows));
-        let _ = self
-            .state
-            .put(&placement, "pixel_width", u64::from(image.pixel_width));
-        let _ = self
-            .state
-            .put(&placement, "pixel_height", u64::from(image.pixel_height));
-        let _ = self
-            .state
-            .put(&placement, "alternate_screen", *self.alt_active);
-        if let Some(id) = image.protocol_id {
-            let _ = self.state.put(&placement, "protocol_id", u64::from(id));
-        }
+        let _ = ui::tilo_actions::Action::apply(&action, self.state);
     }
 
     fn csi_first(p: &vte::Params) -> u16 {
@@ -6024,60 +6172,110 @@ impl TerminalPerformer<'_> {
     /// callers skip the line rather than fabricate an id).
     fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
         let grid_id = self.active_grid_id();
-        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
-        let text_id = self
-            .state
-            .put_object(&line_id, "text", ObjType::Text)
-            .ok()?;
-        let _ = self
-            .state
-            .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
-        let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-        let _ = self.state.put(&line_id, "attrs", attr_bytes);
-        Some(line_id)
-    }
-
-    fn newline(&mut self) {
-        // A line feed leaves the current line; commit any buffered prints first
-        // so the appended/scrolled structure is computed over fresh CRDT state
-        // (and so a print → auto-wrap → newline doesn't strand the old line).
-        self.flush_print_buf();
-        self.cursor_y += 1;
-        if self.cursor_y < self.height {
-            return;
-        }
-        self.cursor_y = self.height - 1;
-
-        if *self.alt_active {
-            // Fixed-height alternate buffer: scroll the region up in place.
-            self.scroll_region_up(1);
+        let text = " ".repeat(self.width);
+        let attrs = vec![Attr::default().pack(); self.width].concat();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
         } else {
-            // Main buffer accumulates scrollback.
-            let grid_id = self.main_grid_id.clone();
-            let idx = self.main_line_ids.len();
-            if let Some(line_id) = self.make_blank_line(idx) {
-                self.main_line_ids.push(line_id);
-            }
-
-            // Bound the retained scrollback. Trimming one line at a time on
-            // every append made `Vec::remove(0)` an O(n) shift per output line
-            // (O(n²) over a flood); instead let history overrun by a slack
-            // margin and drop the overflow in a single `drain`. The trimmed
-            // count feeds the widget's incremental `sync` so the render mirror
-            // stays aligned.
-            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
-                let overflow = self.main_line_ids.len() - MAX_HISTORY;
-                for _ in 0..overflow {
-                    let _ = self.state.delete(&grid_id, 0);
-                }
-                self.main_line_ids.drain(0..overflow);
-                self.shift_main_image_placements(overflow);
-                *self.trimmed_front += overflow;
-            }
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let index = u32::try_from(idx).ok()?;
+            ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::InsertBlankLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            )
+            .ok()?;
+        } else {
+            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
+            let text_id = self
+                .state
+                .put_object(&line_id, "text", ObjType::Text)
+                .ok()?;
+            let _ = self.state.splice_text(&text_id, 0, 0, &text);
+            let _ = self.state.put(&line_id, "attrs", attrs);
+        }
+        match self.state.get(&grid_id, idx).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
         }
     }
 
-    fn shift_main_image_placements(&mut self, removed_rows: usize) {
+    fn delete_grid_line(&mut self, index: usize) {
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::DeleteGridLine {
+                    alternate: *self.alt_active,
+                    index,
+                },
+                self.state,
+            );
+        } else {
+            let _ = self.state.delete(&grid_id, index);
+        }
+    }
+
+    fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::WriteLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            );
+        } else if let Some(line) = self.active_line_id(index) {
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &text);
+            }
+            let _ = self.state.put(&line, "attrs", attrs);
+        }
+    }
+
+    fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
+        let Some((Value::Object(ObjType::Text), text_id)) =
+            self.state.get(line_obj, "text").ok().flatten()
+        else {
+            return None;
+        };
+        let text = self.state.text(&text_id).unwrap_or_default();
+        let attrs = match self.state.get(line_obj, "attrs").ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        Some((text, attrs))
+    }
+
+    fn shift_nested_image_placements(&mut self, removed_rows: usize) {
         for index in (0..self.state.length(&self.images_id)).rev() {
             let Ok(Some((Value::Object(ObjType::Map), placement))) =
                 self.state.get(&self.images_id, index)
@@ -6090,9 +6288,8 @@ impl TerminalPerformer<'_> {
                 .ok()
                 .flatten()
                 .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| match value {
-                    automerge::ScalarValue::Boolean(value) => Some(value),
-                    _ => None,
+                .and_then(|value| {
+                    matches!(value, automerge::ScalarValue::Boolean(true)).then_some(true)
                 })
                 .unwrap_or(false);
             if alternate {
@@ -6117,6 +6314,60 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    fn newline(&mut self) {
+        // A line feed leaves the current line; commit any buffered prints first
+        // so the appended/scrolled structure is computed over fresh CRDT state
+        // (and so a print → auto-wrap → newline doesn't strand the old line).
+        self.flush_print_buf();
+        self.cursor_y += 1;
+        if self.cursor_y < self.height {
+            return;
+        }
+        self.cursor_y = self.height - 1;
+
+        if *self.alt_active {
+            // Fixed-height alternate buffer: scroll the region up in place.
+            self.scroll_region_up(1);
+        } else {
+            // Main buffer accumulates scrollback.
+            let idx = self.main_line_ids.len();
+            if let Some(line_id) = self.make_blank_line(idx) {
+                self.main_line_ids.push(line_id);
+            }
+
+            // Bound the retained scrollback. Trimming one line at a time on
+            // every append made `Vec::remove(0)` an O(n) shift per output line
+            // (O(n²) over a flood); instead let history overrun by a slack
+            // margin and drop the overflow in a single `drain`. The trimmed
+            // count feeds the widget's incremental `sync` so the render mirror
+            // stays aligned.
+            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
+                let overflow = self.main_line_ids.len() - MAX_HISTORY;
+                if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+                    if let Ok(count) = u32::try_from(overflow) {
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::TrimGridPrefix { count },
+                            self.state,
+                        );
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::ShiftImageRows {
+                                removed_rows: count,
+                            },
+                            self.state,
+                        );
+                    }
+                } else {
+                    for _ in 0..overflow {
+                        let _ = self.state.delete(&self.main_grid_id, 0);
+                    }
+                    self.shift_nested_image_placements(overflow);
+                }
+                self.main_line_ids.drain(0..overflow);
+                *self.trimmed_front += overflow;
+            }
+        }
+    }
+
     /// Scroll the current scrolling region up by `n` lines (content moves up;
     /// blank lines appear at the bottom of the region). Honours the DEC
     /// scrolling margins.
@@ -6132,8 +6383,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, top);
+            self.delete_grid_line(top);
             self.active_line_ids_mut().remove(top);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6155,8 +6405,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(top) {
                 self.active_line_ids_mut().insert(top, line);
@@ -6177,8 +6426,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(at) {
                 self.active_line_ids_mut().insert(at, line);
@@ -6200,8 +6448,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, at);
+            self.delete_grid_line(at);
             self.active_line_ids_mut().remove(at);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6232,18 +6479,11 @@ impl TerminalPerformer<'_> {
             _ => return,
         };
         for abs_y in range {
-            if let Some(line_obj) = self.active_line_id(abs_y) {
-                if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                    self.state.get(&line_obj, "text")
-                {
-                    let l = self.state.length(&text_id);
-                    let _ =
-                        self.state
-                            .splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
-                }
-                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-                let _ = self.state.put(&line_obj, "attrs", attr_bytes);
-            }
+            self.write_grid_line(
+                abs_y,
+                " ".repeat(self.width),
+                vec![Attr::default().pack(); self.width].concat(),
+            );
         }
     }
 
@@ -6252,22 +6492,22 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let (from, count): (usize, usize) = match mode {
-                0 => (self.cursor_x, len.saturating_sub(self.cursor_x)), // cursor → end
-                1 => (0, self.cursor_x.min(len)),                        // start → cursor
-                2 => (0, len),                                           // whole line
-                _ => return,
-            };
-            if count > 0 {
-                let _ = self
-                    .state
-                    .splice_text(&text_id, from, count as isize, &" ".repeat(count));
-            }
-            self.reset_attr_range(&line_obj, from, count);
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let (from, count): (usize, usize) = match mode {
+            0 => (self.cursor_x, len.saturating_sub(self.cursor_x)),
+            1 => (0, self.cursor_x.min(len)),
+            2 => (0, len),
+            _ => return,
+        };
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, from, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, from, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn erase_chars(&mut self, n: usize) {
@@ -6275,20 +6515,17 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count > 0 {
-                let _ = self.state.splice_text(
-                    &text_id,
-                    self.cursor_x,
-                    count as isize,
-                    &" ".repeat(count),
-                );
-                self.reset_attr_range(&line_obj, self.cursor_x, count);
-            }
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, self.cursor_x, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, self.cursor_x, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn insert_chars(&mut self, n: usize) {
@@ -6296,23 +6533,18 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let n = n.min(self.width.saturating_sub(self.cursor_x));
-            if n == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
-            // Truncate back to the grid width.
-            let len = self.state.length(&text_id);
-            if len > self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, self.width, (len - self.width) as isize, "");
-            }
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let n = n.min(self.width.saturating_sub(self.cursor_x));
+        if n == 0 {
+            return;
         }
+        let mut text = splice_chars(&text, self.cursor_x, 0, &" ".repeat(n));
+        if text.chars().count() > self.width {
+            text = text.chars().take(self.width).collect();
+        }
+        self.write_grid_line(y, text, attrs);
     }
 
     fn delete_chars(&mut self, n: usize) {
@@ -6320,44 +6552,20 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, count as isize, "");
-            // Pad blanks at the end to restore the width.
-            let new_len = self.state.length(&text_id);
-            if new_len < self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
-            }
-        }
-    }
-
-    /// Reset the packed attrs for cells `[from, from+count)` to default.
-    fn reset_attr_range(&mut self, line_obj: &ObjId, from: usize, count: usize) {
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
         if count == 0 {
             return;
         }
-        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs")
-            && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
-        {
-            let mut attr_bytes = bytes.clone();
-            let empty = Attr::default().pack();
-            for i in from..(from + count) {
-                let s = i * ATTR_BYTES;
-                if let Some(dest) = attr_bytes.get_mut(s..s + ATTR_BYTES) {
-                    dest.copy_from_slice(&empty);
-                }
-            }
-            let _ = self.state.put(line_obj, "attrs", attr_bytes);
+        let mut text = splice_chars(&text, self.cursor_x, count, "");
+        let new_len = text.chars().count();
+        if new_len < self.width {
+            text.push_str(&" ".repeat(self.width - new_len));
         }
+        self.write_grid_line(y, text, attrs);
     }
 
     /// DEC private set/reset — `CSI ? Ps h` / `CSI ? Ps l`.
@@ -6437,20 +6645,15 @@ impl TerminalPerformer<'_> {
     /// `height` lines (a previous alt session may have left it longer).
     fn clear_alt_buffer(&mut self) {
         let width = self.width;
-        let ids: Vec<ObjId> = self.alt_line_ids.clone();
-        for id in &ids {
-            if let Ok(Some((Value::Object(ObjType::Text), tid))) = self.state.get(id, "text") {
-                let l = self.state.length(&tid);
-                let _ = self
-                    .state
-                    .splice_text(&tid, 0, l as isize, &" ".repeat(width));
-            }
-            let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
-            let _ = self.state.put(id, "attrs", attr_bytes);
+        let count = self.alt_line_ids.len();
+        let text = " ".repeat(width);
+        let attrs = vec![Attr::default().pack(); width].concat();
+        for index in 0..count {
+            self.write_grid_line(index, text.clone(), attrs.clone());
         }
         while self.alt_line_ids.len() > self.height {
             let idx = self.alt_line_ids.len() - 1;
-            let _ = self.state.delete(&self.alt_grid_id, idx);
+            self.delete_grid_line(idx);
             self.alt_line_ids.pop();
         }
     }
@@ -6579,8 +6782,32 @@ impl TerminalPerformer<'_> {
     /// A no-op when nothing is buffered.
     pub(crate) fn flush_print_buf(&mut self) {
         if let Some(buf) = self.print_buf.take() {
-            ui::doc::splice_text_diffed(self.state, &buf.text_id, &buf.text);
-            let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            let grid = if buf.alternate {
+                &self.alt_grid_id
+            } else {
+                &self.main_grid_id
+            };
+            let key = if buf.alternate {
+                "terminal_grid_alt"
+            } else {
+                "terminal_grid"
+            };
+            if grid_is_document_root(self.state, key, grid) {
+                let _ = ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::WriteLine {
+                        alternate: buf.alternate,
+                        index: buf.index,
+                        text: buf.text,
+                        attrs: buf.attrs,
+                    },
+                    self.state,
+                );
+            } else if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                self.state.get(&buf.line_obj, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &buf.text);
+                let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            }
         }
     }
 
@@ -6593,8 +6820,15 @@ impl TerminalPerformer<'_> {
         self.flush_print_buf();
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
-        let _ = self.state.put(&self.cursor_id, "x", x);
-        let _ = self.state.put(&self.cursor_id, "y", y);
+        if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::SetCursor { x, y },
+                self.state,
+            );
+        } else {
+            let _ = self.state.put(&self.cursor_id, "x", x);
+            let _ = self.state.put(&self.cursor_id, "y", y);
+        }
     }
 
     /// Stage `bytes` to be written back to the PTY once this feed's parse

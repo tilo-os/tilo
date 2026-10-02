@@ -50,6 +50,7 @@ pub mod chrome;
 pub mod doc;
 pub mod model;
 pub mod render;
+pub mod resource;
 pub mod search_provider;
 pub mod text_layer;
 pub mod tiles;
@@ -171,3 +172,4 @@ pub fn app_root_import_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
     app.demo_import_image();
     Box::new(app)
 }
+pub use resource::{PdfMarkup, PdfViewer, PdfViewerShell, launch_spec, standalone_launch};

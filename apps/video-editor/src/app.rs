@@ -5784,6 +5784,42 @@ impl VideoEditorApp {
             mix: self.mix.clone(),
         }
     }
+
+    /// Mark this editor as framework-hosted so
+    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
+    /// playhead live extras beside the published project door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.actions.set_hosted_for_test(hosted);
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only playhead live extras beside the framework door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: plant a local project that has not been published through
+    /// the framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
+        self.project = project;
+    }
+
+    /// Test-only: media ids currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_media_names_for_test(&self) -> Vec<String> {
+        self.project.media.iter().map(|m| m.name.clone()).collect()
+    }
+
+    /// Test-only: move the playhead so hosted extras bind to a known time.
+    #[cfg(test)]
+    pub(crate) fn set_playhead_for_test(&mut self, playhead: f64) {
+        self.playhead = playhead;
+    }
 }
 
 /// A clip's animatable geometry, sampled at one instant.
@@ -7454,8 +7490,40 @@ impl ui::resources::PublishesResources for VideoEditorApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        // Framework [`tilo_resource::publish`] owns `video_editor.project`,
+        // import/export Effects, and timeline children. Playhead/mix
+        // conveniences are live presentation only — keep that same
+        // standalone slice when hosted, never a second project root.
+        if self.actions.is_hosted() {
+            return crate::actions::live_playhead_resources(&self.video_resource_ctx());
+        }
+        self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "video.project" {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                crate::actions::live_playhead_resources(&self.video_resource_ctx())
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
+    }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl ui::undo::UndoControl for VideoEditorApp {
@@ -9323,6 +9391,19 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
     fn present(&mut self, project: &std::rc::Rc<Project>) {
         if self.drag_is_editing() {
             self.project_sync.reload_pending = true;
+            return;
+        }
+        // An empty projection must not wipe a project that has not been
+        // published through the framework resource yet.
+        let incoming_empty = project.media.is_empty()
+            && project.tracks.is_empty()
+            && project.clips.is_empty()
+            && project.markers.is_empty();
+        let local_has_rows = !self.project.media.is_empty()
+            || !self.project.tracks.is_empty()
+            || !self.project.clips.is_empty()
+            || !self.project.markers.is_empty();
+        if incoming_empty && local_has_rows {
             return;
         }
         self.project = Project::clone(project);

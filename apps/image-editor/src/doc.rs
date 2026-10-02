@@ -85,6 +85,28 @@ impl ProjectDoc {
         Self::read_v2(doc).unwrap_or_else(Project::blank)
     }
 
+    /// Set the source image path and the project name. Other adjustments stay.
+    pub fn set_source(doc: &mut AutoCommit, path: &str, name: &str) {
+        Self::seed(doc);
+        let root = Self::root_map(doc);
+        let metadata = Self::map(doc, &root, METADATA);
+        let name = if name.is_empty() {
+            "Untitled image"
+        } else {
+            name
+        };
+        put_if_changed(doc, &metadata, "name", name);
+        let operations = Self::map(doc, &root, OPERATIONS);
+        Self::write_operation(
+            doc,
+            &operations,
+            "source",
+            &Operation::Source {
+                path: path.to_string(),
+            },
+        );
+    }
+
     /// Compatibility upsert for local UI code. Missing rows are never
     /// interpreted as deletes, so a stale frame cannot remove remote nodes.
     /// Resource actions use the narrower mutation methods below.
@@ -111,10 +133,12 @@ impl ProjectDoc {
             if let Some(operation) = project.operations.get(id) {
                 Self::write_operation(doc, &operations, id, operation);
             }
-            if id != "source" && id != "output" {
-                Self::append_order_once(doc, &order, id);
-            }
         }
+        // The approachable stack order must follow evaluation order, never
+        // HashMap iteration — otherwise undo of hide re-exposes steps in the
+        // wrong sequence (`contrast` before `exposure`).
+        Self::sync_order(doc, &order, project);
+        Self::sync_connections(doc, project);
     }
 
     /// Add an adjustment to the shared stack. `id` is permanent and explicit,
@@ -558,6 +582,20 @@ impl ProjectDoc {
             return;
         }
         let _ = doc.insert(order, doc.length(order), id);
+    }
+
+    /// Replace the shared stack list so it matches [`Self::project_order`].
+    fn sync_order(doc: &mut AutoCommit, order: &ObjId, project: &Project) {
+        let desired = Self::project_order(project);
+        if Self::order_ids(doc, order) == desired {
+            return;
+        }
+        while doc.length(order) > 0 {
+            let _ = doc.delete(order, 0);
+        }
+        for id in desired {
+            let _ = doc.insert(order, doc.length(order), id);
+        }
     }
     fn order_ids(doc: &AutoCommit, order: &ObjId) -> Vec<String> {
         (0..doc.length(order))

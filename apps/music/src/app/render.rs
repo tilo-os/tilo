@@ -1913,12 +1913,21 @@ impl ui::search::capability::SearchSource for MusicApp {
 }
 
 impl ui::resources::PublishesResources for MusicApp {
-    /// Publish the open library + its playlists/tracks so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// library door — keep only device-local player, queue and open-file extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.actions.is_hosted() {
+            return crate::actions::live_device_resources(&self.music_resource_ctx());
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "music.library" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

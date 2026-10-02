@@ -858,6 +858,93 @@ const fn open_closed(value: bool) -> &'static str {
     if value { "open" } else { "closed" }
 }
 
+/// Guided setup as a resource. The live projection is view state, not a shared
+/// document; [`publish`](ui::tilo_resource::publish) still builds the palette
+/// from it.
+pub struct SetupGuide;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum SetupDocumentAction {}
+
+impl ui::tilo_actions::Action for SetupDocumentAction {
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "empty document action enum has no variants"
+    )]
+    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ui::tilo_actions::ActionError> {
+        match *self {}
+    }
+}
+
+impl ui::tilo_resource::Resource for SetupGuide {
+    const KIND: &'static str = "imager.setup";
+    const LABEL: &'static str = "Guided Tilo setup";
+    const ACTION_TYPE: &'static str = "imager.setup.document";
+
+    type State = SetupProjection;
+    type Action = SetupDocumentAction;
+
+    fn register(registry: &mut tilo_actions::ActionRegistry) {
+        registry.register::<SetupDocumentAction>(Self::ACTION_TYPE);
+    }
+
+    fn read(
+        _doc: &ui::tilo_resource::Doc,
+    ) -> Result<SetupProjection, ui::tilo_resource::ModelError> {
+        Ok(SetupProjection {
+            page: "experience",
+            selection: SelectionProjection {
+                experience: None,
+                common_mode: "copy",
+                folder_count: 0,
+                active_folder_count: 0,
+                folders: Vec::new(),
+                suggestions: Vec::new(),
+                help_open: false,
+                imports_open: false,
+            },
+            review: ReviewProjection { ready: false },
+            availability: AvailabilityProjection {
+                desktop: false,
+                full_os: false,
+                connected: false,
+                next: false,
+                back: false,
+                folder_policies: false,
+                folder_edits: false,
+                help: false,
+                open_imports: false,
+                choose_folder: false,
+            },
+            internal: InternalProjection {
+                readiness: "gated",
+                on_review: false,
+                download: "none",
+                target_gib: None,
+                min_gib: None,
+                max_gib: None,
+                reviewed: None,
+                shrink_bytes: None,
+                staging_bytes: None,
+                blockers: Vec::new(),
+                run: "idle",
+                run_action: None,
+                failure: None,
+                pending_operation: None,
+                availability: InternalAvailability::default(),
+            },
+        })
+    }
+
+    fn bound_actions(state: &SetupProjection) -> Vec<ActionSpec> {
+        resource(state).actions
+    }
+
+    fn children(state: &SetupProjection) -> Vec<Resource> {
+        resource(state).children
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

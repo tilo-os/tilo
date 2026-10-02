@@ -289,7 +289,7 @@ fingerprint. Leaving dev at its default therefore made the all-target and
 example steps rebuild dependencies that nextest had already emitted, solely to
 add debugger data that CI never consumes.
 
-A controlled qdoc-pdf probe used fresh target directories and no compiler
+A controlled tilo-doc-pdf probe used fresh target directories and no compiler
 cache. After `cargo test --no-run`, building its examples took 3.35 seconds
 with matching zero-debuginfo profiles versus 54.47 seconds with Cargo's default
 dev debuginfo. A smaller collab-types test/check probe reduced the subsequent

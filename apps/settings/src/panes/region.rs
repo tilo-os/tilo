@@ -105,7 +105,7 @@ pub struct RegionPane {
     settings: RegionSettings,
     needs_seed: bool,
     commit_context_pending: bool,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// The content width the host expects to give this pane, for the first
@@ -132,7 +132,7 @@ impl RegionPane {
             settings,
             needs_seed: true,
             commit_context_pending: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             composed: None,
             rect: Rect::ZERO,
             width_hint: None,
@@ -289,6 +289,13 @@ impl RegionPane {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     fn reconcile(

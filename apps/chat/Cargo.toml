@@ -47,9 +47,9 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 # Message bodies and drafts are rich text, written in the SDK editor.
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Content addressing everywhere; the on-disk store, and the device store where
 # the launcher hands one over.

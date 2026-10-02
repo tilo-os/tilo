@@ -67,8 +67,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         return run_interaction_bench(viewport);
     }
+    if !wants_standalone(args.iter().skip(1).cloned()) {
+        ui::framework::run::<monitor::MonitorShell>();
+        return Ok(());
+    }
     ui::launch::run(&launch_spec(monitor::app_root))?;
     Ok(())
+}
+
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            _ => {}
+        }
+    }
+    false
 }
 
 fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {

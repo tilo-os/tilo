@@ -31,15 +31,16 @@
 //! operation and saving its collaborative buffer to disk is an effect. The
 //! language server, linter, and embedded terminal remain app-owned services.
 
-use automerge::AutoCommit;
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ReadDoc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::command_palette::Command;
@@ -291,6 +292,19 @@ pub enum CodeEditorAction {
         kind: EntryKind,
         expected_revision: i64,
     },
+    /// Create the embedded terminal's object if this project does not have one.
+    EnsureTerminalPanel,
+    /// Mint the durable project id once. Replay writes the same id; a later
+    /// call leaves an id that is already there.
+    EnsureProjectId {
+        id: String,
+    },
+    /// Create a file buffer and seed it once. An existing buffer is left as it
+    /// is, so a peer's unsaved text is not replaced by a disk read.
+    EnsureBuffer {
+        key: String,
+        seed: String,
+    },
 }
 
 /// The durable tree entry type an action addresses. Serializing this enum
@@ -326,13 +340,16 @@ pub fn history_context(
         CodeEditorAction::MoveFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Move"),
         CodeEditorAction::SetFileLanguage { id, .. } => (id.as_str(), "file", "Set file language"),
         CodeEditorAction::DeleteFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Delete"),
+        CodeEditorAction::EnsureTerminalPanel => ("terminal", "panel", "Open terminal panel"),
+        CodeEditorAction::EnsureProjectId { id } => (id.as_str(), "project", "Identify project"),
+        CodeEditorAction::EnsureBuffer { key, .. } => (key.as_str(), "file", "Open file"),
     };
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
-        id: if kind == "folder" {
-            folder_resource_id(id)
-        } else {
-            file_resource_id(id)
+        id: match kind {
+            "folder" => folder_resource_id(id),
+            "project" => project_resource_id(id),
+            _ => file_resource_id(id),
         },
         kind: format!("code_editor.{kind}"),
         label: file_name.to_string(),
@@ -397,6 +414,33 @@ impl Action for CodeEditorAction {
                 kind,
                 expected_revision,
             } => apply_delete(doc, id, *kind, *expected_revision),
+            Self::EnsureTerminalPanel => {
+                if matches!(
+                    doc.get(automerge::ROOT, "terminal_panel")?,
+                    Some((automerge::Value::Object(automerge::ObjType::Map), _))
+                ) {
+                    return Ok(());
+                }
+                doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?;
+                Ok(())
+            }
+            Self::EnsureProjectId { id } => {
+                EditorDoc::ensure_project_id(doc, id);
+                Ok(())
+            }
+            Self::EnsureBuffer { key, seed } => {
+                EditorDoc::ensure_buffer_key(doc, key, seed);
+                Ok(())
+            }
+        }
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::EnsureTerminalPanel | Self::EnsureProjectId { .. } => {
+                tilo_actions::ChangeKind::Housekeeping
+            }
+            _ => tilo_actions::ChangeKind::Content,
         }
     }
 
@@ -971,19 +1015,6 @@ pub struct CodeEditorResourceCtx {
 /// search result set) from being flattened on every palette interaction.
 pub const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
 
-fn project_resource(ctx: &CodeEditorResourceCtx) -> Resource {
-    let label = if ctx.project_name.trim().is_empty() {
-        "Project".to_string()
-    } else {
-        ctx.project_name.clone()
-    };
-    Resource::new(
-        project_resource_id(&ctx.project_id),
-        "code_editor.project",
-        label,
-    )
-}
-
 fn entry_rename_action(id: String, kind: EntryKind, revision: i64) -> ActionSpec {
     let (action_id, label, prompt) = match kind {
         EntryKind::File => ("rename", "Rename file", "new file name"),
@@ -1100,46 +1131,65 @@ fn replace_text_action(file_id: String, base: String) -> ActionSpec {
 }
 
 fn file_resource_base(doc: &AutoCommit, f: &OpenFileRef) -> Resource {
-    let label = if f.name.trim().is_empty() {
+    let record = EditorDoc::file(doc, &f.id).unwrap_or_else(|| CollaborativeFile {
+        id: f.id.clone(),
+        kind: "file".into(),
+        name: f.name.clone(),
+        path: f.path.clone(),
+        parent: f.parent.clone(),
+        language: String::new(),
+        order: f.order,
+        deleted: false,
+        name_revision: 0,
+        structure_revision: 0,
+        language_revision: 0,
+        deletion_revision: 0,
+    });
+    let buffer = EditorDoc::read_buffer_key(doc, &f.id);
+    let mut file = publish_file_document(&record, buffer.as_deref());
+    let mut front = vec![file_operation(
+        "open",
+        "Open file",
+        OperationKind::View,
+        &CodeEditorOperation::Open {
+            file_id: f.id.clone(),
+        },
+    )];
+    if f.can_save {
+        front.push(save_action(f.id.clone()));
+    }
+    front.append(&mut file.actions);
+    file.actions = front;
+    file
+}
+
+/// Document mutations for one collaborative file — rename / move / language /
+/// delete / replace-text. Open and Save stay Views/Effects on the live tree.
+pub(crate) fn publish_file_document(file: &CollaborativeFile, buffer: Option<&str>) -> Resource {
+    let label = if file.name.trim().is_empty() {
         "untitled".to_string()
     } else {
-        f.name.clone()
+        file.name.clone()
     };
-    let record = EditorDoc::file(doc, &f.id);
-    let name_revision = record.as_ref().map_or(0, |file| file.name_revision);
-    let structure_revision = record.as_ref().map_or(0, |file| file.structure_revision);
-    let language_revision = record.as_ref().map_or(0, |file| file.language_revision);
-    let deletion_revision = record.as_ref().map_or(0, |file| file.deletion_revision);
-    let mut file = Resource::new(file_resource_id(&f.id), "code_editor.file", label).with_action(
-        file_operation(
-            "open",
-            "Open file",
-            OperationKind::View,
-            &CodeEditorOperation::Open {
-                file_id: f.id.clone(),
-            },
-        ),
-    );
-    if let Some(base) = EditorDoc::read_buffer_key(doc, &f.id) {
-        file = file.with_action(replace_text_action(f.id.clone(), base));
+    let mut resource = Resource::new(file_resource_id(&file.id), "code_editor.file", label);
+    if let Some(base) = buffer {
+        resource = resource.with_action(replace_text_action(file.id.clone(), base.to_owned()));
     }
-    if f.can_save {
-        file = file.with_action(save_action(f.id.clone()));
-    }
-    file = file.with_action(entry_rename_action(
-        f.id.clone(),
+    resource = resource.with_action(entry_rename_action(
+        file.id.clone(),
         EntryKind::File,
-        name_revision,
+        file.name_revision,
     ));
-    file = file.with_action(entry_move_action(
-        f.id.clone(),
+    resource = resource.with_action(entry_move_action(
+        file.id.clone(),
         EntryKind::File,
-        record.as_ref().and_then(|file| file.parent.clone()),
-        record.as_ref().map_or(0, |file| file.order),
-        structure_revision,
+        file.parent.clone(),
+        file.order,
+        file.structure_revision,
     ));
-    let language_id = f.id.clone();
-    file = file.with_action(ActionSpec::typed(
+    let language_id = file.id.clone();
+    let language_revision = file.language_revision;
+    resource = resource.with_action(ActionSpec::typed(
         "set-language",
         "Set file language",
         "language name",
@@ -1162,19 +1212,196 @@ fn file_resource_base(doc: &AutoCommit, f: &OpenFileRef) -> Resource {
             None => invalid_arguments("language is required"),
         },
     ));
-    file = file.with_action(
+    resource = resource.with_action(
         document_action_spec(
             "delete",
             "Delete file",
             &CodeEditorAction::DeleteFile {
-                id: f.id.clone(),
+                id: file.id.clone(),
                 kind: EntryKind::File,
-                expected_revision: deletion_revision,
+                expected_revision: file.deletion_revision,
             },
         )
         .destructive(),
     );
-    file
+    resource
+}
+
+/// Document mutations for one collaborative folder.
+pub(crate) fn publish_folder_document(
+    folder: &CollaborativeFile,
+    files: &[CollaborativeFile],
+    next_file: Option<(String, String)>,
+    next_folder: Option<(String, String)>,
+) -> Resource {
+    let has_children = files
+        .iter()
+        .any(|entry| !entry.deleted && entry.parent.as_deref() == Some(folder.id.as_str()));
+    let delete = document_action_spec(
+        "delete",
+        "Delete folder",
+        &CodeEditorAction::DeleteFile {
+            id: folder.id.clone(),
+            kind: EntryKind::Folder,
+            expected_revision: folder.deletion_revision,
+        },
+    )
+    .destructive();
+    let delete = if has_children {
+        delete.unavailable("folder_not_empty", "Empty the folder before deleting it")
+    } else {
+        delete
+    };
+    let (file_id, file_name) =
+        next_file.unwrap_or_else(|| (uuid::Uuid::new_v4().to_string(), "untitled".into()));
+    let (folder_id, folder_name) =
+        next_folder.unwrap_or_else(|| (uuid::Uuid::new_v4().to_string(), "untitled".into()));
+    Resource::new(
+        folder_resource_id(&folder.id),
+        "code_editor.folder",
+        folder.name.clone(),
+    )
+    .with_action(entry_rename_action(
+        folder.id.clone(),
+        EntryKind::Folder,
+        folder.name_revision,
+    ))
+    .with_action(entry_move_action(
+        folder.id.clone(),
+        EntryKind::Folder,
+        folder.parent.clone(),
+        folder.order,
+        folder.structure_revision,
+    ))
+    .with_action(document_action_spec(
+        "new-file",
+        "New file here",
+        &create_file_action(
+            file_id,
+            file_name,
+            Some(folder.id.clone()),
+            i64::MAX / 2,
+            String::new(),
+        ),
+    ))
+    .with_action(document_action_spec(
+        "new-folder",
+        "New folder here",
+        &CodeEditorAction::CreateFolder {
+            id: folder_id,
+            name: folder_name,
+            parent: Some(folder.id.clone()),
+            order: i64::MAX / 2,
+        },
+    ))
+    .with_action(delete)
+}
+
+/// File and folder Document children for [`tilo_resource::publish`].
+pub(crate) fn publish_document_children(
+    files: &[CollaborativeFile],
+    buffers: &HashMap<String, String>,
+) -> Vec<Resource> {
+    let mut children = Vec::new();
+    for file in files.iter().filter(|file| !file.deleted) {
+        match file.kind.as_str() {
+            "file" => {
+                children.push(publish_file_document(
+                    file,
+                    buffers.get(&file.id).map(String::as_str),
+                ));
+            }
+            "folder" => children.push(publish_folder_document(file, files, None, None)),
+            _ => {}
+        }
+    }
+    children
+}
+
+/// Project-level View / Effect ops (commands, open file/folder). Document
+/// create stays on [`Resource::declarations`].
+pub(crate) fn project_view_effect_specs() -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
+    for (command, command_label, _) in Command::catalogue() {
+        let operation = CodeEditorOperation::Command {
+            id: command.id().to_string(),
+            argument: None,
+        };
+        let Ok(kind) = operation_kind(&operation) else {
+            continue;
+        };
+        let spec = if command == Command::GoToLine {
+            ActionSpec::prompted_operation(
+                format!("command-{}", command.id()),
+                command_label,
+                "Line number",
+                "e.g. 42",
+                kind,
+                CODE_EDITOR_OPERATION_TYPE,
+                move |argument| {
+                    EncodedAction::encode_operation(
+                        CODE_EDITOR_OPERATION_TYPE,
+                        &CodeEditorOperation::Command {
+                            id: command.id().to_string(),
+                            argument: Some(argument.to_string()),
+                        },
+                    )
+                    .unwrap_or_else(|_| invalid_arguments("unable to encode code editor command"))
+                },
+            )
+        } else {
+            file_operation(
+                format!("command-{}", command.id()).as_str(),
+                command_label,
+                kind,
+                &operation,
+            )
+        };
+        specs.push(spec);
+    }
+    for (id, label, folder) in [
+        ("open-file", "Open file", false),
+        ("open-folder", "Open project folder", true),
+    ] {
+        specs.push(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                OperationKind::Effect,
+                CODE_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional(
+                    "path",
+                    ParamType::Text,
+                    "filesystem path",
+                )],
+                move |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        CODE_EDITOR_OPERATION_TYPE,
+                        &if folder {
+                            CodeEditorOperation::OpenFolder {
+                                path: args
+                                    .text("path")
+                                    .filter(|p| !p.is_empty())
+                                    .map(str::to_owned),
+                            }
+                        } else {
+                            CodeEditorOperation::OpenFile {
+                                path: args
+                                    .text("path")
+                                    .filter(|p| !p.is_empty())
+                                    .map(str::to_owned),
+                            }
+                        },
+                    )
+                    .unwrap_or_else(|_| invalid_arguments("unable to encode file operation"))
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
+        );
+    }
+    specs
 }
 
 fn symbol_resource(symbol: &SymbolRef) -> Resource {
@@ -1218,177 +1445,60 @@ fn result_resource(result: &SearchResultRef) -> Resource {
 }
 
 fn folder_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, folder: &FolderRef) -> Resource {
-    let record = EditorDoc::file(doc, &folder.id);
-    let name_revision = record.as_ref().map_or(0, |entry| entry.name_revision);
-    let structure_revision = record.as_ref().map_or(0, |entry| entry.structure_revision);
-    let deletion_revision = record.as_ref().map_or(0, |entry| entry.deletion_revision);
-    // `apply_delete` refuses a folder with live children, so say so up front
-    // rather than offering an action that can only fail.
-    let has_children = EditorDoc::files(doc)
-        .iter()
-        .any(|entry| !entry.deleted && entry.parent.as_deref() == Some(folder.id.as_str()));
-    let delete = document_action_spec(
-        "delete",
-        "Delete folder",
-        &CodeEditorAction::DeleteFile {
-            id: folder.id.clone(),
-            kind: EntryKind::Folder,
-            expected_revision: deletion_revision,
-        },
+    let record = EditorDoc::file(doc, &folder.id).unwrap_or_else(|| CollaborativeFile {
+        id: folder.id.clone(),
+        kind: "folder".into(),
+        name: folder.name.clone(),
+        path: folder.path.clone(),
+        parent: folder.parent.clone(),
+        language: String::new(),
+        order: folder.order,
+        deleted: false,
+        name_revision: 0,
+        structure_revision: 0,
+        language_revision: 0,
+        deletion_revision: 0,
+    });
+    publish_folder_document(
+        &record,
+        &EditorDoc::files(doc),
+        Some((ctx.next_file_id.clone(), ctx.next_file_name.clone())),
+        Some((ctx.next_folder_id.clone(), ctx.next_folder_name.clone())),
     )
-    .destructive();
-    let delete = if has_children {
-        delete.unavailable("folder_not_empty", "Empty the folder before deleting it")
-    } else {
-        delete
-    };
-    Resource::new(
-        folder_resource_id(&folder.id),
-        "code_editor.folder",
-        folder.name.clone(),
-    )
-    .with_action(entry_rename_action(
-        folder.id.clone(),
-        EntryKind::Folder,
-        name_revision,
-    ))
-    .with_action(entry_move_action(
-        folder.id.clone(),
-        EntryKind::Folder,
-        folder.parent.clone(),
-        folder.order,
-        structure_revision,
-    ))
-    .with_action(document_action_spec(
+}
+
+/// Command, open, and create specs. New-file and new-folder carry the live
+/// next ids so a palette create matches the chrome's next create.
+fn live_project_action_specs(ctx: &CodeEditorResourceCtx) -> Vec<ActionSpec> {
+    let mut specs: Vec<ActionSpec> = project_view_effect_specs()
+        .into_iter()
+        .filter(|spec| {
+            spec.id.starts_with("command-")
+                || matches!(spec.id.as_str(), "open-file" | "open-folder")
+        })
+        .collect();
+    specs.push(document_action_spec(
         "new-file",
-        "New file here",
+        "New file",
         &create_file_action(
             ctx.next_file_id.clone(),
             ctx.next_file_name.clone(),
-            Some(folder.id.clone()),
+            None,
             i64::MAX / 2,
             String::new(),
         ),
-    ))
-    .with_action(document_action_spec(
+    ));
+    specs.push(document_action_spec(
         "new-folder",
-        "New folder here",
+        "New folder",
         &CodeEditorAction::CreateFolder {
             id: ctx.next_folder_id.clone(),
             name: ctx.next_folder_name.clone(),
-            parent: Some(folder.id.clone()),
+            parent: None,
             order: i64::MAX / 2,
         },
-    ))
-    .with_action(delete)
-}
-
-fn add_catalogue_actions(project: &mut Resource) {
-    for (command, command_label, _) in Command::catalogue() {
-        let operation = CodeEditorOperation::Command {
-            id: command.id().to_string(),
-            argument: None,
-        };
-        let Ok(kind) = operation_kind(&operation) else {
-            continue;
-        };
-        let spec = if command == Command::GoToLine {
-            ActionSpec::prompted_operation(
-                format!("command-{}", command.id()),
-                command_label,
-                "Line number",
-                "e.g. 42",
-                kind,
-                CODE_EDITOR_OPERATION_TYPE,
-                move |argument| {
-                    EncodedAction::encode_operation(
-                        CODE_EDITOR_OPERATION_TYPE,
-                        &CodeEditorOperation::Command {
-                            id: command.id().to_string(),
-                            argument: Some(argument.to_string()),
-                        },
-                    )
-                    .unwrap_or_else(|_| invalid_arguments("unable to encode code editor command"))
-                },
-            )
-        } else {
-            file_operation(
-                format!("command-{}", command.id()).as_str(),
-                command_label,
-                kind,
-                &operation,
-            )
-        };
-        project.actions.push(spec);
-    }
-}
-
-fn add_project_actions(mut project: Resource, ctx: &CodeEditorResourceCtx) -> Resource {
-    add_catalogue_actions(&mut project);
-    for (id, label, folder) in [
-        ("open-file", "Open file", false),
-        ("open-folder", "Open project folder", true),
-    ] {
-        project = project.with_action(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system file picker)",
-                OperationKind::Effect,
-                CODE_EDITOR_OPERATION_TYPE,
-                vec![ActionParam::optional(
-                    "path",
-                    ParamType::Text,
-                    "filesystem path",
-                )],
-                move |args: &ActionArgs| {
-                    EncodedAction::encode_operation(
-                        CODE_EDITOR_OPERATION_TYPE,
-                        &if folder {
-                            CodeEditorOperation::OpenFolder {
-                                path: args
-                                    .text("path")
-                                    .filter(|p| !p.is_empty())
-                                    .map(str::to_owned),
-                            }
-                        } else {
-                            CodeEditorOperation::OpenFile {
-                                path: args
-                                    .text("path")
-                                    .filter(|p| !p.is_empty())
-                                    .map(str::to_owned),
-                            }
-                        },
-                    )
-                    .unwrap_or_else(|_| invalid_arguments("unable to encode file operation"))
-                },
-            )
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job),
-        );
-    }
-    project
-        .with_action(document_action_spec(
-            "new-file",
-            "New file",
-            &create_file_action(
-                ctx.next_file_id.clone(),
-                ctx.next_file_name.clone(),
-                None,
-                i64::MAX / 2,
-                String::new(),
-            ),
-        ))
-        .with_action(document_action_spec(
-            "new-folder",
-            "New folder",
-            &CodeEditorAction::CreateFolder {
-                id: ctx.next_folder_id.clone(),
-                name: ctx.next_folder_name.clone(),
-                parent: None,
-                order: i64::MAX / 2,
-            },
-        ))
+    ));
+    specs
 }
 
 fn attach_nested_resources(
@@ -1607,25 +1717,148 @@ fn nest_project_resources(
 /// File resources export structured mutations (rename/delete) as well as their
 /// native collaborative text path. They are addressable by a stable UUID for
 /// OS-wide enumeration, history and agent navigation.
+/// Hosted-only live extras: save Effects for disk-backed buffers, plus symbol
+/// and search-result Views. Never a second `code_editor.project` Document door.
+pub(crate) fn live_presentation_extras(ctx: &CodeEditorResourceCtx) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    for file in &ctx.open_files {
+        if !file.can_save {
+            continue;
+        }
+        let label = if file.name.trim().is_empty() {
+            "untitled".to_string()
+        } else {
+            file.name.clone()
+        };
+        extras.push(
+            Resource::new(file_resource_id(&file.id), "code_editor.file-save", label)
+                .with_action(save_action(file.id.clone())),
+        );
+    }
+    for symbol in ctx.symbols.iter().take(EAGER_RESOURCE_SNAPSHOT_LIMIT) {
+        extras.push(symbol_resource(symbol));
+    }
+    for result in ctx
+        .search_results
+        .iter()
+        .take(EAGER_RESOURCE_SNAPSHOT_LIMIT)
+    {
+        extras.push(result_resource(result));
+    }
+    extras
+}
+
 ///
 /// [`CreateFile`]: CodeEditorAction::CreateFile
 ///
 /// Stable project root for bounded remote hierarchy. Files, folders, and
 /// search results stay behind Code's retained, revisioned providers.
 pub fn project_root(ctx: &CodeEditorResourceCtx) -> Resource {
-    add_project_actions(project_resource(ctx), ctx)
+    let label = if ctx.project_name.trim().is_empty() {
+        "Project".to_string()
+    } else {
+        ctx.project_name.clone()
+    };
+    let mut project = ui::tilo_resource::publish::<crate::resource::CodeEditor>(
+        &project_resource_id(&ctx.project_id),
+        &label,
+        &crate::resource::ProjectState::default(),
+    );
+    for action in live_project_action_specs(ctx) {
+        project.actions.retain(|existing| existing.id != action.id);
+        project = project.with_action(action);
+    }
+    project
 }
 
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut project = project_root(ctx);
+    let state =
+        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let label = if ctx.project_name.trim().is_empty() {
+        "Code Editor"
+    } else {
+        ctx.project_name.as_str()
+    };
+    let project_id = project_resource_id(&ctx.project_id);
+    let mut project =
+        ui::tilo_resource::publish::<crate::resource::CodeEditor>(&project_id, label, &state);
+    // Prefer the live next-id Document creates and the command catalogue over
+    // framework declarations with freshly minted UUIDs, so palette and chrome
+    // stay byte-identical on the standalone path.
+    for action in live_project_action_specs(ctx) {
+        project.actions.retain(|existing| existing.id != action.id);
+        project = project.with_action(action);
+    }
     let root_folder = root_folder_id(ctx).map(str::to_owned);
     let snapshot = bounded_resource_snapshot(ctx);
-
+    let file_ids: std::collections::HashSet<String> = snapshot
+        .open_files
+        .iter()
+        .map(|file| file_resource_id(&file.id))
+        .collect();
+    let folder_ids: std::collections::HashSet<String> = snapshot
+        .folders
+        .iter()
+        .map(|folder| folder_resource_id(&folder.id))
+        .collect();
+    // The bounded open set. A published file in that set stays; open and save
+    // are added in front. Files outside the set stay addressable by id.
+    project.children.retain(|child| {
+        file_ids.contains(child.id.as_str()) || folder_ids.contains(child.id.as_str())
+    });
     for file in &snapshot.open_files {
-        project = project.with_child(file_resource_base(doc, file));
+        let id = file_resource_id(&file.id);
+        if let Some(existing) = project
+            .children
+            .iter_mut()
+            .find(|child| child.id.as_str() == id)
+        {
+            let mut front = Vec::new();
+            if !existing.actions.iter().any(|action| action.id == "open") {
+                front.push(file_operation(
+                    "open",
+                    "Open file",
+                    OperationKind::View,
+                    &CodeEditorOperation::Open {
+                        file_id: file.id.clone(),
+                    },
+                ));
+            }
+            if file.can_save && !existing.actions.iter().any(|action| action.id == "save") {
+                front.push(save_action(file.id.clone()));
+            }
+            if !front.is_empty() {
+                front.append(&mut existing.actions);
+                existing.actions = front;
+            }
+        } else {
+            project.children.push(file_resource_base(doc, file));
+        }
     }
     for folder in &snapshot.folders {
-        project = project.with_child(folder_resource(&snapshot, doc, folder));
+        let id = folder_resource_id(&folder.id);
+        let live = folder_resource(&snapshot, doc, folder);
+        if let Some(existing) = project
+            .children
+            .iter_mut()
+            .find(|child| child.id.as_str() == id)
+        {
+            // Keep the published folder. Live new-file / new-folder ids replace
+            // the declarations that minted a fresh uuid.
+            for action in live.actions {
+                if let Some(slot) = existing
+                    .actions
+                    .iter_mut()
+                    .find(|have| have.id == action.id)
+                {
+                    *slot = action;
+                } else {
+                    existing.actions.push(action);
+                }
+            }
+        } else {
+            project.children.push(live);
+        }
     }
     for result in &snapshot.search_results {
         project = project.with_child(result_resource(result));
@@ -1666,13 +1899,35 @@ fn lazy_folder_resource(
     resource
 }
 
+fn find_nested(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_nested(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_resource(
     ctx: &CodeEditorResourceCtx,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<Resource> {
     if id == project_resource_id(&ctx.project_id) {
-        return Some(add_project_actions(project_resource(ctx), ctx));
+        // The same published project the palette lists, including the document's
+        // files. `project_root` is only the bottom-panel binding, which has no
+        // document to read.
+        return provide_resources(ctx, doc).into_iter().next();
+    }
+    if (id.starts_with("code_editor.file:") || id.starts_with("code_editor.folder:"))
+        && let Some(found) = provide_resources(ctx, doc)
+            .into_iter()
+            .find_map(|root| find_nested(&root, id))
+    {
+        return Some(found);
     }
     if let Some(file_id) = id.strip_prefix("code_editor.file:") {
         return ctx
@@ -1705,12 +1960,13 @@ pub fn resolve_resource(
         .map(result_resource)
 }
 
-impl ResourceProvider for crate::app::CodeApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CodeApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.code_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(&self.code_resource_ctx(), doc, id)
     }
 }
@@ -1724,6 +1980,65 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn ensure_project_id_is_idempotent_housekeeping() {
+        let mut doc = AutoCommit::new();
+        let first = CodeEditorAction::EnsureProjectId {
+            id: "00000000-0000-4000-8000-0000000000aa".into(),
+        };
+        assert_eq!(first.change_kind(), tilo_actions::ChangeKind::Housekeeping);
+        first.apply(&mut doc).unwrap();
+        CodeEditorAction::EnsureProjectId {
+            id: "00000000-0000-4000-8000-0000000000bb".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let Some((automerge::Value::Scalar(value), _)) =
+            doc.get(automerge::ROOT, "project_id").unwrap()
+        else {
+            panic!("project id was not written");
+        };
+        let automerge::ScalarValue::Str(id) = value.as_ref() else {
+            panic!("project id was not text");
+        };
+        assert_eq!(id.as_str(), "00000000-0000-4000-8000-0000000000aa");
+    }
+
+    #[test]
+    fn ensure_buffer_keeps_text_that_is_already_there() {
+        let mut doc = AutoCommit::new();
+        CodeEditorAction::EnsureBuffer {
+            key: "file-1".into(),
+            seed: "hello".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        CodeEditorAction::EnsureBuffer {
+            key: "file-1".into(),
+            seed: "replaced".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, "file-1").as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn ensure_terminal_panel_creates_one_map() {
+        let mut doc = AutoCommit::new();
+        assert!(EditorDoc::terminal_panel(&doc).is_none());
+        CodeEditorAction::EnsureTerminalPanel
+            .apply(&mut doc)
+            .unwrap();
+        let first = EditorDoc::terminal_panel(&doc).expect("terminal map");
+        CodeEditorAction::EnsureTerminalPanel
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(EditorDoc::terminal_panel(&doc), Some(first));
     }
 
     #[test]

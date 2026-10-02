@@ -643,7 +643,7 @@ mod tests {
                     "canonical" => {
                         let resource_id = crate::actions::queue_item_resource_id(0, &id);
                         let resource =
-                            tilo_actions::ResourceProvider::resource(&app, &doc, &resource_id)
+                            crate::app::MusicApp::publish_resource(&app, &doc, &resource_id)
                                 .unwrap();
                         let action = resource
                             .actions
@@ -716,7 +716,7 @@ mod tests {
         } else {
             crate::actions::track_resource_id(&id)
         };
-        let resource = tilo_actions::ResourceProvider::resource(&app, &doc, &resource_id).unwrap();
+        let resource = crate::app::MusicApp::publish_resource(&app, &doc, &resource_id).unwrap();
         let action = resource
             .actions
             .iter()
@@ -911,7 +911,7 @@ mod tests {
             app.apply_resource_playback(paused).unwrap();
             let resource_id = crate::actions::queue_item_resource_id(0, &old_id);
             let resource =
-                tilo_actions::ResourceProvider::resource(&app, &doc, &resource_id).unwrap();
+                crate::app::MusicApp::publish_resource(&app, &doc, &resource_id).unwrap();
             let remove = resource
                 .actions
                 .iter()
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(app.pb.queue_index, 0);
         assert_eq!(app.pb.position_ms, if continuation { 500 } else { 0 });
         let player =
-            tilo_actions::ResourceProvider::resource(&app, &doc, "music.player:player").unwrap();
+            crate::app::MusicApp::publish_resource(&app, &doc, "music.player:player").unwrap();
         let play = player
             .actions
             .iter()
@@ -1077,7 +1077,7 @@ mod tests {
                 .unwrap();
             assert!(player.value.as_ref().unwrap().starts_with("local song;"));
             assert!(
-                tilo_actions::ResourceProvider::resource(
+                crate::app::MusicApp::publish_resource(
                     &app,
                     &doc,
                     crate::actions::LOCAL_FILE_RESOURCE_ID
@@ -1093,7 +1093,7 @@ mod tests {
                 assert!(ui::time::now() < paused_by, "native source did not pause");
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let resource = tilo_actions::ResourceProvider::resource(
+            let resource = crate::app::MusicApp::publish_resource(
                 &app,
                 &doc,
                 crate::actions::LOCAL_FILE_RESOURCE_ID,
@@ -1245,7 +1245,7 @@ mod tests {
                 app.pb = restored.playback;
                 let mut doc = automerge::AutoCommit::new();
                 app.sync(&mut doc, &automerge::ROOT);
-                let source = tilo_actions::ResourceProvider::resource(
+                let source = crate::app::MusicApp::publish_resource(
                     &app,
                     &doc,
                     crate::actions::LOCAL_FILE_RESOURCE_ID,

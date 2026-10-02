@@ -66,12 +66,39 @@ const SCENARIOS: &[&str] = &[
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" | "--path" => {
+                let _ = args.next();
+                if arg == "--path" {
+                    return true;
+                }
+            }
+            "--shots"
+            | "--responsive-matrix"
+            | "--native-audit"
+            | "--headless"
+            | "--sidebar-open" => return true,
+            flag if flag.starts_with('-') => {}
+            // A positional path opens a project on the standalone widget path.
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// # Errors
 ///
 /// Returns an error when `--shots` fails to lay out or render the offscreen
 /// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
 /// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<code_editor::CodeEditorShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new("so.tilo.code-editor", code_editor::app_root)
             .live_root_with_args(live_root)

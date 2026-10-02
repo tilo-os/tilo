@@ -664,7 +664,7 @@ impl ChatApp {
         // The draft is created the first time its surface is written in.
         let key = self.draft_key();
         if ChatDoc::rich_draft(doc, &key).is_none() {
-            ChatDoc::ensure_rich_draft(doc, &key);
+            self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
         self.focused_composer_mut()
@@ -1407,7 +1407,7 @@ impl ChatApp {
         }
         let key = self.draft_key();
         if ChatDoc::rich_draft(doc, &key).is_none() {
-            ChatDoc::ensure_rich_draft(doc, &key);
+            self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
         self.focused_composer_mut().insert_text(doc, s);
@@ -1939,7 +1939,17 @@ mod tests {
 
             // The palette's delete spec for c_crit (built before the mutation).
             let resources = crate::actions::provide_resources(&app.chat_resource_ctx(), &doc);
-            let ws = &resources[0];
+            let ws = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+                .or_else(|| {
+                    resources.iter().find_map(|root| {
+                        root.children
+                            .iter()
+                            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+                    })
+                })
+                .expect("Acme workspace root");
             let crit = ws
                 .children
                 .iter()

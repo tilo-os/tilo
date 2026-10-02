@@ -108,10 +108,17 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
             "the resource tree published no actions at all without a window — \
              building it must not depend on layout",
         );
+        // Split is a playhead-relative door (`video.playhead-clip:…`), not a
+        // static clip property — the seeded playhead sits mid-clip so the
+        // catalogue must offer it there for a windowless agent to find.
         let address = catalogue
             .iter()
             .map(|d| d.address.clone())
-            .find(|a| a.resource == format!("video.clip:{clip_id}") && a.action == "split")
+            .find(|a| {
+                (a.resource == format!("video.clip:{clip_id}")
+                    || a.resource == format!("video.playhead-clip:{clip_id}"))
+                    && a.action == "split"
+            })
             .unwrap_or_else(|| {
                 panic!(
                     "no `split` action offered on the seeded clip; the tree offered: {:?}",

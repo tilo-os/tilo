@@ -58,7 +58,7 @@ fn body_editor() -> BodyEditor {
     let context = tilo_actions::ActionContext::for_action(
         "so.tilo.mail",
         "Mail",
-        &MailAction::EditDraftBody(qdoc_rich_text::RichTextAction::AppendParagraph {
+        &MailAction::EditDraftBody(tilo_document::RichTextAction::AppendParagraph {
             text: String::new(),
         }),
     );
@@ -387,7 +387,7 @@ pub struct ComposeWindow {
     /// reaches the document.
     seed: Option<DraftBodySeed>,
     /// Dispatches [`MailAction::StartDraftBody`].
-    seed_actions: ui::ActionHost,
+    seed_actions: crate::resource::ActionSink,
     /// The body as plain text as of the last frame, for accessibility and a
     /// switch to plain-text authoring.
     body_plain: String,
@@ -444,7 +444,7 @@ impl ComposeWindow {
             editor: body_editor(),
             body_layout: BodyLayout::default(),
             seed: None,
-            seed_actions: ui::ActionHost::new(),
+            seed_actions: crate::resource::ActionSink::default(),
             body_plain: String::new(),
             plain_body: {
                 let mut b = TextInput::local()
@@ -919,7 +919,7 @@ impl ComposeWindow {
             ComposeFormat::Html => {
                 let root = MailDoc::draft_body(doc);
                 let html = root.as_ref().and_then(|root| {
-                    qdoc_codecs::export_html::render_html_fragment_under(
+                    tilo_doc_codecs::export_html::render_html_fragment_under(
                         doc,
                         root,
                         &tilo_content::NoContent,
@@ -973,6 +973,14 @@ impl ComposeWindow {
         self.body_plain.clone_from(&seed.text);
         self.seed = Some(seed);
         self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher so a new draft body is that resource's action.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
+    ) {
+        self.seed_actions.attach(dispatcher);
     }
 
     /// Apply a pending [`Self::start_body`].

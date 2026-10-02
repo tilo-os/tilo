@@ -978,7 +978,7 @@ pub struct SheetsApp {
     /// Framework-owned action dispatch: every doc-mutating affordance routes
     /// through here so undo, byte-identical peer replay, and the OS Ctrl+K
     /// palette all work from one implementation. See [`crate::actions`].
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -1097,7 +1097,30 @@ impl SheetsApp {
             pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
+        }
+    }
+
+    /// Take part in the framework: submit workbook edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::SheetsWorkbook>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    /// Show the sheet names the framework resource holds.
+    /// An empty projection does not wipe tabs that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::SheetsState) {
+        if state.sheets.is_empty() && !self.sheet_names.is_empty() {
+            return;
+        }
+        if !state.sheets.is_empty() {
+            self.sheet_names = state
+                .sheets
+                .iter()
+                .map(|sheet| sheet.name.clone())
+                .collect();
         }
     }
 
@@ -1125,12 +1148,8 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         action: &SheetsAction,
     ) -> Result<(), tilo_actions::ActionError> {
-        self.actions.try_dispatch_with_context(
-            doc,
-            actions::SHEETS_ACTION_TYPE,
-            action,
-            actions::history_context_for_doc(doc, action),
-        )
+        let context = actions::history_context_for_doc(doc, action);
+        self.actions.try_dispatch_with_context(doc, action, context)
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -1390,6 +1409,7 @@ impl SheetsApp {
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -3501,7 +3521,7 @@ impl SheetsApp {
     fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let resources = Self::publish_resources(self, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
@@ -6499,23 +6519,42 @@ impl ui::search::capability::SearchSource for SheetsApp {
 }
 
 impl ui::resources::PublishesResources for SheetsApp {
-    /// Publish the open workbook + its sheets so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// workbook door — keep only the live selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.actions.is_hosted() {
+            return crate::actions::live_presentation_resources(&self.sheets_resource_ctx());
+        }
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the workbook. The directory page
+        // keeps the same live selection extras as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
+                crate::actions::live_presentation_resources(&self.sheets_resource_ctx())
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
         // The workbook is the sole stable top-level root. Sheets/cells remain
         // in the revisioned retained search provider, not this RPC page.
         let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::workbook_root(&self.sheets_resource_ctx())]
+            vec![crate::actions::workbook_root(
+                &self.sheets_resource_ctx(),
+                doc,
+            )]
         } else {
             Vec::new()
         };
@@ -6526,7 +6565,10 @@ impl ui::resources::PublishesResources for SheetsApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.actions.is_hosted() && id == "sheets.workbook" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
     fn document_action_result(
         &self,
@@ -10711,5 +10753,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hosted_directory_keeps_the_selection_without_the_workbook_root() {
+        use ui::resources::PublishesResources;
+        let mut app = SheetsApp::new();
+        let doc = automerge::AutoCommit::new();
+        let standalone = app
+            .action_directory_resource_page(&doc, &[], 8)
+            .expect("standalone directory");
+        assert!(
+            standalone
+                .resources
+                .iter()
+                .any(|resource| resource.kind == "sheets.workbook"),
+            "standalone directory publishes the workbook"
+        );
+        app.actions.mark_hosted_for_test();
+        let hosted = app
+            .action_directory_resource_page(&doc, &[], 8)
+            .expect("hosted directory");
+        assert!(
+            hosted
+                .resources
+                .iter()
+                .all(|resource| resource.kind != "sheets.workbook"),
+            "hosted directory must not republish the workbook: {:?}",
+            hosted
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(hosted.resources.is_empty());
+        assert!(app.resources(&doc).is_empty());
     }
 }

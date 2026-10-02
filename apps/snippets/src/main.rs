@@ -44,6 +44,27 @@ fn install_locales() -> Result<(), ui::i18n::I18nError> {
     ui::i18n::I18nManager::install_system("en-US", snippets::LOCALES)
 }
 
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.snippets", snippets::app_root)
+        .history(&snippets::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .scenarios(&["narrow", "detail", "empty"])
+        .configure_app(|app| snippets::actions::register(app.action_registry_mut()))
+}
+
 /// Run the native Snippets application.
 ///
 /// # Panics
@@ -54,15 +75,11 @@ fn install_locales() -> Result<(), ui::i18n::I18nError> {
 )]
 pub fn main() {
     install_locales().expect("valid bundled Snippets locales");
-    ui::launch::run_or_exit(&launch_spec());
-}
-
-fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("so.tilo.snippets", snippets::app_root)
-        .history(&snippets::framework_history::HISTORY)
-        .shot_root(shot_root)
-        .scenarios(&["narrow", "detail", "empty"])
-        .configure_app(|app| snippets::actions::register(app.action_registry_mut()))
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&snippets::launch_spec());
 }
 
 /// Production launch registers history and installs the body editor and action labels.
@@ -70,7 +87,9 @@ fn launch_spec() -> LaunchSpec {
 fn startup_registers_history_body_editor_and_action_labels() {
     // Case `production_launch_registers_history`.
     {
-        launch_spec().validate_history_declaration().unwrap();
+        snippets::launch_spec()
+            .validate_history_declaration()
+            .unwrap();
     }
 
     // Case `startup_installs_the_body_editor_and_action_labels`.

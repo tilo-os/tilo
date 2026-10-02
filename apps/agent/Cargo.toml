@@ -19,6 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -46,7 +47,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-content = { path = "../../crates/system/content" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true

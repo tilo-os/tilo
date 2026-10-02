@@ -113,6 +113,26 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
           filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
 
+      - name: Fetch comparison base
+        shell: bash
+        run: |
+          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
+            # Refresh main explicitly so a dispatch always compares against the
+            # current integration branch.
+            git fetch origin \
+              +refs/heads/main:refs/remotes/origin/main
+          else
+            base='${{ github.event.pull_request.base.sha }}'
+            if [ -z "$base" ] || [ "$base" = "null" ]; then
+              base='${{ github.event.before }}'
+            fi
+            if [ -n "$base" ] &&
+               [ "$base" != "0000000000000000000000000000000000000000" ] &&
+               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git fetch origin "$base"
+            fi
+          fi
+
       # Pull requests test the head merged onto main's current tip, and every
       # other job merges this same main commit.
       - name: Merge onto main

@@ -28,18 +28,22 @@ use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::bytes_si;
 
 const TOP_H: f64 = 78.0;
-const OPERATION_TYPE: &str = "disk-usage.operation";
+pub(crate) const OPERATION_TYPE: &str = "disk-usage.operation";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum DiskUsageOperation {
+pub(crate) enum DiskUsageOperation {
     Analyze { path: PathBuf },
     Choose,
     Back,
     Home,
 }
 
-fn operation_action(id: &str, label: &str, operation: &DiskUsageOperation) -> Option<ActionSpec> {
+pub(crate) fn operation_action(
+    id: &str,
+    label: &str,
+    operation: &DiskUsageOperation,
+) -> Option<ActionSpec> {
     let mut action =
         ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, operation).ok()?;
     action.contract = ActionContract {
@@ -76,6 +80,8 @@ pub struct DiskUsageApp {
     scan_cancellation: Option<ScanCancellation>,
     picker_rx: Option<ui::portal::PortalChannel>,
     shot_mode: bool,
+    pub(crate) actions: crate::resource::ActionSink,
+    hosted: bool,
 }
 
 impl DiskUsageApp {
@@ -117,6 +123,8 @@ impl DiskUsageApp {
             scan_cancellation: None,
             picker_rx: None,
             shot_mode: false,
+            actions: crate::resource::ActionSink::default(),
+            hosted: false,
         }
     }
 
@@ -357,7 +365,10 @@ impl DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
@@ -390,7 +401,7 @@ impl Widget for DiskUsageApp {
             if let Some(message) = result.error.clone() {
                 self.view = View::Error(result.path, message);
             } else {
-                DiskUsageDoc::remember(state, &result.path);
+                self.remember_scanned(state, &result.path);
                 self.set_result(result);
             }
             return true;
@@ -884,52 +895,148 @@ impl Widget for DiskUsageApp {
     }
 }
 
-impl ui::resources::PublishesResources for DiskUsageApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
+impl ui::undo::CommittedActions for DiskUsageApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
+        // Hosted remembers are applied by the framework dispatcher, which
+        // records its own undo bracket. Standalone stays on the local host.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
+impl DiskUsageApp {
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Submit the shared recent-directory projection. Hosted edits use the
+    /// framework dispatcher; standalone, `--shots`, and unit tests use the
+    /// local action host.
+    pub(crate) fn remember_scanned(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let action = crate::resource::DiskUsageAction::Remember {
+            path: path.to_string_lossy().into_owned(),
+        };
+        let context = ui::tilo_actions::ActionContext::for_action(
+            <crate::resource::DiskUsageShell as ui::framework::ResourceApp>::ID,
+            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::LABEL,
+            &action,
+        );
+        self.actions.dispatch_with_context(
+            doc,
+            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::ACTION_TYPE,
+            &action,
+            context,
+        );
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn in_analysis(&self) -> bool {
+        matches!(self.view, View::Analysis(_))
+    }
+
+    /// Places and the open scan. Not a second `disk-usage` root; choose / home
+    /// / back already ride `local_operations`.
+    fn live_analyze_extras(&self) -> Vec<Resource> {
+        let mut extras = Vec::new();
         for place in &self.places {
-            if let Some(action) = operation_action(
-                &format!("analyze:{}", place.path.display()),
-                &format!("Analyze {}", place.label),
-                &DiskUsageOperation::Analyze {
-                    path: place.path.clone(),
-                },
-            ) {
-                root.actions.push(action);
+            if let Some(resource) = analyze_resource(&place.label, &place.path) {
+                extras.push(resource);
             }
-        }
-        if let Some(action) =
-            operation_action("choose", "Choose folder", &DiskUsageOperation::Choose)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) =
-                operation_action("home", "Show locations", &DiskUsageOperation::Home)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) = operation_action("back", "Go back", &DiskUsageOperation::Back)
-        {
-            root.actions.push(action);
         }
         if let View::Analysis(result) = &self.view {
             for entry in &result.entries {
                 if entry.path.file_name().is_some_and(|name| name != ".")
-                    && let Some(action) = operation_action(
-                        &format!("analyze:{}", entry.path.display()),
-                        &format!("Analyze {}", entry.name),
-                        &DiskUsageOperation::Analyze {
-                            path: entry.path.clone(),
-                        },
-                    )
+                    && let Some(resource) = analyze_resource(&entry.name, &entry.path)
                 {
-                    root.actions.push(action);
+                    extras.push(resource);
                 }
             }
         }
+        extras
+    }
+}
+
+fn analyze_resource(label: &str, path: &std::path::Path) -> Option<Resource> {
+    let mut resource = Resource::new(
+        format!("disk-usage.folder:{}", path.display()),
+        "disk-usage.folder",
+        label,
+    );
+    resource.actions.push(operation_action(
+        &format!("analyze:{}", path.display()),
+        &format!("Analyze {label}"),
+        &DiskUsageOperation::Analyze {
+            path: path.to_path_buf(),
+        },
+    )?);
+    Some(resource)
+}
+
+fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl ui::resources::PublishesResources for DiskUsageApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.hosted {
+            return self.live_analyze_extras();
+        }
+        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
+            "disk-usage:root",
+            "Disk Usage Analyzer",
+            &state,
+        );
+        root.children.extend(self.live_analyze_extras());
         vec![root]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
+            "disk-usage:root",
+            "Disk Usage Analyzer",
+            &state,
+        );
+        root.children.extend(self.live_analyze_extras());
+        if self.hosted && id == "disk-usage:root" {
+            return None;
+        }
+        find_resource_tree(&[root], id)
     }
 }
 
@@ -1041,5 +1148,26 @@ mod tests {
                 Some("Choose folder")
             );
         }
+    }
+
+    #[test]
+    fn hosted_recent_folder_is_the_published_row() {
+        let mut doc = AutoCommit::new();
+        let path = PathBuf::from("/tmp/notes");
+        DiskUsageDoc::remember(&mut doc, &path);
+        doc.commit();
+        let mut app = DiskUsageApp::new();
+        app.mark_hosted_for_test();
+        assert!(ui::resources::resource(&app, &doc, "disk-usage:root").is_none());
+        let row =
+            ui::resources::resource(&app, &doc, &format!("disk-usage.recent:{}", path.display()))
+                .expect("hosted recent folder");
+        assert_eq!(row.kind, "disk-usage.recent");
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id.starts_with("analyze:")),
+            "a hosted recent folder stays the published row"
+        );
     }
 }

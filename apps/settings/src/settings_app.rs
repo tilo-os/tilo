@@ -74,6 +74,11 @@ pub struct SettingsApp {
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
     structure_dirty: bool,
+    /// Framework dispatcher, cloned onto a preference pane when that pane is built.
+    framework: Option<ui::framework::Dispatcher<crate::resource::Settings>>,
+    /// Set when hosted as a [`ui::framework::ResourceSurface`]; tests may flip
+    /// it without constructing a real dispatcher.
+    hosted: bool,
     /// Which narrow screen a `--shots` / headless capture pins the shell to —
     /// the live `ui::App` event loop that would otherwise drive the navigation
     /// is absent. `None` (the runtime default) collapses to the CONTENT screen,
@@ -160,6 +165,8 @@ impl SettingsApp {
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
+            framework: None,
+            hosted: false,
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
@@ -438,6 +445,36 @@ impl SettingsApp {
         }
     }
 
+    /// Remember the dispatcher so preference panes built later submit through it.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// Preference panes read the document in their own sync. An empty
+    /// projection must not wipe unsynced local pane state.
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "ResourceSurface adopt hook kept for API parity; panes sync from the document"
+    )]
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::SettingsState) {
+        let _ = state;
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+
     /// Dispatch to the per-category pane body.
     #[expect(
         clippy::too_many_lines,
@@ -492,7 +529,13 @@ impl SettingsApp {
                 panes::mouse_keyboard::MouseKeyboardPane::new()
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
+            Category::KeyboardShortcuts => {
+                let mut pane = panes::keyboard_shortcuts::ShortcutPane::default();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::TimeDate => panes::time_date::build(),
             Category::Users => Box::new(
                 panes::users::UsersPane::new()
@@ -509,13 +552,31 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::Appearance => panes::appearance::build(),
+            Category::Appearance => {
+                let mut pane = panes::appearance::AppearancePane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::Accessibility => panes::accessibility::build(),
             Category::Notifications if self.deterministic_hardware_for_shot => {
                 Box::new(panes::notifications::NotificationsPane::for_shot())
             }
-            Category::Notifications => panes::notifications::build(),
-            Category::DefaultApps => panes::personal_apps::build(),
+            Category::Notifications => {
+                let mut pane = panes::notifications::NotificationsPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
+            Category::DefaultApps => {
+                let mut pane = panes::personal_apps::PersonalAppsPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::Storage => Box::new(
                 panes::storage::StoragePane::new()
                     .with_command_state(&self.local_pane_command)
@@ -545,7 +606,16 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::RegionFormats => panes::region::build_for_width(self.content_width_hint()),
+            Category::RegionFormats => {
+                let mut pane = panes::region::RegionPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(match self.content_width_hint() {
+                    Some(width) => pane.with_width_hint(width),
+                    None => pane,
+                })
+            }
             Category::Permissions => panes::permissions::build(),
             Category::Updates => Box::new(
                 panes::updates::UpdatesPane::new()
@@ -2108,12 +2178,14 @@ impl ui::search::capability::SearchSource for SettingsApp {
 }
 
 impl ui::resources::PublishesResources for SettingsApp {
-    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
-    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
-    /// shared document.
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// `SettingsAction` preference door — keep only live device extras.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::actions::live_device_resources(doc, self.account_resource_inventory());
+        }
+        self.publish_resources(doc)
     }
     /// Resolve canonical Settings resources at activation time as well as
     /// publishing the eager palette snapshot above.  Search results retain
@@ -2121,7 +2193,10 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// re-checks an address against the current resource surface before the
     /// action door opens it.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == "settings.root" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 

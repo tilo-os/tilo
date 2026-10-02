@@ -94,6 +94,8 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The opener imports a legacy address-book file once. The ResourceApp
+    // shell does not, so an existing book would open empty.
     ui::launch::run_or_exit(&launch_spec());
 }
 

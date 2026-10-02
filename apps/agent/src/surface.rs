@@ -255,12 +255,12 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
 /// Several with nothing said about which denotes **nothing**: picking the
 /// first would answer a question nobody asked.
 fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-    let snap = qdoc::model::materialize(doc, &c);
-    let images: Vec<&qdoc::snapshot::BlockView> =
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let snap = tilo_doc::model::materialize(doc, &c);
+    let images: Vec<&tilo_doc::snapshot::BlockView> =
         snap.blocks.iter().filter(|b| b.kind == "image").collect();
-    let blob_of = |b: &qdoc::snapshot::BlockView| match b.attrs.get("blob") {
-        Some(qdoc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
+    let blob_of = |b: &tilo_doc::snapshot::BlockView| match b.attrs.get("blob") {
+        Some(tilo_doc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
         _ => None,
     };
     if let Some(b) = images.iter().find(|b| view.target_blocks.contains(&b.id)) {
@@ -278,8 +278,8 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
     // still a document, and reports its own empty anchor rather than
     // reading as though nothing were open.
     let anchor = view.focus_block.clone().or_else(|| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .first()
             .map(|b| b.id.clone())
@@ -354,8 +354,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
 }
 
 fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    use tilo_actions::ResourceProvider;
-    photos::actions::PhotosResources.resources(doc)
+    photos::actions::PhotosResources.publish_resources(doc)
 }
 
 /// Whether a document is the photo editor's — asked of its own schema.
@@ -373,7 +372,7 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
     app_id: "so.tilo.word-processor",
     title: "the word processor",
     namespace: "word-processor",
-    recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
+    recognises: |doc| tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
     resources: word_processor_resources,
     register: word_processor::actions::register,
     // "This parses as a rich-text document" is true of every document
@@ -1162,6 +1161,26 @@ pub fn from_verbs<'a>(
         }
     }
     if best.len() > 1 {
+        // Equal keyword hits still leave a shorter label closer to what
+        // was said: "insert table" beats "generate table of contents" for
+        // an instruction that only said "table". Align left / Align centre
+        // stay tied (same length) and remain Ambiguous.
+        let label_words = |offer: &Offer| keywords(&offer.descriptor.action_label).len().max(1);
+        let fewest = best
+            .iter()
+            .map(|offer| label_words(offer))
+            .min()
+            .unwrap_or(1);
+        let denser: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|offer| label_words(offer) == fewest)
+            .collect();
+        if !denser.is_empty() {
+            best = denser;
+        }
+    }
+    if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
                 .take(4)
@@ -1297,11 +1316,11 @@ mod tests {
         // Case `a_document_with_no_blocks_is_still_something_to_act_on`.
         {
             let mut doc = AutoCommit::new();
-            qdoc::model::init(&mut doc, &automerge::ROOT);
+            tilo_doc::model::init(&mut doc, &automerge::ROOT);
             doc.commit();
-            let c = qdoc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
+            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
             assert!(
-                qdoc::model::materialize(&doc, &c).blocks.is_empty(),
+                tilo_doc::model::materialize(&doc, &c).blocks.is_empty(),
                 "this test is about a document with nothing in it",
             );
 
@@ -1741,7 +1760,7 @@ mod tests {
 
         /// A short document built through qdoc's own editing path.
         fn seeded() -> AutoCommit {
-            let mut document = qdoc::Document::new();
+            let mut document = tilo_doc::Document::new();
             let heading = document.insert_block(None, "heading");
             document.splice_text(&heading, 0, 0, "Launch plan");
             let body = document.insert_block(Some(&heading), "paragraph");

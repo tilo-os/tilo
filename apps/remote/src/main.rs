@@ -42,25 +42,44 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.remote", remote::app_root)
+        .shot_root(shot_root)
+        .scenarios(&[
+            "narrow",
+            "narrow-open",
+            "form",
+            "form-tilo",
+            "session-ssh",
+            "session-vnc",
+            "session-rdp",
+            "session-tilo",
+            "session-connecting",
+            "session-failed",
+            "confirm-connect",
+            "confirm-delete",
+            "confirm-ssh-trust",
+        ])
+        .configure_app(|app| remote::actions::register(app.action_registry_mut()))
+}
+
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.remote", remote::app_root)
-            .shot_root(shot_root)
-            .scenarios(&[
-                "narrow",
-                "narrow-open",
-                "form",
-                "form-tilo",
-                "session-ssh",
-                "session-vnc",
-                "session-rdp",
-                "session-tilo",
-                "session-connecting",
-                "session-failed",
-                "confirm-connect",
-                "confirm-delete",
-                "confirm-ssh-trust",
-            ])
-            .configure_app(|app| remote::actions::register(app.action_registry_mut())),
-    );
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&remote::launch_spec());
 }

@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use ui::widget::Widget;
 
 mod actions;
+mod doc;
+pub mod resource;
 mod showcase;
 mod transfer;
 pub use showcase::{PasswordsSurface, ShowcaseMode};
@@ -259,6 +261,8 @@ pub fn app_root_showcase(mode: ShowcaseMode) -> Box<dyn Widget> {
 pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo_long_list())
 }
+
+pub use resource::{Passwords, PasswordsShell, launch_spec};
 
 #[cfg(test)]
 mod tests {

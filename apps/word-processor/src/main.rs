@@ -254,8 +254,8 @@ fn seed_selected_image(
     wp.model_mut().insert_image_bytes(&mut state.doc, SHOT_PNG);
     wp.sync(&mut state.doc, &state.root);
 
-    let c = qdoc::model::open(&state.doc, &state.root)?;
-    let image = qdoc::model::materialize(&state.doc, &c)
+    let c = tilo_doc::model::open(&state.doc, &state.root)?;
+    let image = tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .into_iter()
         .find(|block| block.kind == "image")
@@ -279,11 +279,11 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
     // at the start of that draw. Otherwise the review scenario attempts to read
     // an uninitialised root record and cannot seed a representative comment.
     wp.sync(&mut state.doc, &state.root);
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let has_reviewable_text = qdoc::model::blocks_in_order(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let has_reviewable_text = tilo_doc::model::blocks_in_order(&state.doc, &containers)
         .into_iter()
         .any(|id| {
-            qdoc::model::block_text(&state.doc, &containers, &id)
+            tilo_doc::model::block_text(&state.doc, &containers, &id)
                 .is_some_and(|text| !text.is_empty())
         });
     if !has_reviewable_text {
@@ -294,33 +294,37 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
             .insert_str(&mut state.doc, "Quarterly planning summary");
         wp.sync(&mut state.doc, &state.root);
     }
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let Some(block) = qdoc::model::blocks_in_order(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let Some(block) = tilo_doc::model::blocks_in_order(&state.doc, &containers)
         .into_iter()
         .find(|id| {
-            qdoc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
+            tilo_doc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
         })
     else {
         return Ok(());
     };
-    let len = qdoc::model::block_text(&state.doc, &containers, &block)
+    let len = tilo_doc::model::block_text(&state.doc, &containers, &block)
         .unwrap_or_default()
         .chars()
         .count();
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-    let mut doc = qdoc::DocMut {
-        doc: &mut state.doc,
-        c: &containers,
-        ids: &mut ids,
-    };
-    doc.add_comment(
+    let end = len.min(12);
+    word_processor::actions::add_comment_action(
         &block,
         0,
-        len.min(12),
+        end,
         "Maya Chen",
+        "",
         "Could we make this opening more specific?",
-    );
-    doc.track_insert(&block, len, " — reviewed", "Jonas Weber", "2026-09-05");
+    )
+    .apply(&mut state.doc)?;
+    word_processor::actions::RichTextAction::TrackInsert {
+        block,
+        at: len,
+        text: " — reviewed".into(),
+        author: "Jonas Weber".into(),
+        date: "2026-09-05".into(),
+    }
+    .apply(&mut state.doc)?;
     wp.sync(&mut state.doc, &state.root);
     Ok(())
 }
@@ -332,8 +336,8 @@ fn seed_comment_thread(
     state: &mut State,
     wp: &mut WordProcessorWidget,
 ) -> Result<(), Box<dyn Error>> {
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let comment = qdoc::model::materialize(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let comment = tilo_doc::model::materialize(&state.doc, &containers)
         .comments
         .into_iter()
         .next()
@@ -354,7 +358,7 @@ fn seed_comment_thread(
     )
     .apply(&mut state.doc)?;
     state.doc.commit();
-    let thread = qdoc::model::materialize(&state.doc, &containers)
+    let thread = tilo_doc::model::materialize(&state.doc, &containers)
         .comments
         .into_iter()
         .find(|item| item.id == comment)
@@ -459,19 +463,20 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
     let mut peer_first = None;
     for i in 0..4 {
-        let c = qdoc::model::open(&peer, &state.root)?;
-        let blocks = qdoc::model::materialize(&peer, &c).blocks;
+        let c = tilo_doc::model::open(&peer, &state.root)?;
+        let blocks = tilo_doc::model::materialize(&peer, &c).blocks;
         let last = blocks
             .last()
             .ok_or("seed_revisions: no paragraph to append to")?;
         let at = last.text.chars().count();
-        let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
-            doc: &mut peer,
-            c: &c,
-            ids: &mut ids,
-        };
-        dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
+        word_processor::actions::RichTextAction::SpliceText {
+            region: word_processor::actions::RegionKind::Body,
+            block: last.id.clone(),
+            at,
+            del: 0,
+            ins: " Costs fell by four percent.".into(),
+        }
+        .apply(&mut peer)?;
         let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;

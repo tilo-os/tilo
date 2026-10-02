@@ -26,12 +26,12 @@ use crate::num;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec,
     ContextRequirement, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec,
+    Resource, ResultSpec,
 };
 
 /// Registry `type_id` for every word-processor action.
-pub use qdoc_rich_text::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
-pub use qdoc_rich_text::action::*;
+pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
+pub use tilo_document::action::*;
 pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +230,7 @@ fn short(text: &str, fallback: &str) -> String {
 /// text cache. The caller materializes once, then each bounded result borrows
 /// from that snapshot.
 fn range_label(
-    blocks: &[qdoc::snapshot::BlockView],
+    blocks: &[tilo_doc::snapshot::BlockView],
     block: &str,
     start: usize,
     end: usize,
@@ -246,22 +246,34 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-fn document_resource() -> Resource {
-    Resource::new(
+#[allow(
+    clippy::expect_used,
+    reason = "empty rich-text document always initializes and reads"
+)]
+fn document_resource(doc: &AutoCommit) -> Resource {
+    let state = <crate::framework::Document as ui::tilo_resource::Resource>::read(doc)
+        .unwrap_or_else(|_| {
+            let mut empty = AutoCommit::new();
+            <crate::framework::Document as ui::tilo_resource::Resource>::initialize(&mut empty)
+                .expect("empty rich text initializes");
+            <crate::framework::Document as ui::tilo_resource::Resource>::read(&empty)
+                .expect("empty rich text reads")
+        });
+    ui::tilo_resource::publish::<crate::framework::Document>(
         "word-processor.document",
-        "word_processor.document",
         "Document",
+        &state,
     )
-    .with_action(crate::semantic_read::action::spec())
 }
 
-fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
+pub(crate) fn file_operation_specs(file: Option<&continuation::FileContext>) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root.actions.push(continuation::file(
+        specs.push(continuation::file(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -297,9 +309,22 @@ fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileCont
             file,
         ));
     }
+    specs
 }
 
-fn add_view_operations(root: &mut Resource) {
+fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
+    // Replace a spec with the same id so open/save are not listed twice.
+    for spec in file_operation_specs(file) {
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
+    }
+}
+
+pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for (id, label, value) in [
         ("find", "Find in document", WordProcessorOperation::Find),
         ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
@@ -336,7 +361,21 @@ fn add_view_operations(root: &mut Resource) {
             WordProcessorOperation::ToggleHistory,
         ),
     ] {
+        if !include_history && id == "history" {
+            continue;
+        }
         if let Some(spec) = operation(id, label, OperationKind::View, &value) {
+            specs.push(spec);
+        }
+    }
+    specs
+}
+
+fn add_view_operations(root: &mut Resource) {
+    for spec in view_operations(true) {
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
             root.actions.push(spec);
         }
     }
@@ -514,7 +553,7 @@ fn add_body_append_actions(
     root: &mut Resource,
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
-    body: Option<&qdoc_rich_text::BodyOrder>,
+    body: Option<&tilo_document::BodyOrder>,
 ) {
     let appended =
         editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc, body);
@@ -626,10 +665,60 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
     ));
 }
 
+/// Selection, comment, find-hit, and caret-edit rows that depend on this
+/// peer's caret. Not a second `word-processor.document` root. Typing, marks,
+/// placing an image, inserting a table, moving the caret, and page breaks stay
+/// addressable when the framework already publishes the document.
+pub(crate) fn live_presentation_resources(
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    body: Option<&tilo_document::BodyOrder>,
+) -> Vec<Resource> {
+    let mut scratch = Resource::new("word-processor.live", "word_processor.live", "Live");
+    // Pass the kept body order so building erase/new-paragraph targets does not
+    // list and sort every paragraph on each keystroke.
+    add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, body));
+    add_comment_resource_action(&mut scratch, ctx);
+    if !ctx.search_hits.is_empty()
+        && let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT)
+    {
+        let snapshot = tilo_doc::model::materialize(doc, &containers);
+        add_search_resources(&mut scratch, ctx, &snapshot);
+    }
+    let mut extras = scratch.children;
+    if let Some(selection) = extras
+        .iter_mut()
+        .find(|resource| resource.kind == "word_processor.selection")
+    {
+        selection.actions.extend(scratch.actions);
+    } else if !scratch.actions.is_empty() {
+        let mut selection = Resource::new(
+            "word-processor.selection",
+            "word_processor.selection",
+            "Current selection",
+        );
+        selection.actions.extend(scratch.actions);
+        extras.insert(0, selection);
+    }
+    let mut caret = Resource::new("word-processor.caret", "word_processor.caret", "Caret");
+    editing::add_operations(&mut caret, ctx, doc, body);
+    add_document_edit_actions(&mut caret, ctx);
+    add_caret_actions(&mut caret, ctx);
+    add_body_append_actions(&mut caret, ctx, doc, body);
+    view_ops::add_operations(&mut caret, ctx);
+    // Hosted edits answer with the blocks they changed, same as the
+    // standalone document root (see returning_changes).
+    caret = returning_changes(caret);
+    if !caret.actions.is_empty() {
+        extras.push(caret);
+    }
+    extras
+}
+
 fn add_search_resources(
     root: &mut Resource,
     ctx: &WpResourceCtx,
-    snapshot: &qdoc::snapshot::DocSnapshot,
+    snapshot: &tilo_doc::snapshot::DocSnapshot,
 ) {
     if ctx.search_hits.is_empty() {
         return;
@@ -737,7 +826,7 @@ fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     }
 }
 
-fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
+fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
     let text = comment
         .blocks
         .iter()
@@ -828,7 +917,19 @@ fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
     resource
 }
 
-fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn place_child(root: &mut Resource, child: Resource) {
+    if let Some(existing) = root
+        .children
+        .iter_mut()
+        .find(|existing| existing.id == child.id)
+    {
+        *existing = child;
+    } else {
+        root.children.push(child);
+    }
+}
+
+fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
         return;
     }
@@ -858,8 +959,8 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
         .extend(snapshot.comments.iter().map(comment_resource));
     for change in &snapshot.changes {
         let kind = match change.kind {
-            qdoc::snapshot::ChangeKind::Ins => "Insertion",
-            qdoc::snapshot::ChangeKind::Del => "Deletion",
+            tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
+            tilo_doc::snapshot::ChangeKind::Del => "Deletion",
         };
         review.children.push(
             Resource::new(
@@ -883,7 +984,7 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
             )),
         );
     }
-    root.children.push(review);
+    place_child(root, review);
 }
 
 fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
@@ -924,7 +1025,7 @@ fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     root.children.push(history);
 }
 
-fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if !snapshot.notes.is_empty() {
         let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
         for note in &snapshot.notes {
@@ -940,7 +1041,7 @@ fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSna
                 format!("{}: {}", note.kind, short(&text, "Empty note")),
             ));
         }
-        root.children.push(notes);
+        place_child(root, notes);
     }
     if !snapshot.bookmarks.is_empty() {
         let mut bookmarks = Resource::new(
@@ -955,11 +1056,53 @@ fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSna
                 bookmark.name.clone(),
             ));
         }
-        root.children.push(bookmarks);
+        place_child(root, bookmarks);
     }
 }
 
-fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_region_resources(
+    root: &mut Resource,
+    id: &str,
+    label: &str,
+    region: RegionKind,
+    blocks: &[tilo_doc::snapshot::BlockView],
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let mut region_resource = Resource::new(
+        format!("word-processor.{id}"),
+        format!("word_processor.{id}"),
+        label,
+    );
+    for block in blocks.iter().take(MAX_RESOURCE_OBJECTS) {
+        let mut child = Resource::new(
+            format!("word-processor.{id}:{}", block.id),
+            format!("word_processor.{id}-block"),
+            short(&block.text, label),
+        );
+        for (action_id, action_label, align) in [
+            ("align-left", "Align left", "left"),
+            ("align-center", "Align centre", "center"),
+            ("align-right", "Align right", "right"),
+        ] {
+            child.actions.push(immediate_spec(
+                action_id,
+                action_label,
+                &set_block_attr_action(
+                    region,
+                    vec![block.id.clone()],
+                    "align",
+                    AttrVal::Str(align.to_string()),
+                ),
+            ));
+        }
+        region_resource.children.push(child);
+    }
+    place_child(root, region_resource);
+}
+
+fn add_style_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if snapshot.styles.is_empty() {
         return;
     }
@@ -970,8 +1113,8 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
     );
     for (style, properties) in &snapshot.styles {
         let bold = matches!(
-            properties.get(qdoc::schema::STYLE_BOLD),
-            Some(qdoc::AttrVal::Bool(true))
+            properties.get(tilo_doc::schema::STYLE_BOLD),
+            Some(tilo_doc::AttrVal::Bool(true))
         );
         let mut child = Resource::new(
             format!("word-processor.style:{style}"),
@@ -981,14 +1124,14 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
         .with_action(immediate_spec(
             "toggle-bold",
             if bold { "Remove bold" } else { "Make bold" },
-            &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
+            &set_style_property_action(style, tilo_doc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
         ));
         if !crate::styles::StyleSheet::is_builtin(style) {
             let instances = snapshot
                 .blocks
                 .iter()
                 .filter(|block| {
-                    matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(id)) if id == style)
                 })
                 .map(|block| block.id.clone())
                 .collect();
@@ -1000,12 +1143,12 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
         }
         styles.children.push(child);
     }
-    root.children.push(styles);
+    place_child(root, styles);
 }
 
-fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
+fn image_resource(block: &tilo_doc::snapshot::BlockView) -> Resource {
     let edge = |key: &str| match block.attrs.get(key) {
-        Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+        Some(tilo_doc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
         _ => 0,
     };
     let left = edge("crop_left");
@@ -1049,12 +1192,44 @@ fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
             &set_image_placement_action(&block.id, anchor, wrap, 0, 0, 0),
         ));
     }
+    let block_id = block.id.clone();
+    resource.actions.push(ActionSpec::typed(
+        "set-size",
+        "Set image size",
+        "width and height in pixels",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("width", ParamType::Integer, "Width in px"),
+            ActionParam::required_owned("height", ParamType::Integer, "Height in px"),
+        ],
+        move |args: &ActionArgs| {
+            let width = args.integer("width").unwrap_or(0);
+            let height = args.integer("height").unwrap_or(0);
+            encode(&set_image_size_action(&block_id, width, height))
+        },
+    ));
+    let flipped = |key: &str| matches!(block.attrs.get(key), Some(tilo_doc::AttrVal::Bool(true)));
+    for (id, label, key) in [
+        ("flip-horizontal", "Flip horizontally", "flip_h"),
+        ("flip-vertical", "Flip vertically", "flip_v"),
+    ] {
+        resource.actions.push(immediate_spec(
+            id,
+            label,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![block.id.clone()],
+                key,
+                AttrVal::Bool(!flipped(key)),
+            ),
+        ));
+    }
     resource
 }
 
-fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -> Resource {
-    let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
-        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+fn table_resource(table_id: &str, table_blocks: &[&tilo_doc::snapshot::BlockView]) -> Resource {
+    let coordinate = |block: &tilo_doc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+        Some(tilo_doc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
         _ => 0,
     };
     let rows = table_blocks
@@ -1128,17 +1303,30 @@ fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -
     resource
 }
 
-fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
-    root.children.extend(
-        snapshot
-            .blocks
-            .iter()
-            .filter(|block| block.kind == "image")
-            .map(image_resource),
-    );
+/// Images, tables and headings already on the published document stay that
+/// node. A listing may replace one when it carries at least as much (a full
+/// table the eager page split). Anything the eager page omitted is added.
+fn place_structural(root: &mut Resource, child: Resource) {
+    if let Some(existing) = root
+        .children
+        .iter_mut()
+        .find(|existing| existing.id == child.id)
+    {
+        if child.children.len() >= existing.children.len() {
+            *existing = child;
+        }
+    } else {
+        root.children.push(child);
+    }
+}
+
+fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
+    for block in snapshot.blocks.iter().filter(|block| block.kind == "image") {
+        place_structural(root, image_resource(block));
+    }
     let mut table_ids = Vec::new();
     for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(table_id)) = block.attrs.get("table")
+        if let Some(tilo_doc::AttrVal::Str(table_id)) = block.attrs.get("table")
             && !table_ids.contains(table_id)
         {
             table_ids.push(table_id.clone());
@@ -1150,10 +1338,10 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
             .iter()
             .filter(|block| {
                 block.kind == "cell"
-                    && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table_id)
+                    && matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == table_id)
             })
             .collect::<Vec<_>>();
-        root.children.push(table_resource(table_id, &blocks));
+        place_structural(root, table_resource(table_id, &blocks));
     }
     for block in snapshot
         .blocks
@@ -1176,8 +1364,85 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
                 &set_align_action(vec![block.id.clone()], align),
             ));
         }
-        root.children.push(section);
+        place_structural(root, section);
     }
+}
+
+/// A table of contents built from the document's headings. Page numbers stay
+/// with the laid-out view; this door inserts the headings the document holds.
+pub(crate) fn toc_action(state: &tilo_document::RichTextState) -> Option<ActionSpec> {
+    let entries: Vec<TocTarget> = state
+        .headings()
+        .into_iter()
+        .map(|heading| TocTarget {
+            heading: heading.id,
+            level: heading.level,
+            text: heading.text,
+            page: None,
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    Some(immediate_spec(
+        "generate-toc",
+        "Generate table of contents",
+        &generate_toc_action(entries),
+    ))
+}
+
+/// Images, tables, headings, notes, review, paragraph styles, and the page
+/// header and footer the document resource publishes as its own children.
+/// Structural objects are bounded in document order; a caret listing adds
+/// only what this page omitted.
+pub(crate) fn structural_children(state: &tilo_document::RichTextState) -> Vec<Resource> {
+    let mut blocks = Vec::new();
+    for (kind, limit) in [
+        ("heading", MAX_RESOURCE_OBJECTS),
+        ("image", MAX_RESOURCE_OBJECTS),
+        ("cell", MAX_RESOURCE_OBJECTS.saturating_mul(16)),
+    ] {
+        let mut of_kind = state.featured(kind);
+        of_kind.truncate(limit);
+        blocks.extend(of_kind.into_iter().map(|view| (*view).clone()));
+    }
+    let snapshot = tilo_doc::snapshot::DocSnapshot {
+        blocks,
+        notes: state.notes().as_ref().clone(),
+        comments: state.comments().as_ref().clone(),
+        changes: state.changes().as_ref().clone(),
+        styles: state.styles().as_ref().clone(),
+        ..tilo_doc::snapshot::DocSnapshot::default()
+    };
+    let mut root = Resource::new("word-processor.document", "tilo.rich-text", "Document");
+    add_structural_resources(&mut root, &snapshot);
+    add_review_resources(&mut root, &snapshot);
+    add_metadata_resources(&mut root, &snapshot);
+    add_style_resources(&mut root, &snapshot);
+    add_region_resources(
+        &mut root,
+        "header",
+        "Header",
+        RegionKind::Header,
+        state.header().as_slice(),
+    );
+    add_region_resources(
+        &mut root,
+        "footer",
+        "Footer",
+        RegionKind::Footer,
+        state.footer().as_slice(),
+    );
+    // Same result contracts the standalone tree declares: append-row /
+    // append-column answer with the cells they added.
+    for table in root
+        .children
+        .iter_mut()
+        .filter(|child| child.kind == "word_processor.table")
+    {
+        declare_changes(table, TABLE_RETURNING_CHANGES);
+    }
+    root.children
 }
 
 /// Stable id standing for every view-derived `word-processor.selection:…`
@@ -1201,10 +1466,10 @@ pub const SCHEMA_SEARCH_HIT_RESOURCE: &str = "word-processor.search-hit";
 /// - Document-derived resources (images, tables, sections, review,
 ///   revisions, styles) are included: they do not depend on any view.
 pub fn catalogue_schema(doc: &AutoCommit) -> Vec<Resource> {
-    let block = qdoc::model::open(doc, &automerge::ROOT)
+    let block = tilo_doc::model::open(doc, &automerge::ROOT)
         .ok()
         .and_then(|containers| {
-            qdoc::model::blocks_in_order(doc, &containers)
+            tilo_doc::model::blocks_in_order(doc, &containers)
                 .first()
                 .cloned()
         })
@@ -1345,10 +1610,10 @@ pub(crate) fn provide_resources_with_file(
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
 ) -> Vec<Resource> {
-    let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
         return vec![resource_root(ctx, doc, file, None)];
     };
-    let snapshot = qdoc::model::materialize(doc, &containers);
+    let snapshot = tilo_doc::model::materialize(doc, &containers);
     provide_resources_from(ctx, doc, file, None, &snapshot, true)
 }
 
@@ -1358,9 +1623,9 @@ fn resource_root(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    body: Option<&qdoc_rich_text::BodyOrder>,
+    body: Option<&tilo_document::BodyOrder>,
 ) -> Resource {
-    let mut root = document_resource();
+    let mut root = document_resource(doc);
     add_file_operations(&mut root, file);
     add_view_operations(&mut root);
     add_caret_actions(&mut root, ctx);
@@ -1378,8 +1643,8 @@ fn provide_resources_from(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    body: Option<&qdoc_rich_text::BodyOrder>,
-    listed: &qdoc::snapshot::DocSnapshot,
+    body: Option<&tilo_document::BodyOrder>,
+    listed: &tilo_doc::snapshot::DocSnapshot,
     revisions: bool,
 ) -> Vec<Resource> {
     let mut root = resource_root(ctx, doc, file, body);
@@ -1453,7 +1718,7 @@ pub(crate) fn provide_resources_listed(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    state: &qdoc_rich_text::RichTextState,
+    state: &tilo_document::RichTextState,
     revisions: bool,
 ) -> Vec<Resource> {
     let c = state.containers();
@@ -1461,7 +1726,7 @@ pub(crate) fn provide_resources_listed(
     // Nearest the caret: a book-length document lists the sections, images
     // and tables around where its user is, not all of them.
     let caret = body.position(&ctx.caret_block).unwrap_or(0);
-    let mut blocks: Vec<(usize, qdoc::snapshot::BlockView)> = Vec::new();
+    let mut blocks: Vec<(usize, tilo_doc::snapshot::BlockView)> = Vec::new();
     for (kind, limit) in [
         ("heading", MAX_RESOURCE_OBJECTS),
         ("image", MAX_RESOURCE_OBJECTS),
@@ -1484,19 +1749,19 @@ pub(crate) fn provide_resources_listed(
         .into_iter()
         .collect();
     blocks.extend(
-        qdoc::model::materialize_blocks(doc, c, &hits)
+        tilo_doc::model::materialize_blocks(doc, c, &hits)
             .into_iter()
             .filter_map(|view| Some((body.position(&view.id)?, view))),
     );
     blocks.sort_by_key(|(position, _)| *position);
-    let listed = qdoc::snapshot::DocSnapshot {
+    let listed = tilo_doc::snapshot::DocSnapshot {
         blocks: blocks.into_iter().map(|(_, view)| view).collect(),
-        styles: qdoc::model::all_styles(doc, c),
-        properties: qdoc::model::doc_props(doc, c),
+        styles: tilo_doc::model::all_styles(doc, c),
+        properties: tilo_doc::model::doc_props(doc, c),
         notes: state.notes().as_ref().clone(),
         comments: state.comments().as_ref().clone(),
         changes: state.changes().as_ref().clone(),
-        ..qdoc::snapshot::DocSnapshot::default()
+        ..tilo_doc::snapshot::DocSnapshot::default()
     };
     provide_resources_from(ctx, doc, file, Some(&**body), &listed, revisions)
 }
@@ -1527,8 +1792,9 @@ pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> 
     Ok(resource)
 }
 
-impl ResourceProvider for crate::widget::WordProcessorWidget {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::widget::WordProcessorWidget {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if let Some(resource) = self.file_choice_resource() {
             return vec![resource];
         }
@@ -1542,7 +1808,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
             .unwrap_or_else(|| provide_resources_with_file(&ctx, doc, Some(&file)))
     }
 
-    fn catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
+    pub fn publish_catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
         catalogue_schema(doc)
     }
 }
@@ -1551,10 +1817,10 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use qdoc::DocMut;
     use tilo_actions::ActionError;
     use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
+    use tilo_doc::DocMut;
 
     /// A four-byte stand-in image, described as an [`ImageInput`].
     fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
@@ -1585,7 +1851,7 @@ mod tests {
     fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
         // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
         {
-            let mut root = document_resource();
+            let mut root = document_resource(&AutoCommit::new());
             add_view_operations(&mut root);
             let spec = root
                 .actions
@@ -1611,9 +1877,9 @@ mod tests {
                 &mut state.doc,
                 &insert_image_action(&para, 0, test_image(Some(20), Some(10))),
             );
-            let after_img = qdoc::model::blocks_in_order(
+            let after_img = tilo_doc::model::blocks_in_order(
                 &state.doc,
-                &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+                &tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap(),
             );
             let last = after_img.last().cloned().unwrap();
             dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
@@ -1660,6 +1926,14 @@ mod tests {
                 .unwrap();
             assert!(image.actions.iter().any(|action| action.id == "delete"));
             assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
+            let published = <crate::framework::Document as ui::tilo_resource::Resource>::children(
+                &<crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+                    .expect("the seeded document reads"),
+            );
+            assert!(
+                published.iter().any(|child| child.id == image.id),
+                "the image is a child of the document resource"
+            );
             assert!(table.actions.iter().any(|action| action.id == "delete"));
             assert!(table.actions.iter().any(|action| action.id == "append-row"));
         }
@@ -1792,15 +2066,301 @@ mod tests {
         }
     }
 
+    /// A comment thread is a child of the document resource, and the open tree
+    /// lists that review once.
+    #[test]
+    fn review_is_a_child_of_the_document_resource() {
+        let (mut state, ids) = seeded("Hello\n");
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::AddComment {
+                block: ids[0].clone(),
+                start: 0,
+                end: 5,
+                author: "Ada".into(),
+                date: "2026-01-01".into(),
+                text: "Note this".into(),
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the commented document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let review = published
+            .iter()
+            .find(|child| child.kind == "word_processor.review")
+            .expect("review is published with the document");
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.kind == "word_processor.comment"),
+            "the comment is on the published review"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.review")
+                .count(),
+            1,
+            "the open tree does not publish a second review"
+        );
+    }
+
+    /// A named style is a child of the document resource, and the open tree
+    /// lists that style sheet once.
+    #[test]
+    fn a_named_style_is_a_child_of_the_document_resource() {
+        let (mut state, ids) = seeded("Styled paragraph\n");
+        dispatch(
+            &mut state.doc,
+            &set_style_property_action(
+                "custom1",
+                tilo_doc::schema::STYLE_NAME,
+                AttrVal::Str("Callout".into()),
+            ),
+        );
+        dispatch(
+            &mut state.doc,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![ids[0].clone()],
+                "style",
+                AttrVal::Str("custom1".into()),
+            ),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the styled document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let sheet = published
+            .iter()
+            .find(|child| child.kind == "word_processor.styles")
+            .expect("styles are published with the document");
+        let style = sheet
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "word-processor.style:custom1")
+            .expect("the named style is a published child");
+        assert!(
+            style
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-bold"),
+            "the published style can change its bold field"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.styles")
+                .count(),
+            1,
+            "the open tree does not publish a second style sheet"
+        );
+    }
+
+    /// A page header is a child of the document resource, and the open tree
+    /// lists that header once.
+    #[test]
+    fn a_header_is_a_child_of_the_document_resource() {
+        let (mut state, _) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::EnsureRegionBlock {
+                region: RegionKind::Header,
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with a header reads");
+        let block = read
+            .header()
+            .first()
+            .expect("the header has a paragraph")
+            .id
+            .clone();
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::SpliceText {
+                region: RegionKind::Header,
+                block: block.clone(),
+                at: 0,
+                del: 0,
+                ins: "Running head".into(),
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the headed document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let header = published
+            .iter()
+            .find(|child| child.kind == "word_processor.header")
+            .expect("the header is published with the document");
+        let paragraph = header
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == format!("word-processor.header:{block}"))
+            .expect("the header paragraph is a published child");
+        assert!(
+            paragraph
+                .actions
+                .iter()
+                .any(|action| action.id == "align-center"),
+            "the published header paragraph can be aligned"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: block,
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Header,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.header")
+                .count(),
+            1,
+            "the open tree does not publish a second header"
+        );
+    }
+
+    /// Resizing an image is a published action on that image, not only a panel click.
+    #[test]
+    fn image_size_is_a_published_document_action() {
+        let (mut state, ids) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with an image reads");
+        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+            .into_iter()
+            .find(|child| child.kind == "word_processor.image")
+            .expect("the image is published with the document");
+        let spec = image
+            .actions
+            .iter()
+            .find(|action| action.id == "set-size")
+            .expect("set size is published on the image");
+        let encoded = spec
+            .build_args([
+                ("width".into(), tilo_actions::ArgValue::Integer(300)),
+                ("height".into(), tilo_actions::ArgValue::Integer(180)),
+            ])
+            .expect("width and height bind");
+        let action: RichTextAction = serde_json::from_slice(&encoded.payload).expect("decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("size applies");
+        let blocks = body_blocks(&state.doc);
+        let image = blocks
+            .iter()
+            .find(|block| block.kind == "image")
+            .expect("image remains");
+        assert_eq!(image.attrs.get("width"), Some(&tilo_doc::AttrVal::Int(300)));
+        assert_eq!(
+            image.attrs.get("height"),
+            Some(&tilo_doc::AttrVal::Int(180))
+        );
+    }
+
+    /// Flipping an image is a published action on that image, not only a panel click.
+    #[test]
+    fn image_flip_is_a_published_document_action() {
+        let (mut state, ids) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with an image reads");
+        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+            .into_iter()
+            .find(|child| child.kind == "word_processor.image")
+            .expect("the image is published with the document");
+        let spec = image
+            .actions
+            .iter()
+            .find(|action| action.id == "flip-horizontal")
+            .expect("flip is published on the image");
+        let encoded = spec_encoding(spec, None);
+        let action: RichTextAction =
+            serde_json::from_slice(&encoded.payload).expect("the flip action decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("flip applies");
+        let blocks = body_blocks(&state.doc);
+        let image = blocks
+            .iter()
+            .find(|block| block.kind == "image")
+            .expect("image remains");
+        assert_eq!(
+            image.attrs.get("flip_h"),
+            Some(&tilo_doc::AttrVal::Bool(true))
+        );
+    }
+
+    /// The table of contents is a document action built from the headings the
+    /// document already holds.
+    #[test]
+    fn a_table_of_contents_is_a_published_document_action() {
+        let (mut state, _) = seeded("# Section\n\nBody\n");
+        let root = document_resource(&state.doc);
+        let spec = root
+            .actions
+            .iter()
+            .find(|action| action.id == "generate-toc")
+            .expect("generate table of contents is published");
+        let encoded = spec_encoding(spec, None);
+        let action: RichTextAction =
+            serde_json::from_slice(&encoded.payload).expect("the toc action decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("toc applies");
+        let blocks = body_blocks(&state.doc);
+        assert!(
+            blocks.iter().any(|block| {
+                matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true)))
+                    && block.text.contains("Section")
+            }),
+            "the published action inserts a contents line for the heading"
+        );
+    }
+
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
     /// ordered body block ids.
     fn seeded(markdown: &str) -> (ui::State, Vec<String>) {
         let mut state = ui::State::new();
         let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
         {
-            use qdoc_codecs::FormatProvider;
+            use tilo_doc_codecs::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
-            qdoc_codecs::MarkdownCodec
+            tilo_doc_codecs::MarkdownCodec
                 .import(
                     markdown.as_bytes(),
                     &mut dm,
@@ -1808,18 +2368,18 @@ mod tests {
                 )
                 .unwrap();
         }
-        let ids = qdoc::model::blocks_in_order(&state.doc, &ed.containers);
+        let ids = tilo_doc::model::blocks_in_order(&state.doc, &ed.containers);
         (state, ids)
     }
 
-    fn body_blocks(doc: &AutoCommit) -> Vec<qdoc::snapshot::BlockView> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c).blocks
+    fn body_blocks(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c).blocks
     }
 
     fn text_of(doc: &AutoCommit, block: &str) -> String {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::block_text(doc, &c, block).unwrap_or_default()
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
     /// Dispatch an action through the Tilo executor with a discarding transport
@@ -1842,9 +2402,9 @@ mod tests {
         // Phase: splice_validation_matches_snapshot_without_scanning_regions.
         {
             use automerge::{ObjType, ScalarValue};
-            use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+            use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
             let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
-            let c = qdoc::model::open(&state.doc, &state.root).unwrap();
+            let c = tilo_doc::model::open(&state.doc, &state.root).unwrap();
             for region in [RegionKind::Header, RegionKind::Footer] {
                 let action = RichTextAction::SpliceText {
                     region,
@@ -1912,7 +2472,7 @@ mod tests {
                     .unwrap();
                 state.doc.delete(container, "deleted").unwrap();
             }
-            let snap = qdoc::model::materialize(&state.doc, &c);
+            let snap = tilo_doc::model::materialize(&state.doc, &c);
             for region in [RegionKind::Body, RegionKind::Header, RegionKind::Footer] {
                 let blocks = match region {
                     RegionKind::Body => &snap.blocks,
@@ -1943,14 +2503,14 @@ mod tests {
                                 let len = b.text.chars().count();
                                 at <= len && del <= len.saturating_sub(at)
                             });
-                            let before = qdoc::model::ordered_keys_scan_count();
+                            let before = tilo_doc::model::ordered_keys_scan_count();
                             assert_eq!(
                                 action_is_valid(&action, &state.doc, &c),
                                 expected,
                                 "{action:?}"
                             );
                             assert_eq!(
-                                qdoc::model::ordered_keys_scan_count(),
+                                tilo_doc::model::ordered_keys_scan_count(),
                                 before,
                                 "single-block validation must not scan regions"
                             );
@@ -2033,10 +2593,10 @@ mod tests {
     /// through the markdown import and the document model's review writes.
     fn wp_seed() -> AutoCommit {
         let (mut state, ids) = seeded("# Title\n\nHello world\n\nonetwo\n");
-        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let mut id_gen = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut id_gen,
@@ -2050,11 +2610,34 @@ mod tests {
 
     /// The `n`th body block's stable id.
     fn nth_block(doc: &AutoCommit, n: usize) -> String {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c)
             .into_iter()
             .nth(n)
             .expect("seeded block")
+    }
+
+    #[test]
+    fn live_presentation_keeps_selection_without_a_document_root() {
+        let doc = wp_seed();
+        let ctx = wp_ctx(&doc);
+        let extras = live_presentation_resources(&ctx, &doc, None);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.id.as_str() != "word-processor.document"),
+            "hosted extras must not republish the document root"
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "word_processor.selection"),
+            "selection stays addressable: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.kind.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// "Hello" selected in the second block, as the widget reports it.
@@ -2146,14 +2729,14 @@ mod tests {
             )),
         ],
         encodes: [
-            insert_table => ("word_processor.document", "insert-table", |doc, _| {
+            insert_table => ("tilo.rich-text", "insert-table", |doc, _| {
                 encode(&insert_table_action(&nth_block(doc, 1), 2, 2))
             }),
-            align_center => ("word_processor.document", "align-center", |doc, _| {
+            align_center => ("tilo.rich-text", "align-center", |doc, _| {
                 encode(&set_align_action(vec![nth_block(doc, 1)], "center"))
             }),
             replace_selection => (
-                "word_processor.document",
+                "tilo.rich-text",
                 "replace-selection",
                 arg: "guide",
                 |doc, _| {
@@ -2169,7 +2752,7 @@ mod tests {
                 }
             ),
             set_hyperlink => (
-                "word_processor.document",
+                "tilo.rich-text",
                 "set-hyperlink",
                 arg: "https://example.com/guide",
                 |doc, _| encode(&set_hyperlink_action(
@@ -2391,7 +2974,7 @@ mod tests {
 
             assert!(body_blocks(&state.doc).iter().any(|block| {
                 block.kind == "image"
-                    && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.clone()))
+                    && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.clone()))
             }));
         }
 
@@ -2432,11 +3015,11 @@ mod tests {
                 .expect("image remains");
             assert_eq!(
                 image_view.attrs.get("crop_left"),
-                Some(&qdoc::AttrVal::Int(500))
+                Some(&tilo_doc::AttrVal::Int(500))
             );
             assert_eq!(
                 image_view.attrs.get("offset_x"),
-                Some(&qdoc::AttrVal::Int(24))
+                Some(&tilo_doc::AttrVal::Int(24))
             );
 
             let before = a.save();
@@ -2452,10 +3035,10 @@ mod tests {
         {
             let (mut a, ids) = seeded("Review this sentence\n");
             let block = ids[0].clone();
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let mut id_gen = tilo_doc::IdGen::new(a.doc.get_actor().to_hex_string());
             let (comment, change) = {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut a.doc,
                     c: &c,
                     ids: &mut id_gen,
@@ -2515,9 +3098,9 @@ mod tests {
             let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let snap = qdoc::model::materialize(
+            let snap = tilo_doc::model::materialize(
                 &a.doc,
-                &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
+                &tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap(),
             );
             assert!(snap.changes.is_empty(), "accepted change left review state");
             assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
@@ -2527,9 +3110,9 @@ mod tests {
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
-            let containers = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let containers = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
             let comment = {
-                let mut ids = qdoc::model::seeded_id_gen(&a.doc, &containers);
+                let mut ids = tilo_doc::model::seeded_id_gen(&a.doc, &containers);
                 let mut dm = DocMut {
                     doc: &mut a.doc,
                     c: &containers,
@@ -2549,8 +3132,8 @@ mod tests {
                 b.doc.get_heads(),
                 "reply replays exactly"
             );
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comments = qdoc::model::materialize_comments(&a.doc, &c);
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comments = tilo_doc::model::materialize_comments(&a.doc, &c);
             assert_eq!(comments[0].replies.len(), 1);
             assert_eq!(comments[0].replies[0].author, "Jonas");
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
@@ -2564,8 +3147,8 @@ mod tests {
                 b.doc.get_heads(),
                 "resolution replays exactly"
             );
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::materialize_comments(&a.doc, &c).is_empty());
         }
 
         // Phase: resolved_comment_tombstone_wins_over_divergent_reply.
@@ -2574,8 +3157,8 @@ mod tests {
             let block = ids[0].clone();
             let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
             dispatch(&mut a.doc, &add);
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comment = qdoc::model::comment_ids(&a.doc, &c)
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comment = tilo_doc::model::comment_ids(&a.doc, &c)
                 .into_iter()
                 .next()
                 .unwrap();
@@ -2591,10 +3174,10 @@ mod tests {
             tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
             a.doc.merge_incoming(&mut b.doc).unwrap();
 
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::comment_is_tombstoned(&a.doc, &c, &comment));
             assert!(
-                qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
+                tilo_doc::model::materialize_comments(&a.doc, &c).is_empty(),
                 "a reply from a divergent replica cannot resurrect a resolved thread"
             );
         }
@@ -2619,8 +3202,8 @@ mod tests {
             let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let blocks = tilo_doc::model::materialize(&a.doc, &c).blocks;
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].text, "alXma");
         }
@@ -2663,7 +3246,7 @@ mod tests {
             let (mut base, ids) = seeded("Styled paragraph\n");
             let create = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_NAME,
+                tilo_doc::schema::STYLE_NAME,
                 AttrVal::Str("Callout".into()),
             );
             dispatch(&mut base.doc, &create);
@@ -2681,25 +3264,28 @@ mod tests {
             let mut b = ui::State::load(&bytes).unwrap();
             b.doc.set_actor(automerge::ActorId::random());
 
-            let bold =
-                set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
+            let bold = set_style_property_action(
+                "custom1",
+                tilo_doc::schema::STYLE_BOLD,
+                AttrVal::Bool(true),
+            );
             let size = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_SIZE,
+                tilo_doc::schema::STYLE_SIZE,
                 AttrVal::Float(28.0),
             );
             tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
             tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
             a.doc.merge_incoming(&mut b.doc).unwrap();
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let properties = tilo_doc::model::style_props(&a.doc, &c, "custom1");
             assert_eq!(
-                properties.get(qdoc::schema::STYLE_BOLD),
-                Some(&qdoc::AttrVal::Bool(true))
+                properties.get(tilo_doc::schema::STYLE_BOLD),
+                Some(&tilo_doc::AttrVal::Bool(true))
             );
             assert_eq!(
-                properties.get(qdoc::schema::STYLE_SIZE),
-                Some(&qdoc::AttrVal::Float(28.0))
+                properties.get(tilo_doc::schema::STYLE_SIZE),
+                Some(&tilo_doc::AttrVal::Float(28.0))
             );
 
             let bytes = a.save();
@@ -2709,19 +3295,19 @@ mod tests {
             let remove = delete_style_action("custom1", vec![ids[0].clone()]);
             let rename = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_NAME,
+                tilo_doc::schema::STYLE_NAME,
                 AttrVal::Str("Late rename".into()),
             );
             tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
             tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
             deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
-            let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::style_is_tombstoned(
+            let c = tilo_doc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::style_is_tombstoned(
                 &deleted.doc,
                 &c,
                 "custom1"
             ));
-            assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
+            assert!(!tilo_doc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
         }
 
         // Phase: toc_field_rich_paste_and_table_edits_encode_and_replay_identically.
@@ -2734,11 +3320,11 @@ mod tests {
             let fragment = crate::word_processor::ClipBlock {
                 kind: "heading".into(),
                 text: "Pasted title".into(),
-                marks: vec![qdoc::document::MarkSpan {
+                marks: vec![tilo_doc::document::MarkSpan {
                     name: "strong".into(),
                     start: 0,
                     end: 6,
-                    value: qdoc::document::MarkValue::Bool(true),
+                    value: tilo_doc::document::MarkValue::Bool(true),
                 }],
                 level: Some(2),
                 ordered: None,
@@ -2776,7 +3362,7 @@ mod tests {
             let table = body_blocks(&origin.doc)
                 .iter()
                 .find_map(|block| match block.attrs.get("table") {
-                    Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
+                    Some(tilo_doc::AttrVal::Str(id)) => Some(id.clone()),
                     _ => None,
                 })
                 .unwrap();
@@ -2804,7 +3390,7 @@ mod tests {
             let blocks = body_blocks(&base.doc);
             let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
             let table = match cell.attrs.get("table") {
-                Some(qdoc::AttrVal::Str(id)) => id.clone(),
+                Some(tilo_doc::AttrVal::Str(id)) => id.clone(),
                 other => panic!("cell has stable table id: {other:?}"),
             };
             let bytes = base.save();
@@ -2826,7 +3412,7 @@ mod tests {
             assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
             assert!(body_blocks(&merged_a)
                 .iter()
-                .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
+                .all(|block| !matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == &table)));
         }
     }
 
@@ -2850,9 +3436,13 @@ mod tests {
                 vec![],
             ),
         ] {
-            let scans = qdoc::model::ordered_keys_scan_count();
+            let scans = tilo_doc::model::ordered_keys_scan_count();
             dispatch(&mut state.doc, &action);
-            assert_eq!(qdoc::model::ordered_keys_scan_count(), scans, "{action:?}");
+            assert_eq!(
+                tilo_doc::model::ordered_keys_scan_count(),
+                scans,
+                "{action:?}"
+            );
         }
         assert_eq!(text_of(&state.doc, &ids[0]), "axlpha");
         assert_eq!(text_of(&state.doc, &ids[1]), "Bta");

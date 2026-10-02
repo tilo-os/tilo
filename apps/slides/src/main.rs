@@ -77,6 +77,26 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The live deck runs on the app framework. Shots and explicit headless
+    // flags keep the standalone path.
+    let mut args = std::env::args().skip(1);
+    let mut standalone = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
+                standalone = true;
+            }
+            file if !file.starts_with('-') => standalone = true,
+            _ => {}
+        }
+    }
+    if !standalone {
+        ui::framework::run::<slides::SlidesShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.slides", slides::app_root)
             .history(&slides::framework_history::HISTORY)

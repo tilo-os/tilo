@@ -36,7 +36,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
@@ -919,6 +918,8 @@ fn safety_back_button() -> ui::widget::Button {
               across this file"
 )]
 pub struct StoreApp {
+    /// Document actions: local host standalone, framework dispatcher when hosted.
+    actions: crate::resource::ActionSink,
     /// Merged item feed.
     items: Vec<StoreItem>,
     /// Retained global-search projection. It is rebuilt only after a changed
@@ -1031,6 +1032,7 @@ impl Default for StoreApp {
 impl StoreApp {
     pub fn new() -> Self {
         Self {
+            actions: crate::resource::ActionSink::default(),
             items: Vec::new(),
             search_index: crate::search_provider::StoreSearchIndex::default(),
             item_index: ui::search::ListIndex::default(),
@@ -1154,7 +1156,7 @@ impl StoreApp {
     pub fn set_moderation_case(
         &mut self,
         state: &mut AutoCommit,
-        path: &ObjId,
+        _path: &ObjId,
         case: &registry_types::ModerationCase,
     ) {
         if !valid_case_id(&case.case_id) {
@@ -1171,15 +1173,13 @@ impl StoreApp {
             report.id.clone_from(&case.case_id);
             report.status = moderation_status_label(case.status).into();
         }
-        let _ = state.put(
-            path,
-            format!("{REPORT_CASE_KEY_PREFIX}{}", case.package_id),
-            case.case_id.clone(),
-        );
-        let _ = state.put(
-            path,
-            format!("{REPORT_RESOURCE_KEY_PREFIX}{}", case.package_id),
-            moderation_status_label(case.status),
+        self.perform_document_action(
+            state,
+            &crate::doc_actions::StoreDocumentAction::RecordModerationCase {
+                app_id: case.package_id.clone(),
+                case_id: case.case_id.clone(),
+                status: moderation_status_label(case.status).into(),
+            },
         );
         self.status_line = format!(
             "Moderation case {} is {}.",
@@ -1330,6 +1330,72 @@ impl StoreApp {
 
     pub fn items(&self) -> &[StoreItem] {
         &self.items
+    }
+
+    /// Adopt collaborative report drafts from the framework resource.
+    /// An empty projection does not wipe a non-empty local catalogue feed, and
+    /// does not clear presentation-only report seeds before the first shared
+    /// draft has been observed.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::StoreState) {
+        if state.reports.is_empty() && !self.reports_hydrated && !self.reports.is_empty() {
+            return;
+        }
+        let reports: Vec<ReportRecord> = state
+            .reports
+            .iter()
+            .map(|report| ReportRecord {
+                id: report.id.clone(),
+                app_id: report.app_id.clone(),
+                status: report.status.clone(),
+            })
+            .collect();
+        if reports != self.reports {
+            self.reports = reports;
+            self.structure_dirty = true;
+        }
+        self.reports_hydrated |= !state.reports.is_empty();
+        for report in &state.reports {
+            self.report_notes
+                .insert(report.app_id.clone(), report.note.clone());
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ui::framework::ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Store>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Apply a document action through the local host or framework dispatcher.
+    pub(crate) fn perform_document_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::doc_actions::StoreDocumentAction,
+    ) {
+        let context =
+            ui::tilo_actions::ActionContext::for_action("so.tilo.store", "App Store", action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::doc_actions::STORE_DOCUMENT_ACTION_TYPE,
+            action,
+            context,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// Override the flatpak-availability probe result. Tests use
@@ -3871,25 +3937,6 @@ impl StoreApp {
     }
 }
 
-/// Resolve (or lazily create) the `Text` object at `path`.`key`. The
-/// toolkit's `TextInput` binds to an existing `Text` but never creates
-/// one, so the host must seed it before the input syncs.
-///
-/// # Panics
-/// Panics if `root` is not a live Map.
-#[allow(
-    clippy::expect_used,
-    reason = "root is always a live Map (the widget's own CRDT path), so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-)]
-fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
-    if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
-        return id;
-    }
-    state
-        .put_object(root, key, ObjType::Text)
-        .expect("put_object Text never fails")
-}
-
 fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     ui::doc::read_text(state, root, key)
         .unwrap_or_default()
@@ -3900,6 +3947,7 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
 
 impl Widget for StoreApp {
     ui::provides!(
+        dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
@@ -3971,10 +4019,24 @@ impl Widget for StoreApp {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.drain_report_export();
-        for report in &self.reports {
-            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
-        }
         self.sync_report_resources(state, path);
+        let missing_notes: Vec<String> = self
+            .reports
+            .iter()
+            .filter(|report| {
+                !matches!(
+                    state.get(path, report_note_key(&report.app_id)),
+                    Ok(Some((Value::Object(ObjType::Text), _)))
+                )
+            })
+            .map(|report| report.app_id.clone())
+            .collect();
+        for app_id in missing_notes {
+            self.perform_document_action(
+                state,
+                &crate::doc_actions::StoreDocumentAction::EnsureReportNote { app_id },
+            );
+        }
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
@@ -4188,15 +4250,41 @@ impl ui::search::capability::SearchSource for StoreApp {
     }
 }
 
-impl ui::resources::PublishesResources for StoreApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the hierarchical Store resource tree is assembled in one place so published parent-child relationships remain auditable"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("store", "store.catalog", "App Store");
-        root.children
-            .push(crate::browse_actions::resource(&self.category_labels()));
+impl StoreApp {
+    /// Standalone / `--shots` / unit-test tree: framework publish plus live
+    /// catalogue, remotes and install progress overlaid on one root.
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state = crate::doc_actions::state_from_doc(doc);
+        let mut roots = crate::resource::provide_resources(&state);
+        let Some(root) = roots.first_mut() else {
+            return roots;
+        };
+        self.overlay_live_catalogue(root, doc);
+        roots
+    }
+
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.publish_resources(doc)
+            .into_iter()
+            .find_map(|resource| find_snapshot_resource(resource, id))
+    }
+
+    /// Hosted-only: in-flight install / refresh status. Never a second
+    /// `store.catalog` root — document ops stay on [`tilo_resource::publish`].
+    pub(crate) fn live_progress_extras(&self) -> Vec<Resource> {
+        if self.status_line.is_empty() {
+            return Vec::new();
+        }
+        vec![Resource::new(
+            "store:latest-job",
+            "store.install-job",
+            self.status_line.clone(),
+        )]
+    }
+
+    fn live_catalogue_children(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut children = Vec::new();
+        children.push(crate::browse_actions::resource(&self.category_labels()));
         let mut navigation =
             Resource::new("store:navigation", "store.navigation", "Store navigation");
         for (id, label, target) in [
@@ -4210,21 +4298,8 @@ impl ui::resources::PublishesResources for StoreApp {
                 navigation.actions.push(action);
             }
         }
-        root.children.push(navigation);
-        if let Ok(refresh) = ActionSpec::operation(
-            "refresh",
-            "Refresh catalog",
-            OperationKind::Effect,
-            "store.refresh",
-            &"",
-        ) {
-            root.actions.push(refresh.with_contract(ActionContract {
-                retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Background { cancellable: false },
-                result: ResultSpec::Job,
-                ..ActionContract::default()
-            }));
-        }
+        children.push(navigation);
+
         let mut publishers: HashMap<String, Resource> = HashMap::new();
         let mut snapshot_items = self.items.iter().collect::<Vec<_>>();
         snapshot_items.sort_by(|left, right| left.id.cmp(&right.id));
@@ -4253,9 +4328,9 @@ impl ui::resources::PublishesResources for StoreApp {
         }
         let mut publisher_resources = publishers.into_values().collect::<Vec<_>>();
         publisher_resources.sort_by(|a, b| a.label.cmp(&b.label));
-        root.children.extend(publisher_resources);
+        children.extend(publisher_resources);
         if self.items.len() > RESOURCE_SNAPSHOT_LIMIT {
-            root.children.push(Resource::new(
+            children.push(Resource::new(
                 "store:catalogue-snapshot",
                 "store.catalogue-snapshot",
                 format!(
@@ -4264,7 +4339,18 @@ impl ui::resources::PublishesResources for StoreApp {
                 ),
             ));
         }
+        children.push(self.live_remotes_resource());
+        if !self.status_line.is_empty() {
+            children.push(Resource::new(
+                "store:latest-job",
+                "store.install-job",
+                self.status_line.clone(),
+            ));
+        }
+        children
+    }
 
+    fn live_remotes_resource(&self) -> Resource {
         let mut remotes = Resource::new("store:remotes", "store.remote-list", "Flatpak remotes");
         if let Ok(show) = ActionSpec::operation(
             "show",
@@ -4353,8 +4439,10 @@ impl ui::resources::PublishesResources for StoreApp {
             }
             remotes.children.push(resource);
         }
-        root.children.push(remotes);
+        remotes
+    }
 
+    fn live_moderation_resource(&self, doc: &AutoCommit) -> Resource {
         let mut moderation =
             Resource::new("store:moderation", "store.moderation", "Trust & moderation");
         if let Ok(show) = ActionSpec::operation(
@@ -4443,23 +4531,61 @@ impl ui::resources::PublishesResources for StoreApp {
             }
             moderation.children.push(report_resource);
         }
-        root.children.push(moderation);
-        if !self.status_line.is_empty() {
-            root.children.push(Resource::new(
-                "store:latest-job",
-                "store.install-job",
-                self.status_line.clone(),
-            ));
+        moderation
+    }
+
+    fn overlay_live_catalogue(&self, root: &mut Resource, doc: &AutoCommit) {
+        // The document moderation child stays. Live reports that are not in
+        // the document are added beside it. Catalogue rows stay live.
+        let live = self.live_moderation_resource(doc);
+        if let Some(published) = root
+            .children
+            .iter_mut()
+            .find(|child| child.kind == "store.moderation")
+        {
+            for action in live.actions {
+                if !published.actions.iter().any(|have| have.id == action.id) {
+                    published.actions.push(action);
+                }
+            }
+            for child in live.children {
+                if !published.children.iter().any(|have| have.id == child.id) {
+                    published.children.push(child);
+                }
+            }
+        } else {
+            root.children.push(live);
         }
-        vec![root]
+        root.children.extend(self.live_catalogue_children(doc));
+    }
+}
+
+impl ui::undo::CommittedActions for StoreApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::resources::PublishesResources for StoreApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the catalogue door — keep only live install / refresh progress.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        // Resolve every ID we currently publish before falling back to the
-        // unbounded catalogue's lazy app/version/publisher lookup.  This
-        // preserves discovery links for privileged remote and moderation
-        // actions without turning resource snapshots into an unbounded scan.
+        // The framework root already owns the catalogue door.
+        if self.is_hosted() && id == "store" {
+            return None;
+        }
+        // Resolve every ID the published catalogue already lists before
+        // falling back to an app outside that page. Hosted lookup uses the
+        // same catalogue, not only the live install-progress extra.
         if let Some(resource) = self
-            .resources(doc)
+            .publish_resources(doc)
             .into_iter()
             .find_map(|resource| find_snapshot_resource(resource, id))
         {
@@ -5107,6 +5233,44 @@ mod tests {
                 .flat_map(|publisher| publisher.children.iter())
                 .count();
             assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
+            let eager = "app:dev.example.utility0000";
+            let on_tree = root
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "store.publisher")
+                .flat_map(|publisher| publisher.children.iter())
+                .find(|resource| resource.id.as_str() == eager)
+                .expect("the first app is on the published page");
+            let looked_up = ui::resources::resource(&app, &doc, eager).unwrap();
+            assert_eq!(
+                looked_up
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                on_tree
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "an eager app is the published row"
+            );
+            app.mark_hosted_for_test();
+            let hosted = ui::resources::resource(&app, &doc, eager).unwrap();
+            assert_eq!(
+                hosted
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                on_tree
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "a hosted app is the published row"
+            );
+            assert!(ui::resources::resource(&app, &doc, "store").is_none());
             let omitted = "app:dev.example.utility0216";
             let resolved = ui::resources::resource(&app, &doc, omitted).unwrap();
             assert_eq!(resolved.id.0, omitted);

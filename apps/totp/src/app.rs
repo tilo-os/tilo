@@ -179,7 +179,7 @@ pub struct AuthenticatorApp {
     /// byte-identically on peers, exactly as the Ctrl+K palette does), and records
     /// the last one so a test can prove a button and its
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for AuthenticatorApp {
@@ -273,7 +273,7 @@ impl AuthenticatorApp {
             persistence_pending: false,
             vault_recovery_required: false,
             persistence_message: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -326,6 +326,46 @@ impl AuthenticatorApp {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.totp", "Authenticator", action),
         );
+    }
+
+    /// Show shared account metadata, keeping secrets that exist only on this device.
+    /// Accounts not yet in the document stay in the vault so the next sync can publish them.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Account]) {
+        if state.is_empty() {
+            return;
+        }
+        let mut next_accounts: Vec<_> = state
+            .iter()
+            .cloned()
+            .map(|mut shared| {
+                if let Some(local) = self.vault.get(shared.id) {
+                    shared.secret.clone_from(&local.secret);
+                }
+                shared
+            })
+            .collect();
+        for local in self.vault.ordered() {
+            if state.iter().all(|shared| shared.id != local.id) {
+                next_accounts.push(local);
+            }
+        }
+        let next = crate::model::Vault {
+            accounts: next_accounts,
+        };
+        if next.ordered() == self.vault.ordered() {
+            return;
+        }
+        self.search_provider.update(&self.vault, &next);
+        self.vault = next;
+        self.list_dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Totp>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Merge shared metadata with this device's secret-bearing vault. A remote
@@ -397,6 +437,18 @@ impl AuthenticatorApp {
             );
         }
         persisted
+    }
+
+    /// Live vault-save retry is not in [`crate::resource::Totp`]'s children —
+    /// publish it beside the framework tree when hosted.
+    fn persistence_retry_resource(&self) -> Option<tilo_actions::Resource> {
+        if !self.persistence_pending {
+            return None;
+        }
+        Some(
+            tilo_actions::Resource::new("totp.persistence", "totp.persistence", "Local vault save")
+                .with_action(crate::actions::retry_persist_operation()),
+        )
     }
 
     /// Recompute the filtered/ordered visible set and push it to the list.
@@ -1183,12 +1235,25 @@ impl Widget for AuthenticatorApp {
             self.seed();
             self.seeded = true;
         }
-        // Mirror the freshly-loaded vault into the shared document once, on the
-        // seed frame — the initial-load population, not an undoable edit. After
-        // that the document is authoritative: every mutation is an action, and
-        // the vault is re-projected from the document below.
+        // Publish the freshly-loaded vault once, on the seed frame. Each new
+        // account is an `AddAccount`, hosted or standalone, so the first mirror
+        // is the same replayable write as a later add. Accounts already in the
+        // document are left alone: deleting one this device has not stored
+        // would be a destructive collaboration bug.
         if self.doc_dirty {
-            AuthDoc::sync_vault(state, &self.vault.ordered());
+            let existing: std::collections::HashSet<_> = AuthDoc::list_accounts(state)
+                .into_iter()
+                .map(|account| account.id)
+                .collect();
+            for account in self.vault.ordered() {
+                if existing.contains(&account.id) {
+                    continue;
+                }
+                self.perform_action(
+                    state,
+                    &crate::actions::add_account_action(&account, account.order),
+                );
+            }
             self.doc_dirty = false;
         }
         // Re-project the vault from the document so palette dispatches and remote
@@ -1698,22 +1763,103 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
     /// to them. Delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
-        if self.persistence_pending
-            && let Some(root) = resources.first_mut()
-        {
-            *root = root
-                .clone()
-                .with_action(crate::actions::retry_persist_operation());
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the vault and its accounts. Keep only
+        // the live persistence retry when hosted — it is not in the resource.
+        if self.actions.is_hosted() {
+            return self.persistence_retry_resource().into_iter().collect();
         }
-        resources
+        let accounts =
+            <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Totp>(
+            "totp.vault",
+            "Accounts",
+            &accounts,
+        );
+        let ordered = self.vault.ordered();
+        for child in &mut root.children {
+            if child.kind != "totp.account" {
+                continue;
+            }
+            let Some(raw) = child.id.as_str().strip_prefix("totp.account:") else {
+                continue;
+            };
+            let ready = raw.parse::<crate::model::AccountId>().is_ok_and(|id| {
+                ordered
+                    .iter()
+                    .find(|account| account.id == id)
+                    .is_some_and(crate::model::Account::secret_is_valid)
+            });
+            crate::actions::overlay_local_secret(child, ready);
+        }
+        let published: std::collections::HashSet<String> = root
+            .children
+            .iter()
+            .map(|child| child.id.as_str().to_owned())
+            .collect();
+        let count = ordered.len();
+        for (index, account) in ordered.iter().enumerate() {
+            let id = crate::actions::account_resource_id(account.id);
+            if published.contains(id.as_str()) {
+                continue;
+            }
+            root.children.push(crate::actions::provide_account_resource(
+                account,
+                index,
+                count,
+                account.secret_is_valid(),
+            ));
+        }
+        if self.persistence_pending {
+            root = root.with_action(crate::actions::retry_persist_operation());
+        }
+        vec![root]
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "totp.persistence" {
+            return self.persistence_retry_resource();
+        }
         if id == "totp.vault" {
+            // When hosted the framework root owns totp.vault; this surface
+            // only adds the persistence retry beside it.
+            if self.actions.is_hosted() {
+                return None;
+            }
             return self.resources(doc).pop();
         }
         let raw_id = id.strip_prefix("totp.account:")?;
+        if self.actions.is_hosted() {
+            let accounts = <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let root = ui::tilo_resource::publish::<crate::resource::Totp>(
+                "totp.vault",
+                "Accounts",
+                &accounts,
+            );
+            if let Some(mut child) = root
+                .children
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+            {
+                let ready = raw_id
+                    .parse::<crate::model::AccountId>()
+                    .is_ok_and(|account_id| {
+                        self.vault
+                            .ordered()
+                            .iter()
+                            .find(|account| account.id == account_id)
+                            .is_some_and(crate::model::Account::secret_is_valid)
+                    });
+                crate::actions::overlay_local_secret(&mut child, ready);
+                return Some(child);
+            }
+        } else if let Some(found) = self.resources(doc).into_iter().find_map(|root| {
+            root.children
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+        }) {
+            return Some(found);
+        }
         let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
         let ordered = self.vault.ordered();
         let index = ordered
@@ -1782,6 +1928,26 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             assert!(!app.doc_dirty, "idle sync leaves the doc-dirty flag clear");
         }
+    }
+
+    /// A fresh vault is published by account actions, not a raw document write.
+    #[test]
+    fn a_fresh_vault_is_published_by_account_actions() {
+        let mut app = AuthenticatorApp::demo();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let published = AuthDoc::list_accounts(&state.doc);
+        let local = app.vault.ordered();
+        assert!(!local.is_empty());
+        assert_eq!(published.len(), local.len());
+        assert!(
+            published.iter().all(|account| account.secret.is_empty()),
+            "the collaborative document contains metadata only"
+        );
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the seed mirror is an AddAccount on the action host"
+        );
     }
 
     /// Resource, accessibility, event and Enter copies share the row's clipboard semantics; toasts distinguish failures.
@@ -2217,6 +2383,43 @@ mod tests {
                 "the empty state names the unmatched query, got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn hosted_account_lookup_returns_the_published_account() {
+        let (mut app, state) = app_with_state();
+        let id = app.vault.ordered()[0].id;
+        let address = crate::actions::account_resource_id(id);
+        let standalone = ui::resources::resource(&app, &state.doc, &address)
+            .expect("standalone account resolves");
+        app.actions.mark_hosted_for_test();
+        let hosted = ui::resources::resource(&app, &state.doc, &address)
+            .expect("hosted account resolves from the document");
+        assert_eq!(hosted.kind, "totp.account");
+        assert_eq!(
+            hosted
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            standalone
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            "a hosted account is the published row"
+        );
+        assert_eq!(
+            hosted
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.badge.as_deref()),
+            standalone
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.badge.as_deref()),
+            "the local secret still marks the published account"
+        );
     }
 
     /// Adding through the panel and attaching a missing local secret to the same id.

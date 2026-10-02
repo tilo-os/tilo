@@ -20,7 +20,7 @@ use ui::search::{
 
 use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
-    folder_resource_id, library_root_resource, metadata_label_counts, object_resource,
+    folder_resource_id, library_analysis_resource, metadata_label_counts, object_resource,
     object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
     photo_resource_from_seed, place_counts, place_resource, place_resource_id,
     places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
@@ -108,7 +108,15 @@ enum MaterializationSeed {
 impl MaterializationSeed {
     fn materialize(self) -> Resource {
         match self {
-            Self::Library => library_root_resource(),
+            Self::Library => {
+                let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
+                    "photos.library",
+                    "Photo library",
+                    &crate::resource::PhotosState::default(),
+                );
+                root.children.insert(0, library_analysis_resource());
+                root
+            }
             Self::Timeline { total, boundaries } => {
                 timeline_resource_from_search(total, &boundaries)
             }
@@ -664,7 +672,7 @@ mod tests {
         PhotoLibrary, PhotoLocation,
     };
     use tilo_actions::ActionAddress;
-    use tilo_actions::ResourceProvider;
+
     use ui::search::SearchProvider;
     use ui::search::testing::assert_late_hit_reachable;
 
@@ -731,7 +739,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
                 let address = hit.action_address().unwrap();
                 let resource = PhotosResources
-                    .resource(&doc, &address.resource)
+                    .publish_resource(&doc, &address.resource)
                     .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
                 assert!(
                     resource
@@ -774,7 +782,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
                 assert_eq!(address.action, "open");
                 let resource = PhotosResources
-                    .resource(&doc, &address.resource)
+                    .publish_resource(&doc, &address.resource)
                     .expect("search must resolve the exact timeline resource");
                 assert!(resource.actions.iter().any(|action| action.id == "open"));
             }
@@ -840,7 +848,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         let address = page.results[0].action_address().unwrap();
         let resource = PhotosResources
-            .resource(&doc, &address.resource)
+            .publish_resource(&doc, &address.resource)
             .expect("search address resolves through the canonical provider");
         assert!(
             resource
@@ -947,7 +955,7 @@ mod tests {
                 "search activation must not mutate membership"
             );
             let resource = PhotosResources
-                .resource(&doc, &address.resource)
+                .publish_resource(&doc, &address.resource)
                 .expect("the late stable album id resolves lazily");
             assert!(resource.actions.iter().any(|action| action.id == "open"));
         }
@@ -1067,7 +1075,7 @@ mod tests {
         let after = open_doc("after.png");
         assert!(
             PhotosResources
-                .resources(&after)
+                .publish_resources(&after)
                 .iter()
                 .all(|resource| resource.id.0 != address.resource)
         );

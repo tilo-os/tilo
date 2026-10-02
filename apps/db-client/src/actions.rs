@@ -39,7 +39,9 @@
 //! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). Flowing
 //! text takes the toolkit's CRDT-native text path *instead of* the action
 //! executor: the `Text` already replicates and undoes for free, so re-encoding a
-//! keystroke as an action would only duplicate that.
+//! keystroke as an action would only duplicate that. Replacing the whole
+//! buffer — a snippet or an accessibility set-value — is
+//! [`DbAction::ReplaceEditorSql`], which splices that same `Text`.
 //!
 //! ## Presentation is never an action
 //!
@@ -52,11 +54,17 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
+use automerge::AutoCommit;
+use tilo_actions::{
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    ExecutionMode, OperationKind, Resource, ResultSpec, RetryPolicy,
+};
 use ui::doc::put_if_changed;
 
-use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
+use crate::app::{DB_OPERATION_TYPE, DbClientOperation, encode_operation};
+use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY, SavedQuery};
 use crate::model::{ConnectionProfile, Engine};
+use crate::resource::DbState;
 
 /// Wire type id under which the client's actions are encoded + registered.
 pub const DB_ACTION_TYPE: &str = "db_client.action";
@@ -90,6 +98,9 @@ pub enum DbAction {
     },
     /// Hide a saved query while retaining its stable CRDT row as a tombstone.
     RemoveQuery { id: String },
+    /// Replace the shared SQL buffer. Keystrokes stay on the text object;
+    /// this is a snippet load or an accessibility set-value.
+    ReplaceEditorSql { sql: String },
 }
 
 impl Action for DbAction {
@@ -170,6 +181,9 @@ impl Action for DbAction {
                 {
                     put_if_changed(doc, &row, "removed", true);
                 }
+            }
+            DbAction::ReplaceEditorSql { sql } => {
+                crate::doc::EditorDoc::set_sql(doc, sql);
             }
         }
         Ok(())
@@ -302,6 +316,184 @@ pub fn known_engine(engine: &str) -> bool {
     )
 }
 
+/// Document actions bound from shared state for [`tilo_resource::publish`].
+pub(crate) fn document_bound_actions(state: &DbState) -> Vec<ActionSpec> {
+    let sql = state.editor_sql.clone();
+    if sql.trim().is_empty() {
+        return Vec::new();
+    }
+    vec![
+        ActionSpec::prompted(
+            "save_query",
+            "Save current query",
+            "Query name",
+            "Saved query",
+            ExecutionLocus::ClientLocal,
+            move |name| encode(&save_query_action(Uuid::new_v4(), name, &sql)),
+        )
+        .reversible(),
+    ]
+}
+
+/// Connection and saved-query children for [`tilo_resource::publish`].
+pub(crate) fn document_children(state: &DbState) -> Vec<Resource> {
+    let mut children: Vec<Resource> = state
+        .connections
+        .iter()
+        .map(connection_document_resource)
+        .collect();
+    children.extend(
+        state
+            .saved_queries
+            .iter()
+            .map(saved_query_document_resource),
+    );
+    children
+}
+
+/// Root Effect: run prompted SQL against the active connection.
+pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
+    let mut query = ActionSpec::prompted_operation(
+        "query",
+        "Run SQL",
+        "SQL query",
+        "SELECT …",
+        OperationKind::Effect,
+        DB_OPERATION_TYPE,
+        |sql| {
+            encode_operation(&DbClientOperation::RunQuery {
+                // Resolved to the active connection at execution time.
+                connection_id: String::new(),
+                sql: sql.to_string(),
+            })
+        },
+    );
+    // Prompted SQL may be a read, but agents cannot soundly classify an
+    // arbitrary dialect statement from this transport envelope. Declare the
+    // conservative write/confirmation contract; the editor keeps its lighter
+    // in-app path for clearly read-only SQL.
+    query = query
+        .execution(ExecutionMode::Background { cancellable: true })
+        .returns(ResultSpec::Job)
+        .destructive();
+    vec![query]
+}
+
+fn connection_document_resource(connection: &ConnectionProfile) -> Resource {
+    let id = format!("connection:{}", connection.id);
+    let mut resource = Resource::new(&id, "database.connection", &connection.name);
+    if let Ok(action) = ActionSpec::operation(
+        "connect",
+        "Connect",
+        OperationKind::Effect,
+        DB_OPERATION_TYPE,
+        &DbClientOperation::Connect {
+            connection_id: connection.id.to_string(),
+        },
+    ) {
+        resource = resource.with_action(action.retry_policy(RetryPolicy::Idempotent));
+    }
+    if let Ok(action) = ActionSpec::immediate(
+        "remove",
+        "Remove saved connection",
+        DB_ACTION_TYPE,
+        &remove_connection_action(connection.id),
+    ) {
+        resource = resource.with_action(action.destructive());
+    }
+    let connection_id = connection.id;
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "Connection name",
+            &connection.name,
+            ExecutionLocus::ClientLocal,
+            move |name| encode(&rename_connection_action(connection_id, name)),
+        )
+        .reversible()
+        .retry_policy(RetryPolicy::Idempotent),
+    );
+    resource
+}
+
+fn saved_query_document_resource(query: &SavedQuery) -> Resource {
+    let id = format!("saved-query:{}", query.id);
+    let mut resource = Resource::new(&id, "database.saved-query", &query.name);
+    if let Ok(action) = ActionSpec::operation(
+        "run",
+        "Run saved query",
+        OperationKind::Effect,
+        DB_OPERATION_TYPE,
+        &DbClientOperation::RunQuery {
+            connection_id: String::new(),
+            sql: query.sql.clone(),
+        },
+    ) {
+        resource = resource.with_action(action.destructive());
+    }
+    if let Ok(action) = ActionSpec::immediate(
+        "remove",
+        "Remove saved query",
+        DB_ACTION_TYPE,
+        &remove_query_action(query.id),
+    ) {
+        resource = resource.with_action(action.destructive());
+    }
+    resource
+}
+
+/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
+pub fn provide_resources(state: &DbState) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::DbClient>(
+        "database", "Database", state,
+    )]
+}
+
+fn state_from_doc(doc: &AutoCommit) -> DbState {
+    use crate::doc::{ConnectionsDoc, EditorDoc, SavedQueriesDoc};
+    DbState {
+        connections: ConnectionsDoc::read(doc),
+        saved_queries: SavedQueriesDoc::read(doc),
+        editor_sql: EditorDoc::read_sql(doc),
+    }
+}
+
+fn find_published(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_published(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+// Inherent resource publication. The framework door is `tilo_resource::publish`;
+// these keep Widget::resources / exact-id resolve available to tests and the
+// standalone shot path, with live connection availability overlaid on Run SQL.
+impl crate::app::DbClientApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut roots = provide_resources(&state_from_doc(doc));
+        if let Some(root) = roots.first_mut()
+            && let Some(query) = root.actions.iter_mut().find(|action| action.id == "query")
+            && !self.session_connected()
+        {
+            query.contract.availability = tilo_actions::Availability::Unavailable {
+                code: "not_connected".into(),
+                reason: "Open a saved connection before running SQL".into(),
+            };
+        }
+        roots
+    }
+
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        find_published(&self.publish_resources(doc), id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,29 +532,10 @@ mod tests {
         doc
     }
 
-    /// What the live app publishes for `doc`: its eager workspace tree plus
-    /// the saved-connection and saved-query resources it resolves by id,
-    /// after the frame `sync` that reconciles its session from the document.
+    /// What [`tilo_resource::publish`] owns for `doc`: workspace door, connection
+    /// and saved-query children, save-query / run-SQL palette ops.
     fn resources_for(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use ui::widget::Widget;
-        let mut app = crate::app::DbClientApp::new();
-        app.sync(&mut doc.clone(), &ROOT);
-        let mut resources = ui::resources::resources(&app, doc);
-        let addressed = ConnectionsDoc::read(doc)
-            .into_iter()
-            .map(|c| format!("connection:{}", c.id))
-            .chain(
-                crate::doc::SavedQueriesDoc::read(doc)
-                    .into_iter()
-                    .map(|q| format!("saved-query:{}", q.id)),
-            );
-        for id in addressed {
-            resources.push(
-                ui::resources::resource(&app, doc, &id)
-                    .unwrap_or_else(|| panic!("the app resolves {id}")),
-            );
-        }
-        resources
+        provide_resources(&state_from_doc(doc))
     }
 
     fn first_connection(doc: &AutoCommit) -> Uuid {

@@ -33,10 +33,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionContract, ActionSpec, Availability, ConfirmationPolicy, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
-};
+#[cfg(test)]
+use ui::tilo_actions::{ConfirmationPolicy, ExecutionMode, ResultSpec};
+use ui::tilo_actions::{OperationKind, Resource};
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
@@ -246,7 +245,7 @@ impl ActionKind {
             ActionKind::Eject,
         ]
     }
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             ActionKind::Mount => "mount",
             ActionKind::Unmount => "unmount",
@@ -255,7 +254,7 @@ impl ActionKind {
             ActionKind::Eject => "eject",
         }
     }
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             ActionKind::Mount => "Mount",
             ActionKind::Unmount => "Unmount",
@@ -275,7 +274,7 @@ impl ActionKind {
             ActionKind::Eject => "Power down and safely remove the whole device.",
         }
     }
-    fn from_key(k: &str) -> Option<ActionKind> {
+    pub(crate) fn from_key(k: &str) -> Option<ActionKind> {
         match k {
             "mount" => Some(ActionKind::Mount),
             "unmount" => Some(ActionKind::Unmount),
@@ -286,7 +285,7 @@ impl ActionKind {
         }
     }
     /// Destructive actions require an explicit confirm dialog.
-    fn destructive(self) -> bool {
+    pub(crate) fn destructive(self) -> bool {
         matches!(self, ActionKind::Format)
     }
     fn confirm_title(self, target: &str) -> String {
@@ -454,6 +453,7 @@ pub struct DisksApp {
     /// Hamburger-toggle and whole-disk-pill hover, checked together each
     /// frame when resolving the overlay's hit targets.
     hover_toggle: HoverToggles,
+    shared: crate::resource::ActionSink,
 }
 
 /// One-time first-frame setup flags for [`DisksApp`] (part of `DisksApp`).
@@ -487,6 +487,76 @@ impl Default for DisksApp {
 type ContentRects = (Rect, Vec<(Rect, usize)>, Vec<(Rect, usize)>);
 
 impl DisksApp {
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Disks>,
+    ) {
+        self.shared.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.shared.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.shared.mark_hosted_for_test();
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`].
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let mut state = crate::resource::Disks::read(doc).unwrap_or_default();
+        // Prefer the widget's live topology when the document has not been
+        // seeded yet (first-frame tests before sync).
+        if state.topology.drives.is_empty() && !self.topo.drives.is_empty() {
+            state.topology = self.topo.clone();
+        }
+        state.live = self.live;
+        vec![ui::tilo_resource::publish::<crate::resource::Disks>(
+            "disks",
+            "Storage devices",
+            &state,
+        )]
+    }
+
+    pub(crate) fn adopt_shared(&mut self, state: &crate::resource::DisksState) {
+        if let Ok(json) = serde_json::to_string(&state.topology)
+            && json != self.topo_json_cache
+        {
+            self.topo = state.topology.clone();
+            self.topo_json_cache = json;
+            self.dirty = true;
+        }
+        if self.selected != state.selected {
+            self.selected = state.selected;
+            self.dirty = true;
+        }
+        if self.selected_part != state.selected_part {
+            self.selected_part = state.selected_part;
+            self.dirty = true;
+        }
+        let tab = Tab::from_key(&state.tab);
+        if self.tab != tab {
+            self.tab = tab;
+            self.dirty = true;
+        }
+        if self.status != state.status {
+            self.status.clone_from(&state.status);
+            self.dirty = true;
+        }
+    }
+
+    fn commit_shared(&mut self, doc: &mut AutoCommit, action: &crate::resource::DisksAction) {
+        self.shared.dispatch(doc, action);
+    }
+
+    fn commit_topology(&mut self, doc: &mut AutoCommit, topo: &Topology) {
+        let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
+        self.commit_shared(doc, &crate::resource::DisksAction::WriteTopology { json });
+    }
+
     pub fn new() -> Self {
         Self {
             topo: Topology::default(),
@@ -516,6 +586,7 @@ impl DisksApp {
             flap: FlapState::open_when_docked(),
             k: 1.0,
             hover_toggle: HoverToggles::default(),
+            shared: crate::resource::ActionSink::default(),
         }
     }
 
@@ -3029,14 +3100,16 @@ impl DisksApp {
             });
             self.confirm_input.set_text("");
             self.confirm_input.set_focus(true);
-            DisksDoc::set_pending(
+            self.commit_shared(
                 state,
-                &format!(
-                    "{}:{}:{}",
-                    action.key(),
-                    self.selected,
-                    part.map_or(-1, |i| i as i64)
-                ),
+                &crate::resource::DisksAction::SetPending {
+                    pending: format!(
+                        "{}:{}:{}",
+                        action.key(),
+                        self.selected,
+                        part.map_or(-1, |i| i as i64)
+                    ),
+                },
             );
             self.dirty = true;
         } else {
@@ -3080,7 +3153,12 @@ impl DisksApp {
             self.action_rx = Some(rx);
             let msg = format!("{} {dev}…", action.gerund());
             self.status.clone_from(&msg);
-            DisksDoc::set_status(state, &msg);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: msg.clone(),
+                },
+            );
         } else {
             // Hermetic build / --shots: state what *would* run, no side effects.
             let plan = match action {
@@ -3101,7 +3179,12 @@ impl DisksApp {
                 }
             };
             self.status.clone_from(&plan);
-            DisksDoc::set_status(state, &plan);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: plan.clone(),
+                },
+            );
         }
         self.dirty = true;
     }
@@ -3114,7 +3197,12 @@ impl DisksApp {
         let Some(p) = self.pending.take() else { return };
         self.confirm_input.set_text("");
         self.confirm_input.set_focus(false);
-        DisksDoc::set_pending(state, "");
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetPending {
+                pending: String::new(),
+            },
+        );
         self.dispatch_action(state, p.action, p.part);
     }
 
@@ -3122,19 +3210,30 @@ impl DisksApp {
         self.pending = None;
         self.confirm_input.set_text("");
         self.confirm_input.set_focus(false);
-        DisksDoc::set_pending(state, "");
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetPending {
+                pending: String::new(),
+            },
+        );
     }
 
     fn select(&mut self, state: &mut AutoCommit, idx: usize) {
         if idx < self.topo.drives.len() {
             let changed = idx != self.selected;
             self.selected = idx;
-            DisksDoc::set_selected(state, idx);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetSelected { index: idx as u64 },
+            );
             // A new drive resets the partition focus to the whole disk so the
             // detail + action bar can never point at a stale partition.
             if changed {
                 self.selected_part = None;
-                DisksDoc::set_selected_part(state, None);
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
+                );
                 self.content_scroll = 0.0;
             }
             self.dirty = true;
@@ -3149,72 +3248,25 @@ impl DisksApp {
             other => other,
         };
         self.selected_part = next;
-        DisksDoc::set_selected_part(state, next);
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetSelectedPart {
+                part: next.map_or(-1, |index| index as i64),
+            },
+        );
         self.dirty = true;
     }
 
     fn set_tab(&mut self, state: &mut AutoCommit, tab: Tab) {
         self.tab = tab;
-        DisksDoc::set_tab(state, tab.key());
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetTab {
+                tab: tab.key().to_string(),
+            },
+        );
         self.content_scroll = 0.0;
         self.dirty = true;
-    }
-
-    /// Build the canonical resource-operation descriptor used by every disk
-    /// and partition. Keeping this in one place prevents search, agents and
-    /// the visible UI from disagreeing about risk, confirmation or retry
-    /// semantics.
-    fn operation_spec(
-        &self,
-        action: ActionKind,
-        leaf: &str,
-        fstype: Option<&str>,
-    ) -> Option<ActionSpec> {
-        let payload = vec![
-            action.key().to_string(),
-            leaf.to_string(),
-            fstype.unwrap_or_default().to_string(),
-        ];
-        let spec = ActionSpec::operation(
-            action.key(),
-            action.label().trim_end_matches('…'),
-            OperationKind::Effect,
-            "disks.operation",
-            &payload,
-        )
-        .ok()?;
-        let destructive = action.destructive();
-        Some(spec.with_contract(ActionContract {
-            availability: if self.live {
-                Availability::Available
-            } else {
-                Availability::Unavailable {
-                    code: "live_access_disabled".into(),
-                    reason: "Live disk access is disabled".into(),
-                }
-            },
-            permission: PermissionRequirement::Admin,
-            risk: if destructive {
-                RiskLevel::Destructive
-            } else {
-                RiskLevel::Privileged
-            },
-            confirmation: if destructive {
-                ConfirmationPolicy::Phrase {
-                    phrase: leaf.to_string(),
-                }
-            } else {
-                ConfirmationPolicy::Confirm
-            },
-            retry: if action == ActionKind::Benchmark {
-                RetryPolicy::Idempotent
-            } else {
-                RetryPolicy::AtMostOnce
-            },
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        }))
     }
 
     /// Resolve an operation payload against the latest locally-probed
@@ -3450,7 +3502,33 @@ impl Widget for DisksApp {
                 } else {
                     Topology::sample()
                 };
-                DisksDoc::seed(state, &topo);
+                self.commit_topology(state, &topo);
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetTab {
+                        tab: "overview".into(),
+                    },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelected { index: 0 },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetPending {
+                        pending: String::new(),
+                    },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetStatus {
+                        status: String::new(),
+                    },
+                );
             }
             self.init.seeded = true;
         }
@@ -3534,13 +3612,18 @@ impl Widget for DisksApp {
                 });
             }
             self.status.clone_from(&res.text);
-            DisksDoc::set_status(state, &res.text);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: res.text.clone(),
+                },
+            );
             // A mount/format/unmount/eject changed the on-disk topology.
             if res.refresh
                 && self.live
                 && let Some(topo) = crate::probe::probe()
             {
-                DisksDoc::write_topology(state, &topo);
+                self.commit_topology(state, &topo);
             }
             self.dirty = true;
         }
@@ -4147,56 +4230,32 @@ impl Widget for DisksApp {
 }
 
 impl ui::resources::PublishesResources for DisksApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disks", "disks.system", "Storage devices");
-        for drive in &self.topo.drives {
-            let mut disk = Resource::new(
-                format!("disk:{}", drive.name),
-                "disks.drive",
-                drive.model.clone(),
-            );
-            // Whole-drive operations are meaningful independently of any
-            // partition selection. Publishing them here (rather than only in
-            // the custom action bar) lets search, history, collaboration and
-            // agents address the same operation contract.
-            for action in [ActionKind::Format, ActionKind::Benchmark] {
-                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
-                    disk.actions.push(spec);
-                }
-            }
-            if drive.removable
-                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
-            {
-                disk.actions.push(spec);
-            }
-            for part in &drive.partitions {
-                let mut partition = Resource::new(
-                    format!("partition:{}", part.name),
-                    "disks.partition",
-                    part.name.clone(),
-                );
-                let verb = if part.mountpoint.is_some() {
-                    "unmount"
-                } else {
-                    "mount"
-                };
-                let mount_action = if verb == "mount" {
-                    ActionKind::Mount
-                } else {
-                    ActionKind::Unmount
-                };
-                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
-                    if let Some(spec) =
-                        self.operation_spec(action, &part.name, part.fstype.as_deref())
-                    {
-                        partition.actions.push(spec);
-                    }
-                }
-                disk.children.push(partition);
-            }
-            root.children.push(disk);
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the topology door — keep only live extras (none today).
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
-        vec![root]
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.is_hosted() && id == "disks" {
+            return None;
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
@@ -4557,12 +4616,22 @@ impl DisksApp {
         } else {
             // In demo/offscreen mode, just confirm on the status line.
             self.status = "Rescanned storage devices".to_string();
-            DisksDoc::set_status(state, &self.status);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: self.status.clone(),
+                },
+            );
             return;
         };
-        DisksDoc::write_topology(state, &topo);
+        self.commit_topology(state, &topo);
         self.status = format!("Rescanned — {} devices", topo.drives.len());
-        DisksDoc::set_status(state, &self.status);
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetStatus {
+                status: self.status.clone(),
+            },
+        );
         self.dirty = true;
     }
 }
@@ -4726,6 +4795,7 @@ mod tests {
                         .iter()
                         .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
                 })
+                .filter(|action| action.kind == OperationKind::Effect)
             {
                 assert!(matches!(
                     action.contract.execution,
