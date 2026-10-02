@@ -325,6 +325,24 @@ case "$mode" in
       click_named "I understand that losing this device without a backup means losing this identity."
       wait_for_names "Create local identity"
       click_named "Create local identity"
+      # No backup in a disposable release VM; say so explicitly, as a person
+      # skipping it would.
+      wait_for_names \
+        "I understand that without an encrypted backup, losing this device means losing this identity." \
+        "Continue without backup"
+      click_named "I understand that without an encrypted backup, losing this device means losing this identity."
+      wait_for_names "Continue without backup"
+      click_named "Continue without backup"
+      # The media codecs step appears only where the codec pack is offered.
+      for _ in $(seq 1 400); do
+        collect_tree || { sleep 0.05; continue; }
+        node_named "Your identity is ready" >/dev/null && break
+        if node_named "Not now" >/dev/null; then
+          click_named "Not now"
+          break
+        fi
+        sleep 0.05
+      done
       wait_for_names "Your identity is ready"
     fi
     ;;
