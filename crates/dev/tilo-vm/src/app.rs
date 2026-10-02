@@ -1248,6 +1248,7 @@ impl App {
         )?;
         match step {
             StopStep::Acpi => {}
+            StopStep::GuestPoweroff if adapter.guest_shutdown_first() => {}
             StopStep::GuestPoweroff => self.warnings.push(format!(
                 "VM {} ignored the ACPI shutdown request (a session holding the power key?); \
                  it powered off on `systemctl poweroff` over SSH",
@@ -4654,9 +4655,9 @@ impl Default for StopGraces {
     }
 }
 
-/// Stop `vm`: ask over ACPI, then run `poweroff` (the guest's
-/// `systemctl poweroff` over SSH) where there is one, then power it off
-/// hard where the hypervisor can. Each step waits its grace for the VM to be
+/// Stop `vm`: adapters whose power button can suspend first try the guest's
+/// `systemctl poweroff` over SSH. Otherwise, ask over ACPI, then run the guest
+/// poweroff, then power it off hard where the hypervisor can. Each step waits its grace for the VM to be
 /// down; only a VM the hypervisor reports still running moves on. Returns
 /// whether it is down (`None`: nothing can tell) and the last step taken.
 ///
@@ -4670,6 +4671,24 @@ pub fn stop_escalating(
     mut lock: Option<&mut remote::VmLock>,
     graces: StopGraces,
 ) -> Result<(Option<bool>, StopStep), CliError> {
+    if adapter.guest_shutdown_first()
+        && let Some(poweroff) = poweroff
+    {
+        // WHPX's ARM power-button event suspended the guest, making the
+        // subsequent SSH shutdown time out. Ask the live guest first.
+        let _ = runner.output(poweroff);
+        let down = await_down(
+            runner,
+            adapter,
+            vm,
+            lock.as_deref_mut(),
+            graces.guest.min(Duration::from_secs(8)),
+            graces.poll,
+        );
+        if down != Some(false) {
+            return Ok((down, StopStep::GuestPoweroff));
+        }
+    }
     run_all(runner, &adapter.stop(vm))?;
     let mut down = await_down(
         runner,
@@ -6052,6 +6071,14 @@ mod tests {
                             stderr: String::new(),
                         });
                     }
+                    if line.contains("Get-Process -Id") && !line.contains("TcpClient") {
+                        return Ok(crate::hypervisor::Output {
+                            success: true,
+                            status: "exit status: 0".into(),
+                            stdout: if self.down { "no" } else { "yes" }.into(),
+                            stderr: String::new(),
+                        });
+                    }
                     self.down |= line.contains(self.obeys);
                     self.ran.push(line);
                     Ok(crate::hypervisor::Output {
@@ -6128,6 +6155,26 @@ mod tests {
                 stop("nothing brings it down", Some(&poweroff)).0,
                 (Some(false), StopStep::HardPowerOff)
             );
+            // On WHPX the ACPI event can suspend the guest and cut off SSH.
+            // A clean stop must not send that event before the SSH poweroff.
+            let mut whpx_guest = Guest {
+                obeys: "systemctl poweroff",
+                ran: Vec::new(),
+                down: false,
+            };
+            assert_eq!(
+                stop_escalating(
+                    &mut whpx_guest,
+                    &hypervisor::Whpx,
+                    &vm,
+                    Some(&poweroff),
+                    None,
+                    graces,
+                )
+                .unwrap(),
+                (Some(true), StopStep::GuestPoweroff)
+            );
+            assert_eq!(whpx_guest.ran, vec![poweroff.display()]);
         }
 
         // Phase: image_assembled_components_refuse_a_worktree_build.
