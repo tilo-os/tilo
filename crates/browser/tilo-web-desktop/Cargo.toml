@@ -24,6 +24,7 @@ api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar" }
 camera = { path = "../../../apps/camera" }
+canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 clocks = { path = "../../../apps/clocks" }
 contacts = { path = "../../../apps/contacts" }

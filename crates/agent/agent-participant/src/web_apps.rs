@@ -11,6 +11,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         calculator::definition(),
         calendar::definition(),
         camera::definition(),
+        canvas::definition(),
         chat::definition(),
         clocks::definition(),
         contacts::definition(),

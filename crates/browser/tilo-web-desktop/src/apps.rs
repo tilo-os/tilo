@@ -8,6 +8,7 @@ pub(crate) fn register() {
         calculator::definition(),
         calendar::definition(),
         camera::definition(),
+        canvas::definition(),
         chat::definition(),
         clocks::definition(),
         contacts::definition(),

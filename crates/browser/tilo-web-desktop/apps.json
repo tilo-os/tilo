@@ -26,6 +26,12 @@
       "version": "0.1.0"
     },
     {
+      "id": "so.tilo.canvas",
+      "name": "Canvas",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
       "id": "so.tilo.chat",
       "name": "Chat",
       "category": "Network",
