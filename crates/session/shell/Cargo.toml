@@ -54,11 +54,6 @@ tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
-# Native media HTTP client. TLS comes from the workspace's rustls-no-provider
-# configuration (reqwest 0.13 has no `rustls-tls-native-roots`).
-reqwest.workspace = true
-# Its sanctioned builder installs the crypto provider reqwest needs.
-tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
@@ -85,8 +80,6 @@ tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-search = { path = "../desktop-search" }
 # Durable lockdown policy behind the Lockdown portal and native media gates.
 tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
-# Native media control: owner-signed HTTP session, grant and relay steps.
-tilo-native-media-control = { path = "../tilo-native-media-control" }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 

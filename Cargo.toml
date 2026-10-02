@@ -261,7 +261,6 @@ members = [
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",
     "crates/session/tilo-lockdown-policy",
-    "crates/session/tilo-native-media-control",
     "crates/session/tilo-unlock-helper",
 
     # System

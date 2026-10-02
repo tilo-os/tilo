@@ -693,12 +693,14 @@ fn spawn_inner(
     if let Some(service) = native_media.as_ref() {
         if let Some(network) = peer_sync {
             let installed = network.native_owner().and_then(|owner| {
-                crate::network::native_media::Factory::new(
-                    network.cmd_tx.clone(),
-                    owner,
-                    service.capture_broker(),
-                    network.runtime_handle()?,
-                )
+                network.runtime_handle().map(|runtime| {
+                    crate::network::native_media::Factory::new(
+                        network.cmd_tx.clone(),
+                        owner,
+                        service.capture_broker(),
+                        runtime,
+                    )
+                })
             });
             match installed {
                 Ok(factory) => {

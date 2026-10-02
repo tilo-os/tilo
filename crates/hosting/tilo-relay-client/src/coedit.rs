@@ -182,6 +182,30 @@ pub enum Inbound {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
     },
+    /// The room's governor answered about one of its calls.
+    Voice(VoiceEvent),
+}
+
+/// What the governor of a room says about its calls; see
+/// [`tilo_relay_protocol::voice`].
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    /// The outcome of a call change this device requested.
+    Result {
+        /// The request's id.
+        request: [u8; 16],
+        /// The call as governance now records it, or why it was refused.
+        result: Result<tilo_relay_protocol::voice::CallState, String>,
+    },
+    /// A participation's current grant.
+    Granted(Box<tilo_relay_protocol::voice::VoiceGrant>),
+    /// The device may not be in `call` (any more).
+    Refused {
+        /// The call.
+        call: [u8; 32],
+        /// Why.
+        reason: String,
+    },
 }
 
 /// Failure modes for `RelayCoeditSession` operations.
