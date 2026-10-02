@@ -1543,6 +1543,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "png",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-content",
+ "tilo-wet-media",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "cap-fs-ext"
 version = "3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
