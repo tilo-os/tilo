@@ -22,6 +22,10 @@ on:
         description: "x86 diagnostic: boot the dev kernel and initrd through a generated systemd-stub UKI."
         required: false
         default: "false"
+      cold_boot:
+        description: "Power off and start a fresh QEMU process before the final boot checks."
+        required: false
+        default: "false"
       candidate_manifest:
         description: "Public dev disk candidate.json or retained tilo-vm-disk-aarch64.json URL."
         required: true
@@ -72,6 +76,8 @@ jobs:
       CANDIDATE_MANIFEST_SHA256: ${{ github.event.inputs.candidate_manifest_sha256 }}
       CHECK_BOOT_PERFORMANCE: ${{ github.event.inputs.check_boot_performance }}
       DEV_UKI_BOOT: ${{ github.event.inputs.dev_uki_boot }}
+      COLD_BOOT: ${{ github.event.inputs.cold_boot }}
+      TILO_VM_CYCLE: diagnostic
       SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
       UPGRADE_IMAGE: ${{ github.event.inputs.upgrade_image }}
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
@@ -161,6 +167,7 @@ jobs:
           [[ $CHECK_DESKTOP == true || $CHECK_DESKTOP == false ]] || exit 2
           [[ $CHECK_BOOT_PERFORMANCE == true || $CHECK_BOOT_PERFORMANCE == false ]] || exit 2
           [[ $DEV_UKI_BOOT == true || $DEV_UKI_BOOT == false ]] || exit 2
+          [[ $COLD_BOOT == true || $COLD_BOOT == false ]] || exit 2
           [[ $DEV_UKI_BOOT == false || $TILO_VM_ARCH == x86_64 ]] || exit 2
           [[ $TILO_VM_ARCH == aarch64 || ( $CPU_VARIANT == host && $CAPTURE_FAULT_PC == false ) ]] || exit 2
           [[ $OVERRIDE_SESSION_WRAPPER == true || $OVERRIDE_SESSION_WRAPPER == false ]] || exit 2
@@ -233,6 +240,30 @@ jobs:
             [[ $ready == true ]] || { echo '::error::generated dev UKI did not reboot'; exit 1; }
             ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootctl status --no-pager" > "$TILO_RUN/dev-uki-boot.log"
             grep -Eq '^[[:space:]]*Current Entry: tilo-dev-diagnostic[.]efi$' "$TILO_RUN/dev-uki-boot.log"
+          fi
+          if [[ $COLD_BOOT == true ]]; then
+            if [[ $DEV_UKI_BOOT == true ]]; then
+              ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootctl set-oneshot tilo-dev-diagnostic.efi"
+            fi
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl poweroff" || true
+            stopped=false
+            for attempt in $(seq 1 30); do
+              if [[ $(./os/dev/vm.sh status) == stopped ]]; then stopped=true; break; fi
+              sleep 1
+            done
+            [[ $stopped == true ]] || { echo '::error::guest did not shut down for the cold boot'; exit 1; }
+            ./os/dev/vm.sh stop
+            ./os/dev/vm.sh boot --2d --disk "$overlay"
+            ready=false
+            for attempt in $(seq 1 120); do
+              if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::cold dev boot did not accept SSH'; exit 1; }
+            if [[ $DEV_UKI_BOOT == true ]]; then
+              ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootctl status --no-pager" > "$TILO_RUN/dev-uki-boot.log"
+              grep -Eq '^[[:space:]]*Current Entry: tilo-dev-diagnostic[.]efi$' "$TILO_RUN/dev-uki-boot.log"
+            fi
           fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
