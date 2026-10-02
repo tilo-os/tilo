@@ -1485,6 +1485,10 @@ impl ChromeState {
 
     /// Open Activity and run a selected-row history action (`history.compare`,
     /// `history.undo`, `history.restore`) on the next paint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `id` is not a recognised history action.
     pub fn request_history_selection_action(&mut self, id: &str) -> Result<(), String> {
         match id {
             tilo_desktop::activity::HISTORY_COMPARE
