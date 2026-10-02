@@ -152,7 +152,6 @@ cmd_boot() {
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
-    $(console_qemu_args) \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
