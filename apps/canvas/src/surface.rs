@@ -447,36 +447,102 @@ impl CanvasSurface {
             .to_owned()
     }
 
+    /// The artwork at `version` (a change id or a checkpoint name), its
+    /// revision and the version's name; now when `version` is absent.
+    fn at_version(
+        doc: &mut AutoCommit,
+        version: Option<&str>,
+    ) -> Result<(Artwork, String, Option<String>), String> {
+        let Some(version) = version else {
+            return Ok((crate::doc::read(doc), Self::revision(doc), None));
+        };
+        let heads = ui::history_source::steps::resolve(doc, version)?;
+        let mut past = doc
+            .fork_at(&heads)
+            .map_err(|error| format!("version {version:?} is not in this artwork: {error}"))?;
+        let name = ui::framework::history::version_name(&heads);
+        Ok((
+            crate::doc::read(&past),
+            Self::revision(&mut past),
+            Some(name),
+        ))
+    }
+
     fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
-        let art = crate::doc::read(doc);
-        let revision = Self::revision(doc);
-        let picture =
-            |result: Result<(view_ops::Picture, Value), String>| -> Result<ActionOutput, String> {
-                let (picture, mut info) = result?;
-                let hash = tilo_content::ContentStore::for_app()
-                    .put(&picture.png)
-                    .map_err(|error| format!("the picture could not be stored: {error}"))?;
-                let address = tilo_actions::content_resource(&hash)
-                    .ok_or_else(|| "the picture has no content address".to_owned())?;
-                if let Value::Object(fields) = &mut info {
-                    fields.insert("revision".into(), revision.clone().into());
-                    fields.insert("content".into(), address.clone().into());
+        let version = match op {
+            ViewOp::Look(look) => look.version.as_deref(),
+            ViewOp::Inspect(inspect) => inspect.version.as_deref(),
+            _ => None,
+        };
+        let (art, revision, shown) = Self::at_version(doc, version)?;
+        let stamp = |info: &mut Value| {
+            if let Value::Object(fields) = info {
+                fields.insert("revision".into(), revision.clone().into());
+                if let Some(shown) = &shown {
+                    fields.insert("version".into(), shown.clone().into());
                 }
-                Ok(ActionOutput {
+            }
+        };
+        let picture = |result: Result<(Option<view_ops::Picture>, Value), String>| -> Result<ActionOutput, String> {
+            let (picture, mut info) = result?;
+            stamp(&mut info);
+            let Some(picture) = picture else {
+                return Ok(ActionOutput {
                     value: Some(info),
-                    resources: vec![address],
-                })
+                    resources: Vec::new(),
+                });
             };
+            let hash = tilo_content::ContentStore::for_app()
+                .put(&picture.png)
+                .map_err(|error| format!("the picture could not be stored: {error}"))?;
+            let address = tilo_actions::content_resource(&hash)
+                .ok_or_else(|| "the picture has no content address".to_owned())?;
+            if let Value::Object(fields) = &mut info {
+                fields.insert("content".into(), address.clone().into());
+            }
+            Ok(ActionOutput {
+                value: Some(info),
+                resources: vec![address],
+            })
+        };
+        let some = |result: Result<(view_ops::Picture, Value), String>| {
+            result.map(|(picture, info)| (Some(picture), info))
+        };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         match op {
-            ViewOp::Look(look) => picture(view_ops::look(&mut self.renderer, text, &art, look)),
-            ViewOp::Export(export) => {
-                picture(view_ops::export(&mut self.renderer, text, &art, export))
+            ViewOp::Look(look) => {
+                picture(some(view_ops::look(&mut self.renderer, text, &art, look)))
+            }
+            ViewOp::Export(export) => picture(some(view_ops::export(
+                &mut self.renderer,
+                text,
+                &art,
+                export,
+            ))),
+            ViewOp::Diff(diff) => {
+                let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
+                let (after, to) = match &diff.to {
+                    Some(to) => {
+                        let (after, _, to) = Self::at_version(doc, Some(to))?;
+                        (after, to)
+                    }
+                    None => (art.clone(), None),
+                };
+                let versions = view_ops::Versions {
+                    before,
+                    after,
+                    from: from.unwrap_or_default(),
+                    to: to.unwrap_or_else(|| "now".into()),
+                };
+                let look = diff.look.unwrap_or(false);
+                picture(view_ops::diff(&mut self.renderer, text, &versions, look))
             }
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
-                if let Value::Object(fields) = &mut value {
-                    fields.insert("revision".into(), revision.into());
+                stamp(&mut value);
+                if let Value::Object(fields) = &mut value
+                    && shown.is_none()
+                {
                     fields.insert("selected".into(), json!(self.selection));
                 }
                 Ok(ActionOutput {
@@ -484,10 +550,6 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 })
             }
-            ViewOp::History(view) => Ok(ActionOutput {
-                value: Some(view_ops::history(doc, view)),
-                resources: Vec::new(),
-            }),
             ViewOp::Media => Ok(ActionOutput {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),

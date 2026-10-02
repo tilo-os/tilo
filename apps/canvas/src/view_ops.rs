@@ -1,5 +1,6 @@
 //! What a caller with no screen asks of the artwork: a look at it, a list of
-//! what is on it, the media it can use, a full-size export.
+//! what is on it, the media it can use, a full-size export, what changed
+//! between two versions.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
@@ -12,6 +13,7 @@ use ui::vello::kurbo::{Affine, Rect};
 use ui::vello::peniko::Color;
 
 use crate::media;
+use crate::model::Mark;
 use crate::model::{Artwork, Shape};
 use crate::render::{Options, Renderer};
 use crate::resource::{Export, Inspect, Look};
@@ -20,6 +22,13 @@ use crate::resource::{Export, Inspect, Look};
 pub const LOOK_SIZE: u32 = 1024;
 /// The largest look.
 pub const MAX_LOOK_SIZE: u32 = 1536;
+/// The longest side of each half of a diff's picture.
+pub const DIFF_LOOK_SIZE: u32 = 640;
+/// The gap between a diff picture's halves, in pixels.
+const DIFF_GAP: u32 = 8;
+/// The neutral backdrop outside the artwork, the same in every theme so
+/// two looks at one revision are the same picture.
+const BACKDROP: [u8; 4] = [120, 120, 120, 255];
 /// The most marks `inspect` lists.
 pub const MAX_LISTED: usize = 400;
 
@@ -69,6 +78,22 @@ pub fn render(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<Picture, String> {
+    let (rgba, width, height) = render_rgba(renderer, text, art, region, pixels_per_unit, options)?;
+    Ok(Picture {
+        png: encode_png(&rgba, width, height)?,
+        width,
+        height,
+    })
+}
+
+fn render_rgba(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    region: Rect,
+    pixels_per_unit: f64,
+    options: &Options,
+) -> Result<(Vec<u8>, u32, u32), String> {
     let width = side(region.width() * pixels_per_unit);
     let height = side(region.height() * pixels_per_unit);
     let mut scene = Scene::new();
@@ -76,14 +101,9 @@ pub fn render(
     renderer.draw(art, &mut scene, transform, text, options);
     let mut offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
         .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-    // A neutral backdrop outside the artwork, the same in every theme so
-    // two looks at one revision are the same picture.
-    let rgba = offscreen.render(&scene, Color::from_rgba8(120, 120, 120, 255)); // picture backdrop
-    Ok(Picture {
-        png: encode_png(&rgba, width, height)?,
-        width,
-        height,
-    })
+    let [r, g, b, a] = BACKDROP;
+    let rgba = offscreen.render(&scene, Color::from_rgba8(r, g, b, a));
+    Ok((rgba, width, height))
 }
 
 /// RGBA8 as PNG bytes.
@@ -305,23 +325,158 @@ pub fn media(art: &Artwork) -> Value {
     })
 }
 
-/// The versions of the document, oldest first, as an agent reads them.
-pub fn history(doc: &mut ui::automerge::AutoCommit, view: &crate::resource::HistoryView) -> Value {
-    let last = usize::try_from(view.last.unwrap_or(100).clamp(1, 500)).unwrap_or(100);
-    let versions = ui::tilo_resource::history::versions(doc);
-    let total = versions.len();
-    let listed: Vec<Value> = versions
+/// Two versions of the artwork and their names.
+pub struct Versions {
+    pub before: Artwork,
+    pub after: Artwork,
+    pub from: String,
+    pub to: String,
+}
+
+/// Ids added, removed and changed between two versions.
+#[derive(Default)]
+struct Changes {
+    added: Vec<String>,
+    removed: Vec<String>,
+    changed: Vec<String>,
+}
+
+impl Changes {
+    fn of<T: PartialEq>(before: &[T], after: &[T], id: fn(&T) -> &str) -> Self {
+        let mut changes = Self::default();
+        for item in after {
+            match before.iter().find(|old| id(old) == id(item)) {
+                None => changes.added.push(id(item).to_owned()),
+                Some(old) if old != item => changes.changed.push(id(item).to_owned()),
+                Some(_) => {}
+            }
+        }
+        for item in before {
+            if !after.iter().any(|new| id(new) == id(item)) {
+                changes.removed.push(id(item).to_owned());
+            }
+        }
+        changes
+    }
+
+    fn ids(&self) -> impl Iterator<Item = &String> {
+        self.added.iter().chain(&self.removed).chain(&self.changed)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ids().next().is_none()
+    }
+
+    fn json(&self) -> Value {
+        json!({"added": self.added, "removed": self.removed, "changed": self.changed})
+    }
+}
+
+/// Where `ids` (marks, or every mark of layers) are drawn in either version.
+fn drawn(versions: &Versions, marks: &Changes, layers: &Changes) -> Option<Rect> {
+    let touched = |mark: &Mark| {
+        marks.ids().any(|id| *id == mark.id) || layers.ids().any(|id| *id == mark.layer)
+    };
+    versions
+        .before
+        .marks
         .iter()
-        .skip(total.saturating_sub(last))
-        .map(|version| {
-            let context = version.context.as_ref();
-            json!({
-                "change": version.hash.to_string().get(..12).unwrap_or_default(),
-                "action": context.map(|context| context.action_label.clone()).or_else(|| version.summary()),
-                "group": context.and_then(|context| context.group.as_ref()).map(|group| group.label.clone()),
-                "time_ms": version.time_ms,
-            })
-        })
+        .chain(&versions.after.marks)
+        .filter(|mark| touched(mark))
+        .map(Mark::bounds)
+        .reduce(|all, bounds| all.union(bounds))
+}
+
+/// What changed between two versions: marks and layers by id, the artwork's
+/// own fields, the region the changes are drawn in and, with `look`, a
+/// picture of that region before (left) and after (right).
+///
+/// # Errors
+/// Returns a render failure.
+pub fn diff(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    versions: &Versions,
+    look: bool,
+) -> Result<(Option<Picture>, Value), String> {
+    let (before, after) = (&versions.before, &versions.after);
+    let marks = Changes::of(&before.marks, &after.marks, |mark: &Mark| mark.id.as_str());
+    let layers = Changes::of(&before.layers, &after.layers, |layer| layer.id.as_str());
+    let mut artwork: Vec<&str> = Vec::new();
+    if before.title != after.title {
+        artwork.push("title");
+    }
+    if (before.width, before.height) != (after.width, after.height) {
+        artwork.push("size");
+    }
+    if before.ground != after.ground {
+        artwork.push("ground");
+    }
+    let media: Vec<&String> = before
+        .media
+        .keys()
+        .chain(after.media.keys())
+        .filter(|id| before.media.get(*id) != after.media.get(*id))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect();
-    json!({"versions": listed, "total": total})
+    let whole = artwork.iter().any(|field| *field != "title");
+    let region = if whole {
+        Some(after.bounds())
+    } else {
+        drawn(versions, &marks, &layers)
+    }
+    .map(|region| region.inflate(8.0, 8.0).intersect(after.bounds()))
+    .filter(|region| region.area() > 0.0);
+    let same = marks.is_empty() && layers.is_empty() && artwork.is_empty() && media.is_empty();
+    let info = json!({
+        "from": versions.from,
+        "to": versions.to,
+        "same": same,
+        "marks": marks.json(),
+        "layers": layers.json(),
+        "artwork": artwork,
+        "media": media,
+        "changed_region": region.map(|region| [round(region.x0), round(region.y0), round(region.width()), round(region.height())]),
+    });
+    let picture = match region {
+        Some(region) if look => Some(side_by_side(renderer, text, versions, region)?),
+        _ => None,
+    };
+    Ok((picture, info))
+}
+
+/// `region` of both versions, before left and after right.
+fn side_by_side(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    versions: &Versions,
+    region: Rect,
+) -> Result<Picture, String> {
+    let scale = f64::from(DIFF_LOOK_SIZE) / region.width().max(region.height());
+    let options = Options {
+        view: Some(region),
+        ..Options::default()
+    };
+    let (before, width, height) =
+        render_rgba(renderer, text, &versions.before, region, scale, &options)?;
+    let (after, _, _) = render_rgba(renderer, text, &versions.after, region, scale, &options)?;
+    let total = width.saturating_mul(2).saturating_add(DIFF_GAP);
+    let count = |pixels: u32| usize::try_from(pixels).unwrap_or(0);
+    let bytes = |pixels: u32| count(pixels).saturating_mul(4);
+    let mut rgba = BACKDROP.repeat(count(total).saturating_mul(count(height)));
+    let rows = rgba
+        .chunks_exact_mut(bytes(total))
+        .zip(before.chunks_exact(bytes(width)))
+        .zip(after.chunks_exact(bytes(width)));
+    for ((out, before), after) in rows {
+        let (left, rest) = out.split_at_mut(bytes(width));
+        left.copy_from_slice(before);
+        rest.split_at_mut(bytes(DIFF_GAP)).1.copy_from_slice(after);
+    }
+    Ok(Picture {
+        png: encode_png(&rgba, total, height)?,
+        width: total,
+        height,
+    })
 }

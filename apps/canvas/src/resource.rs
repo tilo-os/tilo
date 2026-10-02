@@ -61,6 +61,8 @@ pub struct Look {
     pub grid: Option<bool>,
     /// Show only these layers.
     pub layers: Option<Vec<String>>,
+    /// A past version: a change id from history or a checkpoint name.
+    pub version: Option<String>,
 }
 
 /// List layers and marks with their ids, bounds and colours.
@@ -71,6 +73,8 @@ pub struct Inspect {
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
     pub layer: Option<String>,
+    /// A past version: a change id from history or a checkpoint name.
+    pub version: Option<String>,
 }
 
 /// Render the artwork at full size as a PNG.
@@ -89,15 +93,19 @@ pub enum ViewOp {
     Inspect(Inspect),
     Media,
     Export(Export),
-    History(HistoryView),
+    Diff(Diff),
 }
 
-/// The artwork's history: who changed what, in order.
+/// What changed between two versions of the artwork.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HistoryView {
-    /// The most recent versions to list, 1 to 500 (default 100).
-    pub last: Option<u32>,
+pub struct Diff {
+    /// The earlier version: a change id from history or a checkpoint name.
+    pub from: String,
+    /// The later version (default now).
+    pub to: Option<String>,
+    /// Also a picture of the changed region: before left, after right.
+    pub look: Option<bool>,
 }
 
 /// The parameter type a property's schema describes.
@@ -208,7 +216,18 @@ impl Resource for ArtworkResource {
         .map_err(|error| ModelError::Invalid {
             path: "layers".into(),
             message: error.to_string(),
-        })
+        })?;
+        // Created here, not by the first step that writes into them: a step
+        // that created a shared map cannot be undone once others wrote in it.
+        for key in [crate::doc::MARKS, crate::doc::MEDIA] {
+            crate::doc::ensure(doc, &ui::automerge::ROOT, key).map_err(|error| {
+                ModelError::Invalid {
+                    path: key.into(),
+                    message: error.to_string(),
+                }
+            })?;
+        }
+        Ok(())
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -360,16 +379,16 @@ impl Resource for ArtworkResource {
         export.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
-        let mut history = view("history", "Artwork history", params_of::<HistoryView>(), |args| {
-            ViewOp::History(read_args(args).unwrap_or_default())
+        let mut diff = view("diff", "Compare versions", params_of::<Diff>(), |args| {
+            ViewOp::Diff(read_args(args).unwrap_or_default())
         })
         .with_description(
-            "List the artwork's versions, oldest first: each change's action, the agent run or person it belongs to, and when.",
+            "Compare two versions: marks and layers added, removed or changed by id, the changed region, and with look a before|after picture of it.",
         );
-        history.contract.result = ResultSpec::Json {
+        diff.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
-        vec![look, inspect, media, export, history]
+        vec![look, inspect, media, export, diff]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {
