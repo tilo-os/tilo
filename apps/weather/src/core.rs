@@ -1017,6 +1017,7 @@ impl Core {
             .collect();
         let places = AccessNode::new(Role::List)
             .with_name("Saved places")
+            .with_hashed_key("weather.places")
             .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
             .with_bounds(rect)
             .with_children(items);
@@ -4752,6 +4753,10 @@ mod helper_tests {
             assert_eq!(places.children.len(), 4);
             assert!(places.children[0].state.selected);
             assert!(places.children.iter().all(|item| item.state.focusable));
+            assert!(
+                overview.children.iter().all(|child| child.key.is_some()),
+                "search and places are siblings, so both carry stable keys"
+            );
             let detail =
                 core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
             assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
