@@ -60,7 +60,8 @@ def require(ok, message):
 def run(*argv, timeout=180):
     result = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
     require(result.returncode == 0,
-            f"{Path(argv[0]).name} failed: {result.stderr.strip()[:1024]}")
+            f"{Path(argv[0]).name} failed (exit {result.returncode}): "
+            f"{result.stderr.strip()[:1024] or 'no diagnostic stderr'}")
     return result.stdout.strip()
 
 
@@ -272,8 +273,9 @@ def import_image(root=ROOT):
             "offline target metadata changed after verified preflight")
     # Cosign's saved layout also contains signature/attestation descriptors.
     # Construct a tiny one-descriptor view with a symlink to the same hashed
-    # blobs, so Podman imports only the authenticated target without another
-    # multi-gigabyte copy. Podman verifies blob hashes during import.
+    # blobs. Skopeo transfers directly into the local store; `podman load`
+    # stages another archive-sized copy in /var/tmp before importing it.
+    destination = 'localhost/tilo-offline-target:' + metadata['target_digest'][7:]
     index = json.loads(checked_file(layout / "index.json", limit=1024 * 1024))
     descriptor = next(item for item in index["manifests"]
                       if item.get("digest") == metadata["target_digest"])
@@ -285,10 +287,13 @@ def import_image(root=ROOT):
         (view / "index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [descriptor]}, separators=(",", ":")))
         (view / "blobs").symlink_to(layout / "blobs", target_is_directory=True)
-        loaded = run("podman", "load", "--input", str(view), timeout=3600)
-    ids = re.findall(r"(?m)^Loaded image: (sha256:[0-9a-f]{64})$", loaded)
-    require(len(ids) == 1, "offline OCI import did not produce one selected image")
-    image_id = ids[0]
+        # Authority was checked above. This local copy validates blob hashes
+        # and preserves the exact selected manifest; no registry is contacted.
+        run('skopeo', '--insecure-policy', 'copy', '--preserve-digests',
+            f'oci:{view}:target', 'containers-storage:' + destination, timeout=3600)
+    image_id = run('podman', 'image', 'inspect', '--format', '{{.Id}}', destination, timeout=120)
+    require(re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', image_id),
+            'offline OCI import returned no immutable image ID')
     imported_digest = run("podman", "image", "inspect", "--format", "{{.Digest}}",
                           image_id, timeout=120)
     require(imported_digest == metadata["target_digest"],
