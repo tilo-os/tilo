@@ -870,6 +870,19 @@ impl WeatherApp {
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 mod interaction_tests {
     //! Drive the real `handle_event` / draw path (the same code the live loop
     //! runs) and assert the model + shell view actually changed. Built with
@@ -2595,16 +2608,4 @@ mod history_round1_tests {
         assert!(!app.core.borrow().is_fetching());
         assert!(app.core.borrow().model.snapshots.contains_key(&other));
     }
-}
-
-fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }

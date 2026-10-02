@@ -2925,6 +2925,18 @@ fn read_config_bool(state: &impl ReadDoc, path: &ObjId, key: &str) -> Option<boo
     read_bool(state, path, key)
 }
 
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4860,15 +4872,3 @@ mod framework_history_tests;
 #[cfg(test)]
 #[path = "visual_review.rs"]
 mod visual_review;
-
-fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}

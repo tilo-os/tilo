@@ -148,6 +148,18 @@ pub enum ContactsOperation {
     },
 }
 
+fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    for child in resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod file_action_tests {
     use super::*;
@@ -2745,16 +2757,4 @@ mod tests {
             ));
         }
     }
-}
-
-fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
-    if resource.id.as_str() == id {
-        return Some(resource);
-    }
-    for child in resource.children {
-        if let Some(found) = find_resource(child, id) {
-            return Some(found);
-        }
-    }
-    None
 }
