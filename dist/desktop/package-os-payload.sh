@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the three native desktop-session binaries for immutable OS reuse.
+# Package the native desktop-session and runtime binaries for immutable OS reuse.
 set -euo pipefail
 
 [[ $# == 3 ]] || {
@@ -22,7 +22,7 @@ work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 
-for binary in shell tilo-launcher tilo-unlock-helper; do
+for binary in shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
   [[ -x $bin_dir/$binary ]] || {
     printf 'missing desktop binary: %s\n' "$bin_dir/$binary" >&2
     exit 1
@@ -41,10 +41,10 @@ json.dump(
     sort_keys=True,
 )
 PY
-(cd "$work" && sha256sum shell tilo-launcher tilo-unlock-helper manifest.json > SHA256SUMS)
+(cd "$work" && sha256sum shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper manifest.json > SHA256SUMS)
 mkdir -p "$out"
 bundle="$out/tilo-desktop-os-$architecture.tar.gz"
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
   -C "$work" -czf "$bundle" \
-  shell tilo-launcher tilo-unlock-helper manifest.json SHA256SUMS
+  shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper manifest.json SHA256SUMS
 (cd "$out" && sha256sum "${bundle##*/}" > "${bundle##*/}.sha256")

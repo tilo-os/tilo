@@ -28,7 +28,7 @@ staging = recipe[recipe.index("    && build_phase rust-stage-outputs", end):
                  recipe.index("    && build_phase rust-thin-apps", end)]
 shipped = set(re.findall(r"target/release/([a-zA-Z0-9_-]+)", staging))
 vm_bins = {"tilo-windows-vm-control", "tilo-windows-rail"}
-desktop_bins = {"shell", "tilo-launcher", "tilo-unlock-helper"}
+desktop_bins = {"shell", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
 excluded = set()
 for browser in ("0", "1"):
     for desktop in ("0", "1"):
