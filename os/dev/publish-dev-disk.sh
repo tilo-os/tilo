@@ -342,7 +342,10 @@ for attempt in 1 2 3 4 5 6; do
     note "tilo-vm:latest names $current, which is not an ancestor of $SOURCE_REVISION; leaving it"
     exit 0
   fi
-  skopeo copy --all "docker://$REPOSITORY@$target" "docker://$latest"
+  # Byte-for-byte, as for the digest tag above: a re-encoded index has
+  # another digest and never matches $target.
+  skopeo copy --multi-arch index-only --preserve-digests \
+    "docker://$REPOSITORY@$target" "docker://$latest"
   sleep $(( attempt * 5 ))
 done
 die "tilo-vm:latest did not converge on $index_tag"
