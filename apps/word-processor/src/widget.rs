@@ -11520,7 +11520,7 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
-    /// [``]() impl in
+    /// [`PublishesResources`](ui::resources::PublishesResources) impl in
     /// [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         // While a delivered invocation by a participant (an agent task) is

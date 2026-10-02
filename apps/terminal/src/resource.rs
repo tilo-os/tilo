@@ -2,7 +2,7 @@
 //! document state; PTY process control is published as [`Effect`] operations.
 
 use automerge::transaction::Transactable;
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ReadDoc, ScalarValue, Value, ROOT};
 use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
@@ -83,6 +83,10 @@ pub enum TerminalAction {
 }
 
 impl Action for TerminalAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "terminal session CRDT mutations stay in one Action::apply match"
+    )]
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
             Self::SetTitle { title } => {
@@ -297,9 +301,8 @@ fn write_line(
     if index >= doc.length(&grid) {
         return Err(ActionError::Refused("grid line is missing".into()));
     }
-    let line = match doc.get(&grid, index)? {
-        Some((Value::Object(automerge::ObjType::Map), id)) => id,
-        _ => return Err(ActionError::Refused("grid line is missing".into())),
+    let Some((Value::Object(automerge::ObjType::Map), line)) = doc.get(&grid, index)? else {
+        return Err(ActionError::Refused("grid line is missing".into()));
     };
     let text_id = match doc.get(&line, "text")? {
         Some((_, id)) => id,
@@ -700,16 +703,14 @@ mod tests {
         }
         .apply(&mut doc)
         .unwrap();
-        assert!(
-            doc.get(automerge::ROOT, "terminal_title")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            doc.get(automerge::ROOT, "terminal_pane_id")
-                .unwrap()
-                .is_none()
-        );
+        assert!(doc
+            .get(automerge::ROOT, "terminal_title")
+            .unwrap()
+            .is_none());
+        assert!(doc
+            .get(automerge::ROOT, "terminal_pane_id")
+            .unwrap()
+            .is_none());
         assert_eq!(
             read_string(&doc, "terminal_local_session").as_deref(),
             Some("process-2")
@@ -909,11 +910,10 @@ mod tests {
         }
         .apply(&mut doc)
         .unwrap();
-        assert!(
-            doc.get(automerge::ROOT, "terminal_pane_id")
-                .unwrap()
-                .is_none()
-        );
+        assert!(doc
+            .get(automerge::ROOT, "terminal_pane_id")
+            .unwrap()
+            .is_none());
         let id = doc
             .get(&panel, "terminal_pane_id")
             .unwrap()
@@ -935,11 +935,10 @@ mod tests {
         .apply(&mut doc)
         .unwrap();
         assert!(doc.get(&panel, "terminal_title").unwrap().is_none());
-        assert!(
-            doc.get(automerge::ROOT, "terminal_local_session")
-                .unwrap()
-                .is_none()
-        );
+        assert!(doc
+            .get(automerge::ROOT, "terminal_local_session")
+            .unwrap()
+            .is_none());
         let id = doc
             .get(&panel, "terminal_local_session")
             .unwrap()

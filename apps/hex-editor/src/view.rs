@@ -269,7 +269,7 @@ impl HexView {
         }
     }
 
-    /// Whether this surface is under the framework ResourceApp host.
+    /// Whether this surface is under the framework [`ResourceApp`] host.
     #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.actions.is_hosted()
@@ -2340,19 +2340,20 @@ impl ui::resources::PublishesResources for HexView {
         if self.actions.is_hosted() && id == "hex_editor.document" {
             return None;
         }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
+        find_resource(&self.publish_resources(doc), id)
     }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl HexView {

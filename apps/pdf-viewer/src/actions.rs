@@ -2070,6 +2070,10 @@ fn find_pdf(resources: &[Resource], id: &str) -> Option<Resource> {
     None
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "PDF resource resolution still mirrors the standalone widget surface"
+)]
 pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
     let root_id = format!("pdf.document:{}", ctx.doc_id);
     if id == root_id {
@@ -2109,10 +2113,10 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
         }
         return Some(published);
     }
-    if id.starts_with("pdf.annotation:") || id.starts_with("pdf.comment:") {
-        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
-            return Some(found);
-        }
+    if (id.starts_with("pdf.annotation:") || id.starts_with("pdf.comment:"))
+        && let Some(found) = find_pdf(&provide_resources(ctx, doc), id)
+    {
+        return Some(found);
     }
     if let Some(raw) = id.strip_prefix("pdf.annotation:") {
         return PdfDoc::list_annotations(doc)

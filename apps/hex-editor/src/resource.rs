@@ -1,7 +1,7 @@
 //! Hex editor as a [`tilo_resource::Resource`]: bytes stay device-local;
 //! open/save/goto/search are Effects and Views in [`local_operations`].
 //! Hosted [`PublishesResources`](ui::resources::PublishesResources) must not
-//! republish a second `hex_editor.document` beside ResourceRoot — only live
+//! republish a second `hex_editor.document` beside [`ResourceRoot`] — only live
 //! cursor / selection byte extras.
 
 use std::rc::Rc;
@@ -13,8 +13,8 @@ use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    HEX_EDITOR_ACTION_TYPE, HexEditorAction, document_local_operations,
-    refuses_collaborative_replay, register,
+    document_local_operations, refuses_collaborative_replay, register, HexEditorAction,
+    HEX_EDITOR_ACTION_TYPE,
 };
 use crate::view::HexView;
 
@@ -285,7 +285,7 @@ mod tests {
                 .iter()
                 .all(|resource| resource.kind != HexEditor::KIND
                     && resource.id.as_str() != "hex_editor.document"),
-            "hosted must not republish hex_editor.document beside ResourceRoot: {:?}",
+            "hosted must not republish hex_editor.document beside [`ResourceRoot`]: {:?}",
             extras
                 .iter()
                 .map(|resource| resource.id.as_str())

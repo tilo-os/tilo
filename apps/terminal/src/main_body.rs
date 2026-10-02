@@ -805,6 +805,10 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "terminal MainBody wires many host services at construction"
+    )]
     pub fn new(
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -5668,7 +5672,7 @@ fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
     chars.into_iter().collect()
 }
 
-fn blank_attr_range(attrs: &mut Vec<u8>, from: usize, count: usize) {
+fn blank_attr_range(attrs: &mut [u8], from: usize, count: usize) {
     if count == 0 {
         return;
     }
@@ -5951,7 +5955,7 @@ impl Perform for TerminalPerformer<'_> {
                 {
                     *self.next_link_id = id;
                     let action = crate::resource::TerminalAction::RegisterLink { id, url };
-                    if ui::tilo_actions::Action::apply(&action, &mut self.state).is_ok() {
+                    if ui::tilo_actions::Action::apply(&action, self.state).is_ok() {
                         self.current_link_id = id;
                     }
                 }
@@ -5994,7 +5998,7 @@ impl TerminalPerformer<'_> {
             protocol_id: image.protocol_id.map(u64::from),
             alternate_screen: *self.alt_active,
         };
-        let _ = ui::tilo_actions::Action::apply(&action, &mut self.state);
+        let _ = ui::tilo_actions::Action::apply(&action, self.state);
     }
 
     fn csi_first(p: &vte::Params) -> u16 {
@@ -6255,9 +6259,10 @@ impl TerminalPerformer<'_> {
     }
 
     fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
-        let text_id = match self.state.get(line_obj, "text").ok().flatten() {
-            Some((Value::Object(ObjType::Text), id)) => id,
-            _ => return None,
+        let Some((Value::Object(ObjType::Text), text_id)) =
+            self.state.get(line_obj, "text").ok().flatten()
+        else {
+            return None;
         };
         let text = self.state.text(&text_id).unwrap_or_default();
         let attrs = match self.state.get(line_obj, "attrs").ok().flatten() {
@@ -6378,7 +6383,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let _ = self.delete_grid_line(top);
+            self.delete_grid_line(top);
             self.active_line_ids_mut().remove(top);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6400,7 +6405,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let _ = self.delete_grid_line(bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(top) {
                 self.active_line_ids_mut().insert(top, line);
@@ -6421,7 +6426,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let _ = self.delete_grid_line(bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(at) {
                 self.active_line_ids_mut().insert(at, line);
@@ -6443,7 +6448,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let _ = self.delete_grid_line(at);
+            self.delete_grid_line(at);
             self.active_line_ids_mut().remove(at);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6648,7 +6653,7 @@ impl TerminalPerformer<'_> {
         }
         while self.alt_line_ids.len() > self.height {
             let idx = self.alt_line_ids.len() - 1;
-            let _ = self.delete_grid_line(idx);
+            self.delete_grid_line(idx);
             self.alt_line_ids.pop();
         }
     }

@@ -7504,18 +7504,7 @@ impl ui::resources::PublishesResources for VideoEditorApp {
         if self.actions.is_hosted() && id == "video.project" {
             return None;
         }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id).or_else(|| {
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
             self.actions.is_hosted().then(|| {
                 crate::actions::live_playhead_resources(&self.video_resource_ctx())
                     .into_iter()
@@ -7523,6 +7512,18 @@ impl ui::resources::PublishesResources for VideoEditorApp {
             })?
         })
     }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl ui::undo::UndoControl for VideoEditorApp {

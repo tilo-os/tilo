@@ -2035,10 +2035,12 @@ pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             "what the marker is called; an empty name reads as “Marker”",
         )],
         move |args: &ActionArgs| {
-            let name = args.text("name").unwrap_or("").trim();
-            let name = if name.is_empty() { "Marker" } else { name };
-            let marker = crate::model::Marker::new(at, name, 1);
-            encode(&VideoEditorAction::AddProjectMarker { marker })
+            let raw_name = args.text("name").unwrap_or("").trim();
+            let label = if raw_name.is_empty() { "Marker" } else { raw_name };
+            let project_marker = crate::model::Marker::new(at, label, 1);
+            encode(&VideoEditorAction::AddProjectMarker {
+                marker: project_marker,
+            })
         },
     ));
     if let Some(m) = p.markers.iter().find(|m| (m.t - at).abs() < 0.25) {
