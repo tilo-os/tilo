@@ -60,7 +60,8 @@ def require(ok, message):
 def run(*argv, timeout=180):
     result = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
     require(result.returncode == 0,
-            f"{Path(argv[0]).name} failed: {result.stderr.strip()[:1024]}")
+            f"{Path(argv[0]).name} failed (exit {result.returncode}): "
+            f"{result.stderr.strip()[:1024] or 'no diagnostic stderr'}")
     return result.stdout.strip()
 
 

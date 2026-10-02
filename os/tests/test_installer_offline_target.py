@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,16 @@ UPDATE = "code.tilo.so/tilo/tilo:lenovo-83ed-" + SOURCE
 
 
 class OfflineTargetTests(unittest.TestCase):
+    def test_command_failure_retains_exit_status_without_arguments(self):
+        for code in (-9, 125):
+            with self.subTest(returncode=code), patch.object(
+                    target.subprocess, 'run', return_value=SimpleNamespace(
+                        returncode=code, stdout='', stderr='')):
+                with self.assertRaisesRegex(ValueError, f'exit {code}') as error:
+                    target.run('podman', 'load', 'private-argument')
+                self.assertIn('no diagnostic stderr', str(error.exception))
+                self.assertNotIn('private-argument', str(error.exception))
+
     def test_development_transport_requires_the_vm_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             root, metadata, _, _ = self.fixture(directory)
