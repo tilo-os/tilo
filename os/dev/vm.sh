@@ -24,7 +24,7 @@
 # enrolling keys in the guest (`/usr/libexec/tilo-secureboot enroll`) sticks —
 # enrolment is an explicit step, never something the template arrives with.
 # TILO_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
-#   ./os/dev/vm.sh wait                        block until the greeter is up
+#   ./os/dev/vm.sh wait                        block until the greeter accepts input
 #   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
 #                                              whether it can measure
 #   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
@@ -150,8 +150,8 @@ cmd_boot() {
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
-    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     $(console_qemu_args) \
+    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
@@ -245,20 +245,41 @@ cmd_boot_target() {
   msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
+# greetd starting is not the greeter being usable: greetd then starts cage,
+# cage the greeter, and only once the greeter's window is mapped and focused do
+# typed keys reach it. Keys sent earlier are dropped, so the barrier is the
+# greeter's own report over its console that sign-in accepts input.
+greeter_accepts_input() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check greeter /accepts_input --timeout 5 2>/dev/null
+}
+
+# The live installer medium's greetd runs the installer instead, which is
+# driven through its console actions.
+installer_answers() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check installer --timeout 5 2>/dev/null
+}
+
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
-  local i early_reported=0
+  local i early_reported=0 greetd=0 start=$SECONDS
   for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
-    if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
-      msg "greeter up (~$((i*2))s)"; return 0
-    fi
+    if [ "$greetd" = 1 ]; then
+      if greeter_accepts_input; then
+        msg "greeter accepts input (~$((SECONDS - start))s)"; return 0
+      elif installer_answers; then
+        msg "installer up (~$((SECONDS - start))s)"; return 0
+      fi
+    elif tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
+      msg "greetd up (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     # A guest may reach greetd without writing kernel/userspace status to the
     # selected serial port. The installed validation disk supplies SSH access;
     # use it as an independent readiness signal when available.
-    if (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
+    elif (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
        && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
        && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
-      msg "greeter up via SSH (~$((i*2))s)"; return 0
+      msg "greetd up via SSH (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     fi
     if [ "$early_reported" = 0 ] && grep -aq 'TILO_VALIDATION_DIAGNOSTICS_END early' "$TILO_SERIAL" 2>/dev/null; then
       warn "validation-only guest service diagnostics:"
@@ -285,6 +306,11 @@ cmd_wait() {
       warn "validation SSH diagnostic output:"
       printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
     fi
+  fi
+  if [ "$greetd" = 1 ]; then
+    warn "greetd is up, but the greeter never reported that sign-in accepts input; its console says:"
+    python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+      check greeter /accepts_input --timeout 5 >&2 || true
   fi
   boot_diagnose "$TILO_SERIAL" || true
   if [ -s "$TILO_SERIAL" ]; then
@@ -382,48 +408,24 @@ cmd_click() {
   hmp "mouse_button 0" >/dev/null
 }
 
-# greetd being active does not mean tilo-greeter is on screen: keystrokes sent
-# before its window is shown are lost. The greeter answers its console once
-# its event loop runs, but its first frame can follow many seconds later on a
-# software-rendered VM, so also wait until the screen is no longer blank.
+# The greeter answers its console once its event loop runs; typed keys still
+# only reach the form once the compositor maps and focuses the window. Prefer
+# the greeter's own accepts_input report over a blank-screen heuristic.
 greeter_console() {
   python3 "$(dirname "${BASH_SOURCE[0]}")/installer-console.py" --socket "$TILO_CONSOLE" "$@"
-}
-
-screen_shows_content() {
-  local ppm="$TILO_RUN/.login-check.ppm"
-  rm -f "$ppm"
-  hmp "screendump $ppm" >/dev/null 2>&1 || return 1
-  sleep 0.4
-  inenv "test -s '$ppm'" || return 1
-  # A binary PPM: count sampled pixels brighter than near-black.
-  python3 - "$ppm" <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-fields, pos = [], 0
-while len(fields) < 4:
-    while data[pos:pos + 1].isspace():
-        pos += 1
-    end = pos
-    while not data[end:end + 1].isspace():
-        end += 1
-    fields.append(data[pos:end])
-    pos = end
-pixels = data[pos + 1:]
-lit = sum(1 for i in range(0, len(pixels) - 2, 3 * 997) if sum(pixels[i:i + 3]) > 60)
-sys.exit(0 if lit > 50 else 1)
-PY
 }
 
 wait_greeter_input() {
   greeter_console wait greeter --timeout 180 \
     || die "tilo-greeter never answered on its console ($TILO_CONSOLE)"
-  local i
-  for i in $(seq 1 120); do
-    screen_shows_content && return 0
+  local attempts="${TILO_GREETER_INPUT_ATTEMPTS:-120}" i
+  for i in $(seq 1 "$attempts"); do
+    greeter_accepts_input && return 0
+    vm_running || die "qemu exited before the greeter accepted input"
     sleep 1
   done
-  die "tilo-greeter answered its console but the screen stayed blank for 120 s"
+  greeter_console check greeter /accepts_input --timeout 5 >&2 || true
+  die "the greeter did not accept input; nothing was typed"
 }
 
 # After Enter the greeter either leaves sign-in or exits into the session.
