@@ -9,8 +9,8 @@ use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    GIT_CLIENT_ACTION_TYPE, GitClientAction, document_bound_actions, publish_children, register,
-    root_local_operations,
+    document_bound_actions, publish_children, register, root_local_operations, GitClientAction,
+    GIT_CLIENT_ACTION_TYPE,
 };
 use crate::app::GitClientApp;
 use crate::doc::GitClientState;
@@ -179,7 +179,7 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
 mod tests {
     use super::*;
     use crate::actions::provide_resources;
-    use crate::doc::{SharedRepo, shared_fingerprint};
+    use crate::doc::{shared_fingerprint, SharedRepo};
     use crate::settings::Settings;
     use ui::widget::Widget;
 
@@ -275,20 +275,18 @@ mod tests {
         assert!(ui::resources::resource(&app, &seeded, "git_client.repo").is_none());
         let hosted_branches = ui::resources::resource(&app, &seeded, "git_client.branches")
             .expect("a hosted branch catalogue is the published row");
-        assert!(
-            hosted_branches
+        assert!(hosted_branches
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .eq(published
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == "git_client.branches")
+                .expect("published branches")
                 .actions
                 .iter()
-                .map(|action| action.id.as_str())
-                .eq(published
-                    .children
-                    .iter()
-                    .find(|child| child.id.as_str() == "git_client.branches")
-                    .expect("published branches")
-                    .actions
-                    .iter()
-                    .map(|action| action.id.as_str()))
-        );
+                .map(|action| action.id.as_str())));
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras

@@ -17,8 +17,8 @@ use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    self, MANAGER_RESOURCE_ID, WINDOWS_ACTION_TYPE, WindowsAction, appliance_publish_child,
-    live_catalogue_extras, manager_effect_specs, override_app_resource, register,
+    self, appliance_publish_child, live_catalogue_extras, manager_effect_specs,
+    override_app_resource, register, WindowsAction, MANAGER_RESOURCE_ID, WINDOWS_ACTION_TYPE,
 };
 use crate::app::WindowsApp;
 use crate::model::Route;
@@ -374,12 +374,10 @@ mod tests {
 
         let door = provide_resources(&state);
         assert_eq!(door[0].kind, "windows.manager");
-        assert!(
-            door[0]
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == "windows.appliance")
-        );
+        assert!(door[0]
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == "windows.appliance"));
 
         let mut local = AutoCommit::new();
         let mut standalone = WindowsApp::new_offline();
