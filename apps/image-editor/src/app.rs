@@ -521,7 +521,7 @@ impl ImageEditorApp {
     }
 
     /// Test / attach override so [`PublishesResources`] can keep only live
-    /// extras beside ResourceRoot.
+    /// extras beside `ResourceRoot`.
     #[cfg(test)]
     #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
@@ -3400,6 +3400,18 @@ impl ImageEditorApp {
     }
 }
 
+fn find_resource(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod portal_tests {
     use super::*;
@@ -3971,16 +3983,4 @@ mod portal_tests {
         );
         assert_eq!(app.notice, "Crop updated. Later steps were recomputed.");
     }
-}
-
-fn find_resource(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
-    if resource.id.as_str() == id {
-        return Some(resource.clone());
-    }
-    for child in &resource.children {
-        if let Some(found) = find_resource(child, id) {
-            return Some(found);
-        }
-    }
-    None
 }
