@@ -903,12 +903,32 @@ pub fn connect(profile: &Path) -> io::Result<()> {
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
-            let result = io::copy(&mut io::stdin().lock(), &mut writer);
+            let result = relay(&mut io::stdin().lock(), &mut writer);
             let _ = writer.shutdown(std::net::Shutdown::Write);
             result
         })?;
-    io::copy(&mut stream, &mut io::stdout().lock())?;
+    relay(&mut stream, &mut io::stdout().lock())?;
     Ok(())
+}
+
+/// Copy `from` to `to`, flushing after every read. A client waits for each
+/// reply before it sends the next request, so a reply must not sit in a
+/// buffer until more arrives: `io::copy` into a buffered stdout fills its
+/// buffer and writes only when it is full or the stream ends.
+pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(buffer.get(..read).unwrap_or_default())?;
+        to.flush()?;
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
 }
 
 /// Attach connected service descriptors and replace this host with the app.

@@ -446,3 +446,46 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
     assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
     serving.join().unwrap();
 }
+
+/// The `--connect` proxy hands each reply to the client as it arrives, while
+/// the connection stays open: a client that waits for one answer before it
+/// asks the next must not wait for a reply that is sitting in a buffer.
+#[test]
+fn the_proxy_delivers_each_reply_before_the_stream_ends() {
+    /// A writer that records what reached its destination: only flushed bytes.
+    #[derive(Default)]
+    struct Client {
+        pending: Vec<u8>,
+        delivered: Vec<u8>,
+    }
+    impl io::Write for Client {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.delivered.append(&mut self.pending);
+            Ok(())
+        }
+    }
+    /// The daemon's side: one reply, then a stream that is still open.
+    struct OpenStream(Vec<Vec<u8>>);
+    impl io::Read for OpenStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.0.pop() else {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "still open"));
+            };
+            buffer[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+    }
+    let mut client = Client::default();
+    let reply = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
+    let mut daemon = OpenStream(vec![reply[16..].to_vec(), reply[..16].to_vec()]);
+    let still_open = super::relay(&mut daemon, &mut client).unwrap_err();
+    assert_eq!(still_open.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(
+        client.delivered, reply,
+        "the whole reply reached the client while the stream is open"
+    );
+}
