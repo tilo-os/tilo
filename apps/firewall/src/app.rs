@@ -1513,7 +1513,7 @@ impl Widget for FirewallApp {
                     // to native maps before any visible control can dispatch.
                     let snapshot = if FirewallDoc::has_native(state) {
                         self.config.to_json()
-                    } else if self.actions.is_hosted() {
+                    } else {
                         self.perform_action(
                             state,
                             &crate::actions::FirewallAction::PublishImported {
@@ -1521,25 +1521,18 @@ impl Widget for FirewallApp {
                             },
                         );
                         self.last_json.clone().unwrap_or_default()
-                    } else {
-                        FirewallDoc::store(state, &self.config)
                     };
                     self.last_json = Some(snapshot);
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
             } else if !self.config.zones.is_empty() {
-                if self.actions.is_hosted() {
-                    self.perform_action(
-                        state,
-                        &crate::actions::FirewallAction::PublishImported {
-                            config: self.config.clone(),
-                        },
-                    );
-                } else {
-                    let json = FirewallDoc::store(state, &self.config);
-                    self.last_json = Some(json);
-                }
+                self.perform_action(
+                    state,
+                    &crate::actions::FirewallAction::PublishImported {
+                        config: self.config.clone(),
+                    },
+                );
             }
             self.seeded = true;
             return;
@@ -4146,6 +4139,23 @@ fn target_color(theme: &Theme, target: Target) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A demo ruleset is published through the firewall action, not a raw store.
+    #[test]
+    fn a_demo_firewall_is_published_through_the_action() {
+        let mut app = FirewallApp::new_demo();
+        assert!(!app.actions.is_hosted());
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let recorded = app
+            .last_dispatched()
+            .expect("the imported ruleset is submitted through the action sink");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::FIREWALL_ACTION_TYPE
+        );
+        assert!(FirewallDoc::load(&doc).is_some_and(|config| !config.zones.is_empty()));
+    }
 
     fn app_with_rect() -> FirewallApp {
         // Sample-populated build: these tests exercise rule/zone behaviour
