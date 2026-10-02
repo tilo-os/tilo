@@ -4908,6 +4908,9 @@ impl Widget for MailApp {
             self.hydrate_domain_state(state);
         } else {
             self.register_hydrated_messages(state);
+            // Seeding baselines is not a user undo bracket; discard so a
+            // subsequent View (InspectMessage) is not mistaken for a commit.
+            let _ = self.shared.borrow_mut().take_committed_action();
             self.hydrate_domain_state(state);
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();

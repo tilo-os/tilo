@@ -1560,7 +1560,7 @@ impl Widget for ClocksApp {
 
 impl ClocksApp {
     /// Framework [`ResourceSurface::attach`] marks the surface hosted so
-    /// `resources` does not republish `clocks.collection` beside ResourceRoot.
+    /// `resources` does not republish `clocks.collection` beside `ResourceRoot`.
     pub(crate) fn mark_framework_hosted(&mut self) {
         self.hosted = true;
     }

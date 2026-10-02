@@ -40,7 +40,7 @@ impl Resource for ImageEditor {
 
     /// Add-adjustment Document ops whose payload mints a stable node id at
     /// publish time. They ride `tilo_resource::publish`, not a second hand-built
-    /// root beside ResourceRoot.
+    /// root beside `ResourceRoot`.
     fn bound_actions(state: &Project) -> Vec<ActionSpec> {
         crate::actions::project_bound_document_actions(state)
     }

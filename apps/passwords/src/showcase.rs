@@ -784,10 +784,10 @@ impl PasswordsSurface {
         if self.query != state.search {
             self.set_search_query(&state.search);
         }
-        if let Some(id) = &state.selected_id {
-            if let Some(index) = self.items.iter().position(|item| item.id.0 == *id) {
-                self.selected = index;
-            }
+        if let Some(id) = &state.selected_id
+            && let Some(index) = self.items.iter().position(|item| item.id.0 == *id)
+        {
+            self.selected = index;
         }
     }
 
@@ -5539,21 +5539,7 @@ impl ui::resources::PublishesResources for PasswordsSurface {
         if self.is_hosted() && id == crate::actions::VAULT_RESOURCE_ID {
             return None;
         }
-        fn find(
-            resources: &[ui::tilo_actions::Resource],
-            id: &str,
-        ) -> Option<ui::tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
+        find_resource(&self.publish_resources(doc), id)
     }
 }
 
@@ -6074,10 +6060,14 @@ mod tests {
                         format!("{} {} {}", resource.id.0, resource.kind, resource.label);
                     for action in &resource.actions {
                         description.push_str(&action.label);
-                        let encoded = action
-                            .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
-                            .unwrap();
-                        description.push_str(&String::from_utf8_lossy(&encoded.payload));
+                        // Prompted / required-param actions (set-filter) cannot
+                        // encode with an empty arg list; their labels alone
+                        // are enough to prove secrets are not published.
+                        if let Ok(encoded) =
+                            action.build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
+                        {
+                            description.push_str(&String::from_utf8_lossy(&encoded.payload));
+                        }
                     }
                     description
                 })
@@ -6683,4 +6673,19 @@ mod tests {
             let _ = std::fs::remove_dir_all(base);
         }
     }
+}
+
+fn find_resource(
+    resources: &[ui::tilo_actions::Resource],
+    id: &str,
+) -> Option<ui::tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }

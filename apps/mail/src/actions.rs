@@ -1531,20 +1531,23 @@ impl crate::app::MailApp {
             None
         }
 
-        if id.starts_with("mail.message:")
-            || id.starts_with("mail.attachment:")
-            || id.starts_with("mail.thread:")
-        {
+        if id.starts_with("mail.attachment:") || id.starts_with("mail.thread:") {
             // A row already on the published mailbox keeps that document
-            // action. The builders below cover a message the open page did
+            // action. The builders below cover a row the open page did
             // not materialise.
             if let Some(found) = find(self.publish_resources(doc), id) {
                 return Some(found);
             }
         }
         if let Some(message_id) = id.strip_prefix("mail.message:") {
+            // Document children only carry triage ops; View ops (open/reply/…)
+            // live on `message_resource`. Overlay so search/lazy resolve never
+            // returns a mail.message without `open`.
             let row = self.resource_message_row(message_id)?;
-            return Some(message_resource(&row));
+            let published = find(self.publish_resources(doc), id)
+                .map(|resource| vec![resource])
+                .unwrap_or_default();
+            return Some(overlay_published_message(&row, &published));
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')

@@ -3780,11 +3780,30 @@ impl BooksApp {
         color: HiColor,
     ) -> Option<crate::actions::HighlightPlan> {
         let (start, end) = sel.ordered();
-        let layout = self.layout.as_ref()?;
-        let clens: HashMap<usize, usize> = layout
-            .blocks
+        // Prefer painted layout metrics; fall back to chapter block lengths so a
+        // select-passage View can publish highlight-selection before the next
+        // frame lays out the reader.
+        let blocks: Vec<(usize, usize, String)> = if let Some(layout) = self.layout.as_ref() {
+            layout
+                .blocks
+                .iter()
+                .map(|b| (b.index, b.char_len, b.text.clone()))
+                .collect()
+        } else {
+            let chapter = self.open_book()?.chapters.get(self.chapter)?;
+            chapter
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| {
+                    let text = block.plain_text();
+                    (index, text.chars().count(), text)
+                })
+                .collect()
+        };
+        let clens: HashMap<usize, usize> = blocks
             .iter()
-            .map(|b| (b.index, b.char_len))
+            .map(|(index, char_len, _)| (*index, *char_len))
             .collect();
         // Distinct highlight *groups* the selection overlaps (a group is one
         // logical highlight, possibly several per-block rows). Toggling works on
@@ -3815,25 +3834,25 @@ impl BooksApp {
             // One ranged highlight per block the selection touches, each covering
             // exactly the selected characters — so a drag across paragraphs marks
             // precisely what was selected.
-            for b in &layout.blocks {
-                if b.index < start.block || b.index > end.block {
+            for (index, char_len, text) in &blocks {
+                if *index < start.block || *index > end.block {
                     continue;
                 }
-                let lo = if b.index == start.block { start.ch } else { 0 };
-                let hi = if b.index == end.block {
+                let lo = if *index == start.block { start.ch } else { 0 };
+                let hi = if *index == end.block {
                     end.ch
                 } else {
-                    b.char_len
+                    *char_len
                 };
-                let lo = lo.min(b.char_len);
-                let hi = hi.min(b.char_len);
+                let lo = lo.min(*char_len);
+                let hi = hi.min(*char_len);
                 if lo >= hi {
                     continue;
                 }
-                let excerpt: String = b.text.chars().skip(lo).take((hi - lo).min(120)).collect();
+                let excerpt: String = text.chars().skip(lo).take((hi - lo).min(120)).collect();
                 pieces.push(crate::actions::HiPiece {
                     id: Uuid::new_v4().to_string(),
-                    block: b.index,
+                    block: *index,
                     start: lo,
                     end: hi,
                     excerpt,
@@ -5934,11 +5953,42 @@ impl ui::resources::PublishesResources for BooksApp {
     /// framework hosts the surface, [`tilo_resource::publish`] already owns the
     /// library Document door — keep only the live reading-selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let overlay_open_book = |root: &mut tilo_actions::Resource| {
+            let Some(ctx) = self.current_book_resource_context() else {
+                return;
+            };
+            let book_id = format!("ebook.book:{}", ctx.book_id);
+            fn overlay(
+                resource: &mut tilo_actions::Resource,
+                book_id: &str,
+                ctx: &crate::actions::BookResourceCtx,
+            ) {
+                if resource.id.as_str() == book_id {
+                    *resource = crate::actions::current_book_actions(resource.clone(), ctx);
+                    return;
+                }
+                for child in &mut resource.children {
+                    overlay(child, book_id, ctx);
+                }
+            }
+            overlay(root, &book_id, &ctx);
+            root.children
+                .extend(crate::actions::live_reading_resources(&ctx));
+        };
+
         if self.actions.is_hosted() {
-            return self
-                .current_book_resource_context()
-                .map(|ctx| crate::actions::live_reading_resources(&ctx))
-                .unwrap_or_default();
+            // Hosted: framework owns the library door; surface only exports the
+            // open book's live overlay (+ reading-selection extras) so DFS
+            // resolve does not prefer a nested document book without Views.
+            let Some(ctx) = self.current_book_resource_context() else {
+                return Vec::new();
+            };
+            let mut resources = Vec::new();
+            if let Some(book) = self.publish_resource(doc, &format!("ebook.book:{}", ctx.book_id)) {
+                resources.push(book);
+            }
+            resources.extend(crate::actions::live_reading_resources(&ctx));
+            return resources;
         }
         let state =
             <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
@@ -5947,10 +5997,7 @@ impl ui::resources::PublishesResources for BooksApp {
             "Books library",
             &state,
         );
-        if let Some(ctx) = self.current_book_resource_context() {
-            root.children
-                .extend(crate::actions::live_reading_resources(&ctx));
-        }
+        overlay_open_book(&mut root);
         vec![root]
     }
     fn action_directory_resource_page(
@@ -5965,10 +6012,7 @@ impl ui::resources::PublishesResources for BooksApp {
             _ => return None,
         };
         if self.actions.is_hosted() {
-            let resources = self
-                .current_book_resource_context()
-                .map(|ctx| crate::actions::live_reading_resources(&ctx))
-                .unwrap_or_default();
+            let resources = self.resources(doc);
             let total = resources.len();
             if offset > total {
                 return None;
