@@ -7,9 +7,10 @@ PartOf=graphical-session.target
 Type=simple
 # The launcher connects to this per-user socket and passes only the connected
 # descriptor into sandboxed Files. Bearer URIs never enter process arguments.
-# Create the FUSE and cache roots before the sandbox treats a missing
-# `-%h/...` path as absent and then refuses create_dir_all on a read-only home.
-ExecStartPre=-/usr/bin/mkdir -p %h/Shared %h/.cache/tilo/received-files
+# The FUSE and cache roots come from user-tmpfiles.d/tilo-fs.conf: the home
+# is read-only in the sandbox, and a user unit with PrivateIPC=yes cannot
+# run a second sandboxed process such as an ExecStartPre (systemd 259:
+# 226/NAMESPACE).
 ExecStart=/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock --mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files
 Restart=on-failure
 RestartSec=1s
