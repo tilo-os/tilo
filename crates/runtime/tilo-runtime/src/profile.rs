@@ -86,6 +86,28 @@ impl Drop for MediaHost {
     }
 }
 
+/// The content service of one room, read as each app reads it.
+pub struct BlobMedia {
+    blob_socket: std::path::PathBuf,
+    room: String,
+}
+
+impl BlobMedia {
+    #[must_use]
+    pub fn new(blob_socket: &Path, room: &str) -> Self {
+        Self {
+            blob_socket: blob_socket.to_path_buf(),
+            room: room.to_owned(),
+        }
+    }
+}
+
+impl crate::MediaReader for BlobMedia {
+    fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
+        read_media(&self.blob_socket, &self.room, app_id, hash)
+    }
+}
+
 /// Read document media an app in `room` stored, through the same scoped
 /// capability the app holds.
 /// # Errors
