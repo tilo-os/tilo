@@ -33,6 +33,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Request accessibility as a screen reader does. This smoke must also work
+# without a preceding compositor smoke enabling providers on the session bus.
+busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+
 atspi_address=$(
     gdbus call --session \
         --dest org.a11y.Bus \
