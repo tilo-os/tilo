@@ -185,9 +185,10 @@ impl AccessibilityPane {
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> Box<dyn Widget> {
         let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
+        let text_size = text_size_label(self.appearance.text_scale);
         let size = Self::choice(size_opts, TEXT_SIZE_KEY, "text-size")
             .with_id("a11y.text_size")
-            .with_placeholder(text_size_label(self.appearance.text_scale));
+            .with_placeholder(&text_size);
         card(
             &t("a11y-vision-title"),
             rows(vec![
@@ -545,19 +546,29 @@ impl AccessibilityPane {
             (TEXT_SIZE_KEY, text_size_label(self.appearance.text_scale)),
             (
                 CURSOR_SIZE_KEY,
-                AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
+                AccessibilityPrefs::cursor_size_label(self.access.cursor_size).to_string(),
             ),
-            (COLOR_FILTER_KEY, self.access.color_filter.label()),
-            (OSK_KEY, self.access.on_screen_keyboard.label()),
+            (
+                COLOR_FILTER_KEY,
+                self.access.color_filter.label().to_string(),
+            ),
+            (OSK_KEY, self.access.on_screen_keyboard.label().to_string()),
             (
                 MAGNIFIER_KEY,
-                magnifier::zoom_label(self.access.magnifier_zoom),
+                magnifier::zoom_label(self.access.magnifier_zoom).to_string(),
             ),
-            (MAGNIFIER_VIEW_KEY, self.access.magnifier_view.label()),
-            (SWITCH_KEYS_KEY, self.access.switch_key_pair.label()),
+            (
+                MAGNIFIER_VIEW_KEY,
+                self.access.magnifier_view.label().to_string(),
+            ),
+            (
+                SWITCH_KEYS_KEY,
+                self.access.switch_key_pair.label().to_string(),
+            ),
             (
                 BOUNCE_DELAY_KEY,
-                AccessibilityPrefs::bounce_delay_label(self.access.bounce_keys_delay_ms),
+                AccessibilityPrefs::bounce_delay_label(self.access.bounce_keys_delay_ms)
+                    .to_string(),
             ),
             (
                 SWITCH_SCAN_KEY,
@@ -566,7 +577,8 @@ impl AccessibilityPane {
                     2000 => "2 seconds",
                     3000 => "3 seconds",
                     _ => "Manual",
-                },
+                }
+                .to_string(),
             ),
             (
                 READER_RATE_KEY,
@@ -575,9 +587,13 @@ impl AccessibilityPane {
                     76..=115 => "Default",
                     116..=160 => "Fast",
                     _ => "Very fast",
-                },
+                }
+                .to_string(),
             ),
-            (READER_VOICE_KEY, self.access.screen_reader_voice.label()),
+            (
+                READER_VOICE_KEY,
+                self.access.screen_reader_voice.label().to_string(),
+            ),
         ] {
             if state.get(root, key).ok().flatten().is_none() {
                 let _ = state.put(root, key, value);
