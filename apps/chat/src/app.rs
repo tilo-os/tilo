@@ -3181,6 +3181,10 @@ impl Widget for ChatApp {
         dyn ui::presence::capability::PublishesPresence
     );
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
     }
