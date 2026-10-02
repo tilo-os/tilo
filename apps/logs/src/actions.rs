@@ -183,24 +183,24 @@ pub fn standalone_resources(
         root = root.with_action(spec);
     }
     // Dynamic export unavailable when the filtered set is empty.
-    if allow_live && !entries.iter().any(|entry| filter.passes(entry)) {
-        if let Some(export) = root
+    if allow_live
+        && !entries.iter().any(|entry| filter.passes(entry))
+        && let Some(export) = root
             .actions
             .iter_mut()
             .find(|action| action.id == "export-filtered-jsonl")
-        {
-            *export = operation(
-                "export-filtered-jsonl",
-                "Export filtered logs",
-                OperationKind::Effect,
-                &LogsOperation::ExportFiltered,
-            )
-            .requiring(tilo_actions::PermissionRequirement::Write)
-            .unavailable(
-                "no_matching_entries",
-                "There are no filtered entries to export",
-            );
-        }
+    {
+        *export = operation(
+            "export-filtered-jsonl",
+            "Export filtered logs",
+            OperationKind::Effect,
+            &LogsOperation::ExportFiltered,
+        )
+        .requiring(tilo_actions::PermissionRequirement::Write)
+        .unavailable(
+            "no_matching_entries",
+            "There are no filtered entries to export",
+        );
     }
     root.children = live_entry_resources(entries, filter);
     vec![root]

@@ -215,7 +215,7 @@ fn config_contract() -> ActionContract {
 }
 
 /// Connect / disconnect Effects for one saved profile. Live surfaces overlay
-/// availability from local NetworkManager provisioning; the resource door
+/// availability from local `NetworkManager` provisioning; the resource door
 /// always advertises both so [`tilo_resource::publish`] owns the palette row.
 pub fn tunnel_toggle_specs(id: ConnId) -> Vec<ActionSpec> {
     [("connect", "Connect"), ("disconnect", "Disconnect")]

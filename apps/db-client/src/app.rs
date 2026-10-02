@@ -1060,6 +1060,10 @@ impl DbClientApp {
     /// against the current session. Resource descriptors are only a helpful
     /// snapshot: a collaborator can remove/rename a connection before an
     /// invocation arrives, so their payload is never authority by itself.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per DbClientOperation keeps resolve+dispatch together"
+    )]
     fn execute_operation(&mut self, operation: DbClientOperation) -> Result<(), String> {
         match operation {
             DbClientOperation::FocusCatalog {

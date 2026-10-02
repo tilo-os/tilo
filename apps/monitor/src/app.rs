@@ -5021,7 +5021,7 @@ impl MonitorApp {
     fn on_right_click(
         &mut self,
         p: Point,
-        _doc: &mut AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
     ) {
@@ -5034,7 +5034,7 @@ impl MonitorApp {
         }
         for (pid, rect) in self.hit.rows.clone() {
             if rect.contains(p) {
-                self.commit_selected(_doc, Some(pid));
+                self.commit_selected(doc, Some(pid));
                 self.open_context_menu(pid, p);
                 *handled = true;
                 return;

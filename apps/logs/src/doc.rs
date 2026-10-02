@@ -81,8 +81,7 @@ impl ViewDoc {
         Filter {
             min_priority: Self::get_str(doc, &map, "priority")
                 .and_then(|s| s.parse().ok())
-                .map(|v: i64| v.clamp(0, 7))
-                .unwrap_or(7),
+                .map_or(7, |v: i64| v.clamp(0, 7)),
             unit: Self::get_str(doc, &map, "unit").unwrap_or_default(),
             boot: Self::get_str(doc, &map, "boot").unwrap_or_default(),
             search: Self::get_str(doc, &map, "search").unwrap_or_default(),
