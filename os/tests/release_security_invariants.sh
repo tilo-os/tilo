@@ -71,16 +71,24 @@ grep -Fq "outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp
 # Integration images skip the second uncached build, but every publication
 # (tag, nightly or protected manual main release) must still run it, with no
 # compiler cache (tools/tests/test_publication_compiler_cache.py).
-# The rebuild runs in its own, parallel reproduction lane, which exists only in
-# publication matrices and refuses to run otherwise; the publication lane waits
-# for its digest before installing or signing.
-grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
-    | grep -Fq "if: matrix.role == 'reproduce'" \
-  && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
-  && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
-    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+# The publication lane rebuilds after clearing its builder of everything the
+# first build left (layer cache, cache mounts), and measures that rebuild's
+# digest before installing or signing. One lane per architecture, so a release
+# holds one release slot per architecture.
+grep -A1 -F -- '- name: Clear the builder for the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+  && awk '/- name: Clear the builder for the independent rebuild/,/- name: Independently rebuild the release candidate/' "$workflow" \
+    | grep -Fq 'docker buildx prune --builder "$BUILDER_NAME" --all --force' \
+  && grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+  && [ "$(grep -n -F -- '- name: Clear the builder for the independent rebuild' "$workflow" | cut -d: -f1)" -lt \
+       "$(grep -n -F -- '- name: Independently rebuild the release candidate' "$workflow" | cut -d: -f1)" ] \
+  && grep -A2 -F -- '- name: Measure the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
   && grep -A2 -F -- '- name: Compare with the independent rebuild' "$workflow" \
-    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+  && ! grep -Fq 'matrix.role' "$workflow" \
+  && ! grep -Fq '"role":"reproduce"' "$workflow" \
   && grep -Fq 'REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}' "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
   && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
