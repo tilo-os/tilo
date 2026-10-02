@@ -14601,6 +14601,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-content",
  "tilo-files",
  "tilo-resource",
  "tilo-runner-native",

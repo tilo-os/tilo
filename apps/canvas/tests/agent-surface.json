@@ -3989,6 +3989,23 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "render",
+    "resource_kind": "canvas.artwork",
+    "label": "See the app",
+    "description": "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "scale",
+        "ty": "number",
+        "required": false,
+        "description": "Pixels per point, 0.5 to 2 (default 1)",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "save-medium",
     "resource_kind": "canvas.artwork",
     "label": "Save medium",
