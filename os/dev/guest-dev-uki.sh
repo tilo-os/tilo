@@ -7,8 +7,8 @@ stub=/usr/lib/systemd/boot/efi/linuxx64.efi.stub
 test -s "$stub"
 work=$(mktemp -d /var/tmp/tilo-dev-uki.XXXXXX)
 trap 'rm -rf -- "$work"' EXIT
-python3 - "$work" <<'PY'
-import pathlib, re, sys
+python3 - "$work" "$stub" <<'PY'
+import pathlib, re, struct, sys
 work = pathlib.Path(sys.argv[1])
 args = pathlib.Path('/proc/cmdline').read_text().split()
 digests = [a.split('=', 1)[1] for a in args if a.startswith('composefs=')]
@@ -20,18 +20,27 @@ for name in ('vmlinuz', 'initrd'):
         raise SystemExit('running dev kernel or initrd missing')
 (work / 'kernel-dir').write_text(str(kernel_dir))
 (work / 'cmdline').write_bytes((' '.join(a for a in args if not a.startswith('initrd=')) + '\0').encode())
+# Fedora's PE stub has a nonzero randomized image base. objcopy wants absolute
+# VMAs, not RVAs; wrapping addresses below that base produces an unloadable UKI.
+stub = pathlib.Path(sys.argv[2]).read_bytes()
+pe = struct.unpack_from('<I', stub, 0x3c)[0]
+if stub[pe:pe+4] != b'PE\0\0' or struct.unpack_from('<H', stub, pe+24)[0] != 0x20b:
+    raise SystemExit('expected a PE32+ EFI stub')
+image_base = struct.unpack_from('<Q', stub, pe+48)[0]
+(work / 'image-base').write_text(str(image_base))
 PY
 kernel_dir=$(cat "$work/kernel-dir")
 cp /usr/lib/os-release "$work/osrel"
 uname -r | tr -d '\n' > "$work/uname"
 mount -o remount,rw /boot
-initrd_vma=$(printf '0x%x' "$(( (0x2000000 + $(stat -c %s "$kernel_dir/vmlinuz") + 0xfffff) & ~0xfffff ))")
+image_base=$(cat "$work/image-base")
+initrd_vma=$(( (0x2000000 + $(stat -c %s "$kernel_dir/vmlinuz") + 0xfffff) & ~0xfffff ))
 objcopy \
-  --add-section .osrel="$work/osrel" --change-section-vma .osrel=0x20000 \
-  --add-section .cmdline="$work/cmdline" --change-section-vma .cmdline=0x30000 \
-  --add-section .uname="$work/uname" --change-section-vma .uname=0x40000 \
-  --add-section .linux="$kernel_dir/vmlinuz" --change-section-vma .linux=0x2000000 \
-  --add-section .initrd="$kernel_dir/initrd" --change-section-vma .initrd="$initrd_vma" \
+  --add-section .osrel="$work/osrel" --change-section-vma .osrel="$((image_base + 0x20000))" \
+  --add-section .cmdline="$work/cmdline" --change-section-vma .cmdline="$((image_base + 0x30000))" \
+  --add-section .uname="$work/uname" --change-section-vma .uname="$((image_base + 0x40000))" \
+  --add-section .linux="$kernel_dir/vmlinuz" --change-section-vma .linux="$((image_base + 0x2000000))" \
+  --add-section .initrd="$kernel_dir/initrd" --change-section-vma .initrd="$((image_base + initrd_vma))" \
   "$stub" /boot/EFI/Linux/tilo-dev-diagnostic.efi
 objdump -h /boot/EFI/Linux/tilo-dev-diagnostic.efi
 bootctl set-oneshot tilo-dev-diagnostic.efi
