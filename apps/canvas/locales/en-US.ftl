@@ -1,6 +1,11 @@
-starter-title = Hello
-starter-name-label = Your name
-starter-name-placeholder = Type your name
-starter-greeting = Hello, { $name }!
-starter-greeting-empty = Who should we greet?
-starter-clear = Clear
+canvas-title = Canvas
+canvas-tool-select = Select
+canvas-tool-brush = Brush
+canvas-tool-rect = Rectangle
+canvas-tool-ellipse = Ellipse
+canvas-colour = Colour
+canvas-brush-size = Brush size
+canvas-layer = Layer
+canvas-add-plain-layer = Add ink layer
+canvas-add-oil-layer = Add oil layer
+canvas-add-watercolour-layer = Add watercolour layer
