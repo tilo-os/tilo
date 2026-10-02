@@ -2847,6 +2847,11 @@ impl App {
         }
         self.keep_esp_writable(vm, endpoint)?;
         if stage.no_reboot {
+            // WHPX starts a host-side kernel. A manual stop/start must use the
+            // staged deployment's boot files and options, just like reboot_into.
+            if vm.entry.hypervisor == "whpx" && vm.entry.direct_kernel.is_some() {
+                self.prepare_whpx_direct_boot(vm, endpoint, &next.digest)?;
+            }
             return Ok(Outcome::new(
                 format!(
                     "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  {}",
@@ -2946,11 +2951,13 @@ impl App {
             ),
         )?;
         let mut paths = bls.stdout.lines();
+        // grep can exit 2 when the optional entries.staged glob is absent,
+        // even while reporting one valid entry from entries. Validate that
+        // reported path and its contents instead of requiring grep exit 0.
         let path = paths
             .next()
             .filter(|path| {
-                bls.success
-                    && paths.next().is_none()
+                paths.next().is_none()
                     && (path.starts_with("/boot/loader/entries.staged/")
                         || path.starts_with("/boot/loader/entries/"))
                     && path
@@ -3222,6 +3229,9 @@ impl App {
             .as_ref()
             .map_or_else(|| "(unknown)".into(), imageup::Deployment::describe);
         if no_reboot {
+            if vm.entry.hypervisor == "whpx" && vm.entry.direct_kernel.is_some() {
+                self.prepare_whpx_direct_boot(&vm, &endpoint, &target.digest)?;
+            }
             return Ok(Outcome::new(
                 format!(
                     "VM {} boots {} at its next restart (now running {current})",
