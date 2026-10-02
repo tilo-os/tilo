@@ -159,6 +159,15 @@ struct TargetArgs {
     resource: String,
     action: String,
 }
+/// One action inside a `calls` batch. It runs on the call's peer.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct InvokeCall {
+    resource: String,
+    action: String,
+    #[serde(default)]
+    arguments: serde_json::Map<String, Value>,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InvokeArgs {
@@ -168,15 +177,31 @@ struct InvokeArgs {
     workspace: bool,
     /// Omitted: the directory as it is now.
     revision: Option<String>,
-    resource: String,
-    action: String,
+    /// The single-call form. Absent when `calls` names the batch.
+    resource: Option<String>,
+    action: Option<String>,
     #[serde(default)]
     arguments: serde_json::Map<String, Value>,
+    /// Several actions in order, on this same peer. Stops at the first
+    /// failure; the single-call form leaves this absent.
+    calls: Option<Vec<InvokeCall>>,
     /// Caller-chosen id; retrying with the same id never starts twice.
     #[serde(default)]
     invocation_id: Option<String>,
     /// How long to wait for a terminal update before answering with the
     /// current one.
+    wait_ms: Option<u64>,
+}
+/// One action of either form, after the batch has been split apart.
+struct OneCall {
+    peer_id: Option<u64>,
+    app_id: Option<String>,
+    workspace: bool,
+    revision: Option<String>,
+    resource: String,
+    action: String,
+    arguments: serde_json::Map<String, Value>,
+    invocation_id: Option<String>,
     wait_ms: Option<u64>,
 }
 #[derive(Deserialize)]
@@ -245,6 +270,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             page::compact_page(page, None)
         } else {
             page::compact_page(page, Some(&mut self.handles()))
+        }
+    }
+    /// `describe` false leaves each action's description out. An `open`
+    /// reply is read again on every later turn, and the label with its
+    /// parameters is what the next call needs.
+    fn compact_described(&self, page: &CataloguePage, workspace: bool, describe: bool) -> Value {
+        if workspace {
+            page::compact_described(page, None, describe)
+        } else {
+            page::compact_described(page, Some(&mut self.handles()), describe)
         }
     }
     /// Offer the canonical `computer` tools, driving `computer`.
@@ -794,9 +829,89 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             _ => Err("Unknown tool".into()),
         }
     }
+    /// Start one action, or `calls` in order. A batch answers `results` and,
+    /// when one did not succeed, `stopped` at that index; nothing after it
+    /// runs. The single-call form answers that action alone, as before.
+    async fn invoke(&self, mut a: InvokeArgs) -> Result<Value, String> {
+        if a.revision.as_deref() == Some("") {
+            return Err("revision must not be empty".into());
+        }
+        if let Some(calls) = a.calls.take() {
+            if a.resource.is_some() || a.action.is_some() {
+                return Err("name resource and action, or calls, not both".into());
+            }
+            if calls.is_empty() || calls.len() > MAX_CALLS {
+                return Err(format!("calls must hold 1 to {MAX_CALLS} actions"));
+            }
+            return self.invoke_calls(a, calls).await;
+        }
+        let resource = a
+            .resource
+            .take()
+            .filter(|resource| !resource.is_empty())
+            .ok_or("name resource and action, or calls")?;
+        let action = a
+            .action
+            .take()
+            .filter(|action| !action.is_empty())
+            .ok_or("name resource and action, or calls")?;
+        self.invoke_one(OneCall {
+            peer_id: a.peer_id,
+            app_id: a.app_id,
+            workspace: a.workspace,
+            revision: a.revision,
+            resource,
+            action,
+            arguments: a.arguments,
+            invocation_id: a.invocation_id,
+            wait_ms: a.wait_ms,
+        })
+        .await
+    }
+    /// `calls` in order on one peer. The first keeps the caller's revision
+    /// and invocation id; each later call reads the directory as it is then,
+    /// under an id derived from that one, so a retry does not run twice.
+    async fn invoke_calls(&self, a: InvokeArgs, calls: Vec<InvokeCall>) -> Result<Value, String> {
+        let mut results = Vec::with_capacity(calls.len());
+        let mut stopped = None;
+        for (index, call) in calls.into_iter().enumerate() {
+            let value = self
+                .invoke_one(OneCall {
+                    peer_id: a.peer_id,
+                    app_id: a.app_id.clone(),
+                    workspace: a.workspace,
+                    revision: if index == 0 { a.revision.clone() } else { None },
+                    resource: call.resource,
+                    action: call.action,
+                    arguments: call.arguments,
+                    invocation_id: batch_invocation(a.invocation_id.as_deref(), index)?,
+                    wait_ms: a.wait_ms,
+                })
+                .await;
+            let failed = match &value {
+                Ok(value) => call_failed(value),
+                Err(_) => true,
+            };
+            results.push(match value {
+                Ok(value) => value,
+                Err(error) => json!({ "error": error }),
+            });
+            if failed {
+                stopped = Some(index);
+                break;
+            }
+        }
+        let mut answer = json!({ "results": results });
+        if let Some(index) = stopped
+            && let Some(fields) = answer.as_object_mut()
+        {
+            fields.insert("stopped".into(), json!(index));
+        }
+        Ok(answer)
+    }
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
-    async fn invoke(&self, mut a: InvokeArgs) -> Result<Value, String> {
+    async fn invoke_one(&self, mut a: OneCall) -> Result<Value, String> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -1245,7 +1360,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     }
     /// A directory page as an `open` answers it.
     fn directory_value(&self, page: &CataloguePage, truncated: bool) -> Value {
-        let mut value = self.compact(page, false);
+        let mut value = self.compact_described(page, false, false);
         if let Some(fields) = value.as_object_mut() {
             fields.remove("exhausted");
             if truncated {
@@ -1297,7 +1412,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 })
             }));
             let mut trial = self.handles().clone();
-            if page::compact_page(&grown, Some(&mut trial))
+            if page::compact_described(&grown, Some(&mut trial), false)
                 .to_string()
                 .len()
                 > DIRECTORY_BYTES
@@ -1531,6 +1646,9 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// and how often it looks.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 30_000;
+/// Actions one `calls` batch runs. A document's edits and its save fit;
+/// more than this is several turns.
+const MAX_CALLS: usize = 32;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
@@ -1563,6 +1681,34 @@ fn out_of_range(
 
 fn empty_object() -> Value {
     json!({})
+}
+/// Whether a finished call should stop a batch: it did not succeed, it is
+/// still running, or the file it tried to open did not.
+fn call_failed(value: &Value) -> bool {
+    if value.get("pending").is_some() || value.pointer("/opened/error").is_some() {
+        return true;
+    }
+    value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded")
+}
+/// The invocation id of batch step `index`. The first is the caller's, so
+/// a retry of the batch reports that action instead of starting it again;
+/// each later step's id is derived from it and stable across that retry.
+fn batch_invocation(parent: Option<&str>, index: usize) -> Result<Option<String>, String> {
+    let Some(parent) = parent else {
+        return Ok(None);
+    };
+    let parent = invocation_id(parent)?;
+    if index == 0 {
+        return Ok(Some(parent.0.to_string()));
+    }
+    let mut bytes = *parent.0.as_bytes();
+    let mix = (index as u128).to_le_bytes();
+    for (byte, mix) in bytes.iter_mut().zip(mix) {
+        *byte ^= mix;
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(Some(uuid::Uuid::from_bytes(bytes).to_string()))
 }
 /// What a call refused with session handles as text ran again with: each
 /// handle's resource id in full.
@@ -1663,18 +1809,40 @@ fn tool_definitions() -> Vec<Value> {
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
         properties.insert("arguments".into(), json!({"type":"object"}));
+        properties.insert(
+            "calls".into(),
+            json!({
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_CALLS,
+                "items": {
+                    "type": "object",
+                    "properties": {"resource": string, "action": string, "arguments": {"type": "object"}},
+                    "required": ["resource", "action"],
+                    "additionalProperties": false
+                }
+            }),
+        );
         properties.insert("invocation_id".into(), string.clone());
         properties.insert("wait_ms".into(), integer.clone());
     }
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
-    [
+    let mut tools: Vec<Value> = [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
         ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
-        ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index). Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
         ("tilo_cancel","Stop an invocation",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
-    ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
+    ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect();
+    if let Some(schema) = tools
+        .iter_mut()
+        .find(|tool| tool["name"] == "tilo_invoke")
+        .and_then(|tool| tool.get_mut("inputSchema"))
+    {
+        schema["oneOf"] = json!([{"required": ["resource", "action"]}, {"required": ["calls"]}]);
+    }
+    tools
 }
 #[cfg(test)]
 #[path = "mcp_open_tests.rs"]

@@ -2,6 +2,11 @@
 # Gate kernel-plus-userspace boot latency on a running installed image. Firmware
 # timing is intentionally excluded: CI controls the Tilo kernel and userspace,
 # not a customer's UEFI implementation.
+#
+# The numbers are only meaningful in a KVM guest, like the release gate's VM.
+# os/dev/vm.sh falls back to TCG emulation on a host without usable KVM and
+# warns when it does; a TCG boot's phases are not comparable with KVM or
+# hardware in either direction.
 set -euo pipefail
 
 budget_seconds="${TILO_BOOT_USERSPACE_BUDGET_SEC:-20}"
@@ -107,10 +112,30 @@ boot_phases() {
     printf "phases: kernel %.3fs, initrd %.3fs, userspace to greeter %.3fs\n",
       i / 1e6, (u - i) / 1e6, (e - u) / 1e6 }'
 }
+# The kernel phase has no units to blame: name the longest silences in this
+# boot's kernel log before the initrd started, and the initramfs unpack.
+kernel_gaps() {
+  local log
+  log="$(journalctl -k -b -o short-monotonic --no-pager 2>/dev/null)" || return 0
+  [ -n "$log" ] || return 0
+  # The clock can include time before the kernel ran (firmware, loading the
+  # UKI): the first message's timestamp is that share.
+  awk -F'[][]' 'NR == 1 { printf "kernel log starts at %.3fs\n", $2 + 0; exit }' <<<"$log"
+  printf 'kernel log, longest gaps before the initrd:\n'
+  awk -F'[][]' -v end="${initrd_us_for_gaps:-0}" '
+    { t = $2 + 0 }
+    end > 0 && t * 1e6 > end { exit }
+    p != "" && t - p > 0.2 { printf "  %7.3fs before [%s]%s\n", t - p, $2, substr($3, 1, 110) }
+    { p = t }' <<<"$log" | sort -rn | head -12 || true
+  grep -E 'Trying to unpack|Freeing initrd memory|Run /init' <<<"$log" | cut -c1-140 || true
+}
+initrd_us_for_gaps="$(systemctl show --property=InitRDTimestampMonotonic --value 2>/dev/null || true)"
+case "$initrd_us_for_gaps" in ''|*[!0-9]*) initrd_us_for_gaps=0 ;; esac
 if [ "$entered_us" -gt "$budget_us" ]; then
   printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
     "$seconds" "$milliseconds" "$budget_seconds" >&2
   boot_phases >&2
+  kernel_gaps >&2
   systemd-analyze critical-chain graphical.target >&2 || true
   systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true
   exit 1
