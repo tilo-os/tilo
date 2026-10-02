@@ -5,6 +5,23 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn a_standalone_project_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.ensure_buffers(&mut doc);
+    assert_eq!(
+        EditorDoc::project_id(&doc).as_deref(),
+        Some(app.project_id.as_str())
+    );
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the project is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
 fn a_standalone_terminal_panel_is_created_by_the_action() {
     let mut app = CodeApp::new();
     assert!(!app.actions.is_hosted());
