@@ -763,6 +763,7 @@ fn an_invocation_answers_with_its_result_once_it_finishes() {
 }
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe-look";
+const JPEG: &[u8] = b"\xff\xd8\xff\xe0the-next-look";
 
 /// The content service as the stub app `so.tilo.test` reads it: a picture
 /// it stored and something that is not an image.
@@ -772,6 +773,7 @@ impl crate::MediaReader for StoredByTestApp {
     fn read(&self, app_id: &str, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
         Ok(match (app_id, hash) {
             ("so.tilo.test", "look") => Some(PNG.to_vec()),
+            ("so.tilo.test", "next-look") => Some(JPEG.to_vec()),
             ("so.tilo.test", "notes") => Some(b"plain text".to_vec()),
             _ => None,
         })
@@ -782,6 +784,7 @@ impl crate::MediaReader for StoredByTestApp {
 /// MCP image block beside the JSON, both when it finishes within the call
 /// and when `tilo_status` reports it later; what is not an image, or not
 /// readable with the producing app's own scope, is only named.
+/// A picture the session was already shown is named, not sent again.
 #[test]
 fn an_action_that_produced_an_image_answers_with_it() {
     use base64::Engine as _;
@@ -795,6 +798,7 @@ fn an_action_that_produced_an_image_answers_with_it() {
         ],
     };
     let running_for = Arc::clone(&host.running_for);
+    let output = Arc::clone(&host.output);
     let mut server = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
@@ -848,6 +852,7 @@ fn an_action_that_produced_an_image_answers_with_it() {
         let status = tool(&mut server, "tilo_status", json!({"invocation_id": id})).await;
         assert_eq!(images(&status).len(), 1, "{status}");
 
+        output.lock().unwrap().resources = vec!["tilo.content:next-look".into()];
         let batch = tool(
             &mut server,
             "tilo_invoke",
@@ -857,10 +862,14 @@ fn an_action_that_produced_an_image_answers_with_it() {
             ]}),
         )
         .await;
-        assert_eq!(
-            images(&batch).len(),
-            2,
-            "each call of a batch shows its own: {batch}"
+        let shown = images(&batch);
+        assert_eq!(shown.len(), 1, "a new picture is shown once: {batch}");
+        assert_eq!(shown[0]["mimeType"], "image/jpeg");
+        assert!(
+            batch["structuredContent"]["results"][1]["unchanged"]
+                .as_str()
+                .is_some_and(|note| note.contains("tilo_status")),
+            "the second call made the same picture, and says so: {batch}"
         );
     });
     let mut blind = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
@@ -869,6 +878,68 @@ fn an_action_that_produced_an_image_answers_with_it() {
         assert!(
             images(&reply).is_empty(),
             "without a content service nothing is read"
+        );
+    });
+}
+
+/// A look at an unchanged picture costs a line, not an image: the answer
+/// names the invocation that showed it, whose `tilo_status` shows it again.
+/// Each session keeps its own record.
+#[test]
+fn a_picture_already_shown_is_named_instead_of_sent_again() {
+    let host = StubHost::default();
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"revision":"r1"})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    let session = || {
+        crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+            .with_media(Some(Arc::new(StoredByTestApp)))
+    };
+    let mut server = session();
+    run(async {
+        let first = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(images(&first), 1, "{first}");
+        assert!(first["structuredContent"].get("unchanged").is_none());
+        let first_id = first["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let again = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(images(&again), 0, "{again}");
+        assert!(
+            again["structuredContent"]["unchanged"]
+                .as_str()
+                .is_some_and(|note| note.contains(&first_id)),
+            "{again}"
+        );
+        assert_eq!(again["structuredContent"]["update"]["state"], "succeeded");
+
+        let status = tool(
+            &mut server,
+            "tilo_status",
+            json!({"invocation_id": first_id}),
+        )
+        .await;
+        assert_eq!(images(&status), 1, "tilo_status shows it again: {status}");
+    });
+    let mut other = session();
+    run(async {
+        let reply = tool(&mut other, "tilo_invoke", target).await;
+        assert_eq!(
+            images(&reply),
+            1,
+            "another session was never shown it: {reply}"
         );
     });
 }
