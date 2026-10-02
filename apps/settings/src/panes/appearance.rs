@@ -524,10 +524,7 @@ impl AppearancePane {
             self.wallpaper_apply = None;
             self.set_wallpaper_status(Some(match outcome {
                 Ok(()) => t("settings-appearance-updated"),
-                Err(error) => t_args(
-                    "settings-appearance-unchanged",
-                    &[("error", error.into())],
-                ),
+                Err(error) => t_args("settings-appearance-unchanged", &[("error", error.into())]),
             }));
         }
     }

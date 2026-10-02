@@ -2200,10 +2200,7 @@ impl AudioPane {
                         ));
                         self.finish_local_operation(
                             operation,
-                            Err(t_args(
-                                "sound-notice-mic-err",
-                                &[("error", error.into())],
-                            )),
+                            Err(t_args("sound-notice-mic-err", &[("error", error.into())])),
                         );
                     }
                 }

@@ -804,10 +804,7 @@ impl NetworkPane {
             }
             Err(error) => {
                 warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
-                Err(t_args(
-                    "net-notice-refresh-err",
-                    &[("error", error.into())],
-                ))
+                Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
             }
         };
         if std::mem::take(&mut self.refresh_pending) {
@@ -1006,10 +1003,7 @@ impl NetworkPane {
                 let _ = state.put(root, WIRED_ENABLED_KEY, !enabled);
                 self.finish_local_operation(
                     crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
-                    Err(t_args(
-                        "net-notice-wired-err",
-                        &[("error", e.into())],
-                    )),
+                    Err(t_args("net-notice-wired-err", &[("error", e.into())])),
                 );
             }
             (NetworkAction::Radio { radio, enabled }, Ok(())) => self.finish_local_operation(
@@ -1031,10 +1025,7 @@ impl NetworkPane {
                     radio.operation(*enabled),
                     Err(t_args(
                         "net-notice-radio-err",
-                        &[
-                            ("radio", radio_shown(*radio).into()),
-                            ("error", e.into()),
-                        ],
+                        &[("radio", radio_shown(*radio).into()), ("error", e.into())],
                     )),
                 );
             }
@@ -1068,10 +1059,7 @@ impl NetworkPane {
             ) => {
                 self.connection_notice = Some(t_args(
                     "net-notice-update-err",
-                    &[
-                        ("name", name.as_str().into()),
-                        ("error", error.into()),
-                    ],
+                    &[("name", name.as_str().into()), ("error", error.into())],
                 ));
                 if let Some(saved) = self.profiles.iter_mut().find(|p| &p.uuid == uuid) {
                     saved.autoconnect = !enabled;
@@ -1088,10 +1076,7 @@ impl NetworkPane {
             (NetworkAction::Forget { name, .. }, Err(error)) => {
                 self.connection_notice = Some(t_args(
                     "net-notice-forget-err",
-                    &[
-                        ("name", name.as_str().into()),
-                        ("error", error.into()),
-                    ],
+                    &[("name", name.as_str().into()), ("error", error.into())],
                 ));
             }
             (NetworkAction::Hotspot { .. }, Ok(())) => {
@@ -1100,10 +1085,8 @@ impl NetworkPane {
                 self.connection_notice = Some(t("net-notice-hotspot-on"));
             }
             (NetworkAction::Hotspot { .. }, Err(error)) => {
-                self.connection_notice = Some(t_args(
-                    "net-notice-hotspot-err",
-                    &[("error", error.into())],
-                ));
+                self.connection_notice =
+                    Some(t_args("net-notice-hotspot-err", &[("error", error.into())]));
             }
             (NetworkAction::Ipv4 { name, .. }, Ok(())) => {
                 self.connection_notice = Some(t_args(
@@ -1112,10 +1095,8 @@ impl NetworkPane {
                 ));
             }
             (NetworkAction::Ipv4 { .. }, Err(error)) => {
-                self.connection_notice = Some(t_args(
-                    "net-notice-ip-err",
-                    &[("error", error.into())],
-                ));
+                self.connection_notice =
+                    Some(t_args("net-notice-ip-err", &[("error", error.into())]));
             }
             (NetworkAction::Policy { name, .. }, Ok(())) => {
                 self.connection_notice = Some(t_args(
@@ -1124,10 +1105,8 @@ impl NetworkPane {
                 ));
             }
             (NetworkAction::Policy { .. }, Err(e)) => {
-                self.connection_notice = Some(t_args(
-                    "net-notice-policy-err",
-                    &[("error", e.into())],
-                ));
+                self.connection_notice =
+                    Some(t_args("net-notice-policy-err", &[("error", e.into())]));
             }
             // Enabling a VPN or autoconnect needs no report; switches are
             // reported by `finish_switch`.
@@ -2263,10 +2242,9 @@ impl NetworkPane {
                                     ))
                                 }
                                 Ok(_) => Some(t("net-notice-share-invalid")),
-                                Err(error) => Some(t_args(
-                                    "net-notice-share-err",
-                                    &[("error", error.into())],
-                                )),
+                                Err(error) => {
+                                    Some(t_args("net-notice-share-err", &[("error", error.into())]))
+                                }
                             }
                         });
                         NetworkJobSuccess::Connected { continuity_notice }
@@ -2293,10 +2271,8 @@ impl NetworkPane {
                 }
                 ui::portal::PortalOutcome::Cancelled => {}
                 ui::portal::PortalOutcome::Failed(error) => {
-                    self.connection_notice = Some(t_args(
-                        "net-notice-cert-err",
-                        &[("error", error.into())],
-                    ));
+                    self.connection_notice =
+                        Some(t_args("net-notice-cert-err", &[("error", error.into())]));
                 }
             }
             self.ca_picker_rx = None;
