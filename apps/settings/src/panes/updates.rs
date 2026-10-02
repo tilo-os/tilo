@@ -988,7 +988,7 @@ impl UpdatesPane {
             out.push(applies.to_string());
         }
         for (label, _, _) in self.codec_buttons() {
-            out.push(label.to_string());
+            out.push(label);
         }
         out
     }
@@ -1126,7 +1126,7 @@ impl UpdatesPane {
         ];
         if let Some(fraction) = self.codec_progress() {
             body.push(Box::new(
-                ProgressBar::new(fraction).with_label(&t("upd-installing-codecs")),
+                ProgressBar::new(fraction).with_label(t("upd-installing-codecs")),
             ));
         }
         if let Some(problem) = self.codec_refresh_problem_shown() {

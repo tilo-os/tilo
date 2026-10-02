@@ -42,8 +42,7 @@ fn gib(n: impl Into<i64>) -> String {
 fn fit_tone(fit: HardwareFit) -> StatusTone {
     match fit {
         HardwareFit::Excellent | HardwareFit::Good => StatusTone::Success,
-        HardwareFit::Tight => StatusTone::Warning,
-        HardwareFit::Unsupported => StatusTone::Warning,
+        HardwareFit::Tight | HardwareFit::Unsupported => StatusTone::Warning,
     }
 }
 
@@ -586,7 +585,7 @@ impl AgentModelsPane {
                 false,
                 Some(t_args(
                     "agent-notice-service-down",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 )),
             ),
         };
@@ -627,7 +626,7 @@ impl AgentModelsPane {
                 self.manager_available = false;
                 self.notice = Some(t_args(
                     "agent-notice-refresh-err",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 ));
             }
         }
@@ -747,6 +746,46 @@ impl AgentModelsPane {
         ))
     }
 
+    fn push_recommendation_confirm(body: &mut Vec<El>, package: &LocalModelPackage) {
+        let download = t("agent-download");
+        let download_size = byte_size(package.download_bytes);
+        let after = t("agent-storage-after");
+        let after_size = byte_size(package.installed_bytes);
+        let source = t("agent-source");
+        let revision = t("agent-revision");
+        let license = t("agent-license");
+        let accept = t_args(
+            "agent-license-accept",
+            &[("url", package.license_url.as_str().into())],
+        );
+        let accept_btn = t("agent-accept-download");
+        let cancel = t("agent-cancel");
+        body.extend([
+            value_row(&download, &download_size),
+            value_row(&after, &after_size),
+            value_row(&source, &package.source),
+            value_row(&revision, &package.revision),
+            value_row(&license, &package.license),
+            caption(&accept),
+            Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Button::new(
+                            "agent-models-confirm-install",
+                            &accept_btn,
+                            Some(CONFIRM_KEY),
+                        )
+                        .content_sized(),
+                    ))
+                    .push(Box::new(
+                        Button::new("agent-models-cancel-install", &cancel, Some(CANCEL_KEY))
+                            .content_sized(),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ),
+        ]);
+    }
+
     fn recommendation_card(&self) -> El {
         let hardware = &self.snapshot.hardware;
         let fit_label = hardware.fit.label();
@@ -797,43 +836,7 @@ impl AgentModelsPane {
             caption(&package.description),
         ]);
         if self.confirmation.as_deref() == Some(&package.id) {
-            let download = t("agent-download");
-            let download_size = byte_size(package.download_bytes);
-            let after = t("agent-storage-after");
-            let after_size = byte_size(package.installed_bytes);
-            let source = t("agent-source");
-            let revision = t("agent-revision");
-            let license = t("agent-license");
-            let accept = t_args(
-                "agent-license-accept",
-                &[("url", package.license_url.as_str().into())],
-            );
-            let accept_btn = t("agent-accept-download");
-            let cancel = t("agent-cancel");
-            body.extend([
-                value_row(&download, &download_size),
-                value_row(&after, &after_size),
-                value_row(&source, &package.source),
-                value_row(&revision, &package.revision),
-                value_row(&license, &package.license),
-                caption(&accept),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(
-                            Button::new(
-                                "agent-models-confirm-install",
-                                &accept_btn,
-                                Some(CONFIRM_KEY),
-                            )
-                            .content_sized(),
-                        ))
-                        .push(Box::new(
-                            Button::new("agent-models-cancel-install", &cancel, Some(CANCEL_KEY))
-                                .content_sized(),
-                        ))
-                        .push(Box::new(Spacer::new())),
-                ),
-            ]);
+            Self::push_recommendation_confirm(&mut body, package);
         } else {
             let setup = t("agent-setup-device");
             body.push(Box::new(
@@ -909,10 +912,10 @@ impl AgentModelsPane {
                 body.push(caption(&t("agent-error-retry-caption")));
             }
             LocalModelPhase::Ready { running: true, .. } => {
-                body.push(caption(&t("agent-ready-running-caption")))
+                body.push(caption(&t("agent-ready-running-caption")));
             }
             LocalModelPhase::Ready { running: false, .. } => {
-                body.push(caption(&t("agent-ready-stopped-caption")))
+                body.push(caption(&t("agent-ready-stopped-caption")));
             }
         }
         let actions = available_actions(&model.phase);
@@ -1107,7 +1110,7 @@ impl AgentModelsPane {
                                 Ok(()) => t("agent-provider-saved"),
                                 Err(error) => t_args(
                                     "agent-provider-save-err",
-                                    &[("error", error.to_string().into())],
+                                    &[("error", error.into())],
                                 ),
                             }));
                         }),
@@ -1340,7 +1343,7 @@ impl AgentModelsPane {
                 "agent-notice-action-failed",
                 &[
                     ("action", action_label(action).into()),
-                    ("error", error.to_string().into()),
+                    ("error", error.into()),
                 ],
             );
             self.operation_finished(&operation, Err(failed.clone()));
@@ -1371,12 +1374,12 @@ impl AgentModelsPane {
                         &operation,
                         Err(t_args(
                             "agent-notice-accel-err",
-                            &[("error", error.to_string().into())],
+                            &[("error", error.clone().into())],
                         )),
                     );
                     self.notice = Some(t_args(
                         "agent-notice-accel-err",
-                        &[("error", error.to_string().into())],
+                        &[("error", error.into())],
                     ));
                     self.structure_dirty = true;
                 }
@@ -1415,12 +1418,12 @@ impl AgentModelsPane {
                         &operation,
                         Err(t_args(
                             "agent-notice-install-err",
-                            &[("error", error.to_string().into())],
+                            &[("error", error.clone().into())],
                         )),
                     );
                     self.notice = Some(t_args(
                         "agent-notice-install-err",
-                        &[("error", error.to_string().into())],
+                        &[("error", error.into())],
                     ));
                     self.structure_dirty = true;
                 }

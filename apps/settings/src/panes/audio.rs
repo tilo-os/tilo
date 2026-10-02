@@ -1451,7 +1451,7 @@ impl AudioPane {
                         operation,
                         Err(t_args(
                             "sound-notice-stream-route-err",
-                            &[("error", error.to_string().into())],
+                            &[("error", error.into())],
                         )),
                     );
                 }
@@ -1484,7 +1484,7 @@ impl AudioPane {
                             operation,
                             Err(t_args(
                                 "sound-notice-stream-vol-err",
-                                &[("error", e.to_string().into())],
+                                &[("error", e.clone().into())],
                             )),
                         );
                         warn!(target: "tilo::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
@@ -1519,7 +1519,7 @@ impl AudioPane {
                         operation,
                         Err(t_args(
                             "sound-notice-stream-mute-err",
-                            &[("error", e.to_string().into())],
+                            &[("error", e.clone().into())],
                         )),
                     );
                     warn!(target: "tilo::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
@@ -1697,14 +1697,14 @@ impl AudioPane {
                             let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
                             self.runtime_notice = Some(t_args(
                                 "sound-notice-vol-err",
-                                &[("error", e.to_string().into())],
+                                &[("error", e.clone().into())],
                             ));
                             self.structure_dirty = true;
                             self.finish_local_operation(
                                 operation,
                                 Err(t_args(
                                     "sound-notice-out-vol-err",
-                                    &[("error", e.to_string().into())],
+                                    &[("error", e.clone().into())],
                                 )),
                             );
                             warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
@@ -1737,14 +1737,14 @@ impl AudioPane {
                             let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
                             self.runtime_notice = Some(t_args(
                                 "sound-notice-in-vol-err",
-                                &[("error", e.to_string().into())],
+                                &[("error", e.clone().into())],
                             ));
                             self.structure_dirty = true;
                             self.finish_local_operation(
                                 operation,
                                 Err(t_args(
                                     "sound-notice-in-vol-err",
-                                    &[("error", e.to_string().into())],
+                                    &[("error", e.clone().into())],
                                 )),
                             );
                             warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
@@ -1776,14 +1776,14 @@ impl AudioPane {
                         let _ = state.put(root, MUTED_KEY, self.last_muted);
                         self.runtime_notice = Some(t_args(
                             "sound-notice-mute-err",
-                            &[("error", e.to_string().into())],
+                            &[("error", e.clone().into())],
                         ));
                         self.structure_dirty = true;
                         self.finish_local_operation(
                             operation,
                             Err(t_args(
                                 "sound-notice-mute-err",
-                                &[("error", e.to_string().into())],
+                                &[("error", e.clone().into())],
                             )),
                         );
                         warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
@@ -2158,7 +2158,7 @@ impl AudioPane {
                         "sound-notice-test-err",
                         &[
                             ("channel", channel.as_str().into()),
-                            ("error", error.to_string().into()),
+                            ("error", error.clone().into()),
                         ],
                     );
                     self.runtime_notice = Some(notice.clone());
@@ -2196,13 +2196,13 @@ impl AudioPane {
                     Err(error) => {
                         self.runtime_notice = Some(t_args(
                             "sound-notice-mic-err",
-                            &[("error", error.to_string().into())],
+                            &[("error", error.clone().into())],
                         ));
                         self.finish_local_operation(
                             operation,
                             Err(t_args(
                                 "sound-notice-mic-err",
-                                &[("error", error.to_string().into())],
+                                &[("error", error.into())],
                             )),
                         );
                     }
@@ -2243,14 +2243,14 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(t_args(
                         "sound-notice-device-err",
-                        &[("error", e.to_string().into())],
+                        &[("error", e.clone().into())],
                     ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
                         Err(t_args(
                             "sound-notice-device-err",
-                            &[("error", e.to_string().into())],
+                            &[("error", e.clone().into())],
                         )),
                     );
                     warn!(target: "tilo::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
@@ -2284,14 +2284,14 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(t_args(
                         "sound-notice-in-device-err",
-                        &[("error", e.to_string().into())],
+                        &[("error", e.clone().into())],
                     ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
                         Err(t_args(
                             "sound-notice-in-device-err",
-                            &[("error", e.to_string().into())],
+                            &[("error", e.clone().into())],
                         )),
                     );
                     warn!(target: "tilo::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
@@ -2354,14 +2354,14 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(t_args(
                         "sound-notice-profile-err",
-                        &[("error", e.to_string().into())],
+                        &[("error", e.clone().into())],
                     ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
                         Err(t_args(
                             "sound-notice-profile-err",
-                            &[("error", e.to_string().into())],
+                            &[("error", e.clone().into())],
                         )),
                     );
                     warn!(target: "tilo::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");

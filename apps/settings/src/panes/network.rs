@@ -806,7 +806,7 @@ impl NetworkPane {
                 warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
                 Err(t_args(
                     "net-notice-refresh-err",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 ))
             }
         };
@@ -931,7 +931,7 @@ impl NetworkPane {
                     warn!(target: "tilo::settings", op = "network_action", %error, "network change stopped");
                     self.connection_notice = Some(t_args(
                         "net-notice-stopped",
-                        &[("error", error.to_string().into())],
+                        &[("error", error.clone().into())],
                     ));
                 }
             }
@@ -987,7 +987,7 @@ impl NetworkPane {
                     crate::actions::NetworkOperation::SetWifiEnabled { enabled: *enabled },
                     Err(t_args(
                         "net-notice-wifi-err",
-                        &[("error", e.to_string().into())],
+                        &[("error", e.clone().into())],
                     )),
                 );
                 warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
@@ -1008,7 +1008,7 @@ impl NetworkPane {
                     crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
                     Err(t_args(
                         "net-notice-wired-err",
-                        &[("error", e.to_string().into())],
+                        &[("error", e.into())],
                     )),
                 );
             }
@@ -1033,7 +1033,7 @@ impl NetworkPane {
                         "net-notice-radio-err",
                         &[
                             ("radio", radio_shown(*radio).into()),
-                            ("error", e.to_string().into()),
+                            ("error", e.into()),
                         ],
                     )),
                 );
@@ -1070,7 +1070,7 @@ impl NetworkPane {
                     "net-notice-update-err",
                     &[
                         ("name", name.as_str().into()),
-                        ("error", error.to_string().into()),
+                        ("error", error.into()),
                     ],
                 ));
                 if let Some(saved) = self.profiles.iter_mut().find(|p| &p.uuid == uuid) {
@@ -1090,7 +1090,7 @@ impl NetworkPane {
                     "net-notice-forget-err",
                     &[
                         ("name", name.as_str().into()),
-                        ("error", error.to_string().into()),
+                        ("error", error.into()),
                     ],
                 ));
             }
@@ -1102,7 +1102,7 @@ impl NetworkPane {
             (NetworkAction::Hotspot { .. }, Err(error)) => {
                 self.connection_notice = Some(t_args(
                     "net-notice-hotspot-err",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 ));
             }
             (NetworkAction::Ipv4 { name, .. }, Ok(())) => {
@@ -1114,7 +1114,7 @@ impl NetworkPane {
             (NetworkAction::Ipv4 { .. }, Err(error)) => {
                 self.connection_notice = Some(t_args(
                     "net-notice-ip-err",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 ));
             }
             (NetworkAction::Policy { name, .. }, Ok(())) => {
@@ -1126,7 +1126,7 @@ impl NetworkPane {
             (NetworkAction::Policy { .. }, Err(e)) => {
                 self.connection_notice = Some(t_args(
                     "net-notice-policy-err",
-                    &[("error", e.to_string().into())],
+                    &[("error", e.into())],
                 ));
             }
             // Enabling a VPN or autoconnect needs no report; switches are
@@ -2259,13 +2259,13 @@ impl NetworkPane {
                                 Ok(ui::collaboration::WifiContinuityReply::Rejected { reason }) => {
                                     Some(t_args(
                                         "net-notice-share-err",
-                                        &[("error", reason.to_string().into())],
+                                        &[("error", reason.into())],
                                     ))
                                 }
-                                Ok(_) => Some(t("net-notice-share-invalid").into()),
+                                Ok(_) => Some(t("net-notice-share-invalid")),
                                 Err(error) => Some(t_args(
                                     "net-notice-share-err",
-                                    &[("error", error.to_string().into())],
+                                    &[("error", error.into())],
                                 )),
                             }
                         });
@@ -2295,7 +2295,7 @@ impl NetworkPane {
                 ui::portal::PortalOutcome::Failed(error) => {
                     self.connection_notice = Some(t_args(
                         "net-notice-cert-err",
-                        &[("error", error.to_string().into())],
+                        &[("error", error.into())],
                     ));
                 }
             }
@@ -2376,7 +2376,7 @@ impl NetworkPane {
                         "net-notice-configure-err",
                         &[
                             ("subject", subject.as_str().into()),
-                            ("error", error.to_string().into()),
+                            ("error", error.clone().into()),
                         ],
                     ));
                     warn!(target: "tilo::settings", op = "network_job", %subject, %error, "network pane operation failed");

@@ -192,79 +192,76 @@ impl StoragePane {
     }
 
     fn synced_card(&self) -> El {
-        match &self.sync_snapshot {
-            Some(snapshot) => {
-                let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
-                let remote: u64 = snapshot
-                    .workspaces
+        if let Some(snapshot) = &self.sync_snapshot {
+            let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
+            let remote: u64 = snapshot
+                .workspaces
+                .iter()
+                .map(|w| w.remote_only_bytes)
+                .sum();
+            let reclaimable: u64 = snapshot
+                .workspaces
+                .iter()
+                .map(|w| w.reclaimable_bytes)
+                .sum();
+            let mut sync_rows = vec![
+                value_row(
+                    &t("settings-storage-on-device"),
+                    &ui::format::bytes_si(local),
+                ),
+                value_row(
+                    &t("settings-storage-remote-only"),
+                    &ui::format::bytes_si(remote),
+                ),
+                value_row(
+                    &t("settings-storage-safe-to-free"),
+                    &ui::format::bytes_si(reclaimable),
+                ),
+            ];
+            if let Some(message) = &self.sync_message {
+                sync_rows.push(caption(message));
+            }
+            sync_rows.extend(
+                snapshot
+                    .files
                     .iter()
-                    .map(|w| w.remote_only_bytes)
-                    .sum();
-                let reclaimable: u64 = snapshot
-                    .workspaces
-                    .iter()
-                    .map(|w| w.reclaimable_bytes)
-                    .sum();
-                let mut sync_rows = vec![
-                    value_row(
-                        &t("settings-storage-on-device"),
-                        &ui::format::bytes_si(local),
-                    ),
-                    value_row(
-                        &t("settings-storage-remote-only"),
-                        &ui::format::bytes_si(remote),
-                    ),
-                    value_row(
-                        &t("settings-storage-safe-to-free"),
-                        &ui::format::bytes_si(reclaimable),
-                    ),
-                ];
-                if let Some(message) = &self.sync_message {
-                    sync_rows.push(caption(message));
-                }
-                sync_rows.extend(
-                    snapshot
-                        .files
-                        .iter()
-                        .filter(|f| f.reclaimable_bytes > 0)
-                        .take(8)
-                        .map(|f| {
-                            value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
-                        }),
+                    .filter(|f| f.reclaimable_bytes > 0)
+                    .take(8)
+                    .map(|f| {
+                        value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
+                    }),
+            );
+            if reclaimable > 0 && !self.sync_busy {
+                let free = t_args(
+                    "settings-storage-free",
+                    &[("size", ui::format::bytes_si(reclaimable).into())],
                 );
-                if reclaimable > 0 && !self.sync_busy {
-                    let free = t_args(
-                        "settings-storage-free",
-                        &[("size", ui::format::bytes_si(reclaimable).into())],
-                    );
-                    card_with_action(
-                        &t("settings-storage-synced-card"),
-                        Box::new(
-                            Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
-                                .content_sized(),
-                        ),
-                        rows(sync_rows),
-                    )
-                } else {
-                    sync_rows.push(caption(&t(if self.sync_busy {
-                        "settings-storage-reclaiming"
-                    } else if snapshot.online {
-                        "settings-storage-nothing-reclaimable"
-                    } else {
-                        "settings-storage-offline"
-                    })));
-                    card(&t("settings-storage-synced-card"), rows(sync_rows))
-                }
-            }
-            None => {
-                let fallback = t("settings-storage-accounting-unavailable");
-                card(
+                card_with_action(
                     &t("settings-storage-synced-card"),
-                    rows(vec![caption(
-                        self.sync_message.as_deref().unwrap_or(&fallback),
-                    )]),
+                    Box::new(
+                        Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
+                            .content_sized(),
+                    ),
+                    rows(sync_rows),
                 )
+            } else {
+                sync_rows.push(caption(&t(if self.sync_busy {
+                    "settings-storage-reclaiming"
+                } else if snapshot.online {
+                    "settings-storage-nothing-reclaimable"
+                } else {
+                    "settings-storage-offline"
+                })));
+                card(&t("settings-storage-synced-card"), rows(sync_rows))
             }
+        } else {
+            let fallback = t("settings-storage-accounting-unavailable");
+            card(
+                &t("settings-storage-synced-card"),
+                rows(vec![caption(
+                    self.sync_message.as_deref().unwrap_or(&fallback),
+                )]),
+            )
         }
     }
 

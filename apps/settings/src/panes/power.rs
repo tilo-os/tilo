@@ -401,7 +401,7 @@ impl PowerPane {
                 state,
                 root,
                 CHARGE_LIMIT_KEY,
-                &format!("{}%", capability.current),
+                format!("{}%", capability.current),
             );
         }
     }

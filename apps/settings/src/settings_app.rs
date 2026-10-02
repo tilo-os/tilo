@@ -1432,6 +1432,7 @@ impl SettingsApp {
             crate::actions::InputOperation::SetComposeKey { key } => {
                 prefs.input.compose_key = crate::panes::mouse_keyboard::compose_from_label(&key)
                     .ok_or_else(|| "unsupported compose key".to_string())?
+                    .as_stored()
                     .map(str::to_string);
                 "compose key updated"
             }
@@ -1439,6 +1440,7 @@ impl SettingsApp {
                 prefs.input.caps_lock =
                     crate::panes::mouse_keyboard::caps_lock_from_label(&behavior)
                         .ok_or_else(|| "unsupported Caps Lock behavior".to_string())?
+                        .as_stored()
                         .map(str::to_string);
                 "Caps Lock behavior updated"
             }

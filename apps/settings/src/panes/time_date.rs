@@ -568,8 +568,8 @@ impl Widget for TimeZoneMap {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name(&t("time-map-a11y-name"))
-                .with_description(&t("time-map-a11y-desc"))
+                .with_name(t("time-map-a11y-name"))
+                .with_description(t("time-map-a11y-desc"))
                 .with_value(
                     self.cursor
                         .and_then(|index| self.points.get(index))
