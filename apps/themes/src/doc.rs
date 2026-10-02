@@ -69,6 +69,12 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
         _ => None,
     }
 }
+fn read_scale(doc: &AutoCommit, r: &ObjId, key: &str) -> f32 {
+    read_number(doc, r, key)
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 4.0)
+        .map_or(1.0, |value| value as f32)
+}
+
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
     let name = read_str(doc, r, "name")?;
     let font = read_str(doc, r, "font")?;
@@ -103,6 +109,9 @@ fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
         radius_norm: radius.clamp(0.0, 1.0),
         spacing_norm: spacing.clamp(0.0, 1.0),
         font,
+        motion_scale: read_scale(doc, r, "motion_scale"),
+        material_scale: read_scale(doc, r, "material_scale"),
+        icon_scale: read_scale(doc, r, "icon_scale"),
         order,
     })
 }
@@ -125,6 +134,9 @@ fn put_record(doc: &mut AutoCommit, r: &ObjId, s: &ThemeSpec) {
         f64::from(s.spacing_norm.clamp(0.0, 1.0)),
     );
     put_str(doc, r, "font", &s.font);
+    put_f64(doc, r, "motion_scale", f64::from(s.motion_scale));
+    put_f64(doc, r, "material_scale", f64::from(s.material_scale));
+    put_f64(doc, r, "icon_scale", f64::from(s.icon_scale));
     let _ = ui::doc::put_if_changed(doc, r, "order", u64::from(s.order));
 }
 
@@ -180,6 +192,12 @@ pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> 
         && record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
         })
+}
+pub fn set_scale(doc: &mut AutoCommit, root: &ObjId, id: &str, key: &str, value: f32) -> bool {
+    value.is_finite()
+        && (0.0..=4.0).contains(&value)
+        && record(doc, root, id)
+            .is_some_and(|r| ui::doc::put_if_changed(doc, &r, key, f64::from(value)))
 }
 pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
     valid_font(value)
