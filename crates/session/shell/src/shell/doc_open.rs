@@ -354,13 +354,17 @@ fn open_package(
     // soon as the launch thread starts.
     note_opening(&record, path, &app.package_id);
 
-    let launched = {
+    // Authorship is part of opening: the capability file is published from
+    // the workspace this launch sees, and a workspace with no author grant
+    // starts the editor as a viewer.
+    let workspace = {
         let st = chrome.borrow();
-        let tree = st.tree();
-        tree.desktop
-            .active_workspace()
-            .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
+        let mut tree = st.tree_mut();
+        tree.workspace_after_opening_app(&app.package_id)
     };
+    let launched = workspace.map(|workspace| {
+        launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
+    });
     match launched {
         Some(Ok(app)) => Ok(Opened::Launched { app }),
         // Otherwise the stale note would make the next attempt believe
