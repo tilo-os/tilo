@@ -393,6 +393,13 @@ target emits proof v4: target manifest, source/run locators, deployment origin,
 composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature.
 Its declared run ID must be independently checked against Forgejo before any
 physical copy; the production Windows-direct receipt guard does not accept it.
+`windows-direct-dev-provenance.py` checks a pinned child manifest and its raw
+OCI config against the live `os-dev.yml` main run, successful ARM producer,
+published cohort tag/digest and Lenovo disk job. Fetch the config with
+`skopeo inspect --config --raw`: formatted JSON is not the descriptor's bytes.
+The command records explicit developer CI evidence and never authorizes a disk
+write. It is distinct from release Cosign/SLSA verification; the physical copy
+guard still requires source/VM evidence and its separate developer admission.
 For generic encrypted targets, `--resume` repeats the boot check against the
 completed install without copying the OS again. A Lenovo board install can use
 `--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
