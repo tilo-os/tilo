@@ -266,13 +266,19 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
     require(result.returncode == 0,
             "CI installer medium identity signature verification failed: " + result.stderr.strip())
     identity = json.loads(raw)
-    require(type(identity) is dict and set(identity) == {
+    fields = {
         "schema", "target_profile", "target_image", "live_base_image",
         "build_revision", "run_id", "run_attempt", "qcow2_sha256",
-        "archive_sha256", "guest_proof_sha256"},
+        "archive_sha256", "guest_proof_sha256"}
+    require(type(identity) is dict and (
+        (identity.get("schema") == "tilo.whpx-ci-installer-medium.v1"
+         and set(identity) == fields)
+        or (identity.get("schema") == "tilo.whpx-ci-installer-medium.v2"
+            and set(identity) == fields | {"os_source_revision"}
+            and type(identity["os_source_revision"]) is str
+            and re.fullmatch(r"[0-9a-f]{40}", identity["os_source_revision"]))),
         "CI installer medium identity has unexpected fields")
-    require(identity["schema"] == "tilo.whpx-ci-installer-medium.v1"
-            and identity["target_profile"] in ("generic", "lenovo-83ed")
+    require(identity["target_profile"] in ("generic", "lenovo-83ed")
             and type(identity["target_image"]) is str
             and identity["target_image"].split("@", 1)[0]
             == repository(identity["target_profile"] == "lenovo-83ed")
@@ -308,8 +314,8 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
 def checked_medium_pair(board, generic, board_checked, generic_checked,
                         board_child_digest, generic_child_digest, generic_index_image,
                         source_revision):
-    require(board["build_revision"] == source_revision
-            and generic["build_revision"] == source_revision,
+    require(board.get("os_source_revision", board["build_revision"]) == source_revision
+            and generic.get("os_source_revision", generic["build_revision"]) == source_revision,
             "signed CI media source revision differs from signed CI OS images")
     require(board["target_profile"] == "lenovo-83ed"
             and generic["target_profile"] == "generic"
