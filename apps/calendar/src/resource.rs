@@ -12,9 +12,8 @@ use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    delete_event_action, delete_task_action, encode, set_task_done_action, CalendarAction,
-    CalendarOperation, EventData, ProjectData, TaskData, CALENDAR_ACTION_TYPE,
-    CALENDAR_OPERATION_TYPE,
+    CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
+    ProjectData, TaskData, delete_event_action, delete_task_action, encode, set_task_done_action,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
@@ -156,32 +155,33 @@ impl Resource for Calendar {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        let mut ops = vec![ActionSpec::typed_operation(
-            "show-view",
-            "Show calendar view",
-            "month / week / day / agenda",
-            OperationKind::View,
-            CALENDAR_OPERATION_TYPE,
-            vec![
-                ActionParam::required("view", ParamType::Text, "Calendar view to show")
-                    .with_choices(["month", "week", "day", "agenda"]),
-            ],
-            |args| {
-                let operation = match args.text("view").unwrap_or("month") {
-                    "week" => CalendarOperation::ShowWeek,
-                    "day" => CalendarOperation::ShowDay,
-                    "agenda" => CalendarOperation::ShowAgenda,
-                    _ => CalendarOperation::ShowMonth,
-                };
-                EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation).unwrap_or_else(
-                    |_| EncodedAction {
-                        type_id: CALENDAR_OPERATION_TYPE.to_string(),
-                        payload: Vec::new(),
-                    },
-                )
-            },
-        )
-        .retry_policy(RetryPolicy::Idempotent)];
+        let mut ops = vec![
+            ActionSpec::typed_operation(
+                "show-view",
+                "Show calendar view",
+                "month / week / day / agenda",
+                OperationKind::View,
+                CALENDAR_OPERATION_TYPE,
+                vec![
+                    ActionParam::required("view", ParamType::Text, "Calendar view to show")
+                        .with_choices(["month", "week", "day", "agenda"]),
+                ],
+                |args| {
+                    let operation = match args.text("view").unwrap_or("month") {
+                        "week" => CalendarOperation::ShowWeek,
+                        "day" => CalendarOperation::ShowDay,
+                        "agenda" => CalendarOperation::ShowAgenda,
+                        _ => CalendarOperation::ShowMonth,
+                    };
+                    EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation)
+                        .unwrap_or_else(|_| EncodedAction {
+                            type_id: CALENDAR_OPERATION_TYPE.to_string(),
+                            payload: Vec::new(),
+                        })
+                },
+            )
+            .retry_policy(RetryPolicy::Idempotent),
+        ];
         for (id, label, operation) in [
             (
                 "show-all-calendars",

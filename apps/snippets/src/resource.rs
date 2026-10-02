@@ -11,16 +11,16 @@
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    Resource as PublishedResource, PROMPTED_PARAM,
+    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
+    Resource as PublishedResource,
 };
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    create_snippet_action, library_view_specs, publish_children, register, snippet_resource_id,
-    SnippetsAction, SNIPPETS_ACTION_TYPE,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
+    publish_children, register, snippet_resource_id,
 };
 use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
@@ -49,26 +49,28 @@ impl Resource for Snippets {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![ActionDecl::new(
-            "new-snippet",
-            "New snippet",
-            vec![ActionParam::required(
-                PROMPTED_PARAM,
-                ParamType::Text,
-                "Title",
-            )],
-            |args, _| {
-                let title = args.text(PROMPTED_PARAM).unwrap_or_default();
-                let mut snippet = Snippet::blank("");
-                snippet.id = Uuid::new_v4();
-                let trimmed = title.trim();
-                if !trimmed.is_empty() {
-                    snippet.title = trimmed.to_string();
-                }
-                Ok(create_snippet_action(snippet))
-            },
-        )
-        .describe("Create a new snippet from a typed title.")]
+        vec![
+            ActionDecl::new(
+                "new-snippet",
+                "New snippet",
+                vec![ActionParam::required(
+                    PROMPTED_PARAM,
+                    ParamType::Text,
+                    "Title",
+                )],
+                |args, _| {
+                    let title = args.text(PROMPTED_PARAM).unwrap_or_default();
+                    let mut snippet = Snippet::blank("");
+                    snippet.id = Uuid::new_v4();
+                    let trimmed = title.trim();
+                    if !trimmed.is_empty() {
+                        snippet.title = trimmed.to_string();
+                    }
+                    Ok(create_snippet_action(snippet))
+                },
+            )
+            .describe("Create a new snippet from a typed title."),
+        ]
     }
 
     fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
@@ -331,10 +333,12 @@ mod tests {
 
         let door = provide_resources(&state);
         assert_eq!(door[0].kind, "snippets.library");
-        assert!(door[0]
-            .actions
-            .iter()
-            .any(|action| action.id == "new-snippet"));
+        assert!(
+            door[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet")
+        );
         assert!(
             door[0]
                 .children

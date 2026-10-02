@@ -13,8 +13,8 @@ use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    document_local_operations, refuses_collaborative_replay, register, HexEditorAction,
-    HEX_EDITOR_ACTION_TYPE,
+    HEX_EDITOR_ACTION_TYPE, HexEditorAction, document_local_operations,
+    refuses_collaborative_replay, register,
 };
 use crate::view::HexView;
 
