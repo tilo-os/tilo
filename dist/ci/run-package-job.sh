@@ -424,6 +424,12 @@ arch)
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
+    # The probe above started the cache server as root; makepkg compiles as
+    # the builder, which cannot read what a root server writes. Its first
+    # compile starts the builder's own server.
+    if [[ -n ${RUSTC_WRAPPER:-} ]]; then
+        "$RUSTC_WRAPPER" --stop-server >/dev/null
+    fi
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
