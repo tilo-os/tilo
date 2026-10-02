@@ -20,13 +20,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_agent_participant::room_actions::{DeviceSigner, SignedDocumentFrame};
+use tilo_agent_participant::room_actions::RoomMember;
 use tilo_agent_participant::{
     AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, HostActions,
     HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost,
 };
 
-use crate::room_records::{HostCommit, RoomRecords};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
 use tilo_user_identity::{CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities};
 
@@ -147,38 +146,19 @@ impl crate::AppServingPlane for HostActionsPlane {
     }
 }
 
-/// The relay's retained records as the room actions service reads them.
+/// The relay's own device, as the room actions service joins its rooms.
 struct RelayRecordsLink {
-    records: RoomRecords,
-    runtime: tokio::runtime::Handle,
+    user_public_key: [u8; 32],
+    member: RoomMember,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
     fn user_public_key(&self) -> [u8; 32] {
-        self.records.user_public_key()
+        self.user_public_key
     }
 
-    fn signer(&self) -> Arc<dyn DeviceSigner + Send + Sync> {
-        Arc::new(self.records.signing_key().clone())
-    }
-
-    fn retained(&self, workspace_id: u64) -> Result<Vec<([u8; 32], Vec<u8>)>, String> {
-        let bodies = self.runtime.block_on(self.records.retained(workspace_id))?;
-        Ok(bodies
-            .into_iter()
-            .map(|body| (body.author, body.body))
-            .collect())
-    }
-
-    fn commit(&self, workspace_id: u64, frame: SignedDocumentFrame) -> Result<u64, String> {
-        self.runtime.block_on(self.records.commit(
-            workspace_id,
-            HostCommit {
-                body: frame.body,
-                channel: frame.channel,
-                checkpoint: frame.checkpoint,
-            },
-        ))
+    fn member(&self) -> RoomMember {
+        self.member.clone()
     }
 }
 
@@ -217,8 +197,12 @@ pub async fn start(
         .0
         .rooms
         .attach(Arc::new(RelayRecordsLink {
-            records: relay.room_records(),
-            runtime: tokio::runtime::Handle::current(),
+            user_public_key: relay.room_records().user_public_key(),
+            member: RoomMember {
+                endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
+                key: relay.room_records().signing_key().clone(),
+                runtime: tokio::runtime::Handle::current(),
+            },
         }))
         .map_err(RelayError::Identity)?;
     let link = Arc::new(relay.agent_link());

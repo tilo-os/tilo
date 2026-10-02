@@ -18,7 +18,9 @@ use neighbour_wire::NeighbourMsg;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::support::{Device, ROOM, TestHost, enrol, route, workspace};
+use tilo_relay::daemon::Relay;
+
+use crate::support::{Device, ROOM, enrol, route, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -55,7 +57,7 @@ pub struct Steward {
 
 impl Steward {
     /// Steward the room through `host` as a new primary device of `root`.
-    pub async fn start(host: &TestHost, root: &SigningKey) -> Self {
+    pub async fn start(host: &Relay, root: &SigningKey) -> Self {
         let device = enrol(root, "steward", DeviceCapabilities::primary());
         let channels = Arc::new(Mutex::new(Channels {
             dir: tempfile::tempdir().unwrap(),
@@ -102,7 +104,7 @@ impl Steward {
     }
 
     /// Steward on through a restarted `host`, which kept the room.
-    pub async fn reconnect(&mut self, host: &TestHost, root: &SigningKey) {
+    pub async fn reconnect(&mut self, host: &Relay, root: &SigningKey) {
         self.task.abort();
         let session = join(host, root, &self.device).await;
         let own = self.device.key.verifying_key().to_bytes();
@@ -130,14 +132,14 @@ impl Drop for Steward {
     }
 }
 
-async fn join(host: &TestHost, root: &SigningKey, device: &Device) -> RelayCoeditSession {
+async fn join(host: &Relay, root: &SigningKey, device: &Device) -> RelayCoeditSession {
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .unwrap();
     let client = RelayClient::connect(
         endpoint,
-        host.relay.node_addr(),
+        host.node_addr(),
         root.verifying_key().to_bytes(),
         device.cert.clone(),
         device.key.clone(),

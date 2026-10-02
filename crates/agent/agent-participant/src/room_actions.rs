@@ -31,7 +31,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+use ed25519_dalek::SigningKey;
 
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
@@ -44,45 +47,46 @@ use tilo_actions::remote::{
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
 };
-pub use tilo_browser_peer::DeviceSigner;
-use tilo_browser_peer::DocumentRoute;
-pub use tilo_browser_peer::document::SignedDocumentFrame;
-use tilo_browser_peer::document::{Ciphers, open_frame};
+use tilo_browser_peer::{
+    DocumentRoute, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
+};
+use tilo_user_identity::RevocationList;
 use ui::widget::ResourceOperationStart;
 
 use crate::apps::{AppCatalogue, HostedApp, Seed};
-use crate::host::CatalogueFactory;
+use crate::host::{CatalogueFactory, HostEndpoint};
 use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 
 /// Records whose rows a catalogue naming no provider lists.
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
 /// Records kept mounted between requests; the least recently used unmounts.
 const MAX_MOUNTED: usize = 24;
+/// How long a request waits for the service to join a room and open what
+/// the room's steward admitted it to.
+const JOIN_WAIT: Duration = Duration::from_secs(30);
 /// Invocations remembered for retries, status and history.
 const REMEMBERED: usize = 1024;
 
-/// One retained document body and the device the host admitted it from.
-pub type RetainedBody = ([u8; 32], Vec<u8>);
+/// How the service takes part in the host's rooms: as the host's own
+/// device, a member of each room's channels like any other. It opens only
+/// what a room's steward admitted it to and seals everything it writes.
+#[derive(Clone)]
+pub struct RoomMember {
+    /// The host's endpoint and certificate; the member is the host device.
+    pub endpoint: HostEndpoint,
+    /// The host device's key, which signs the member's changes.
+    pub key: SigningKey,
+    /// The runtime the member's sessions run on.
+    pub runtime: tokio::runtime::Handle,
+}
 
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait RoomRecordsLink: Send + Sync {
     /// The user root the host chains to: the only person served.
     fn user_public_key(&self) -> [u8; 32];
-    /// The host's device key, which signs committed changes.
-    fn signer(&self) -> Arc<dyn DeviceSigner + Send + Sync>;
-    /// Every retained document body of `workspace_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted or could not be read.
-    fn retained(&self, workspace_id: u64) -> Result<Vec<RetainedBody>, String>;
-    /// Admit one signed body to `workspace_id` as the host's own change.
-    ///
-    /// # Errors
-    ///
-    /// Returns why it was not admitted.
-    fn commit(&self, workspace_id: u64, frame: SignedDocumentFrame) -> Result<u64, String>;
+    /// How the service joins the host's rooms.
+    fn member(&self) -> RoomMember;
 }
 
 struct Entry {
@@ -183,7 +187,7 @@ impl RoomActions {
         let catalogue = Arc::clone(&self.catalogue);
         std::thread::Builder::new()
             .name("room-actions".into())
-            .spawn(move || Worker::new(link, catalogue(), shared).run(&jobs))
+            .spawn(move || Worker::new(link.as_ref(), catalogue(), shared).run(&jobs))
             .map_err(|error| error.to_string())?;
         *self
             .shared
@@ -415,25 +419,139 @@ struct Mounted {
     used: u64,
 }
 
-/// What the host retains of one room, grouped by record.
-/// One retained body: its digest and its changes.
-type Retained = ([u8; 32], Vec<u8>);
+/// One change of a record: a digest naming it, and its bytes.
+type Change = ([u8; 32], Vec<u8>);
 
 #[derive(Default)]
 struct RoomState {
     room: Option<String>,
-    /// Each record's retained bodies in host order: digest and changes.
-    records: BTreeMap<DocumentRoute, Vec<Retained>>,
-    /// When each record last changed, as a position in the retained order.
+    /// Each record's changes in the order the member took them.
+    records: BTreeMap<DocumentRoute, Vec<Change>>,
+    /// When each record last changed, as a position in that order.
     changed: HashMap<DocumentRoute, usize>,
     revision: usize,
 }
 
+/// The service's membership of one room.
+struct Room {
+    peer: PeerHandle,
+    events: PeerEvents,
+    /// Signalled whenever the session's status or events change.
+    wake: Arc<(Mutex<bool>, Condvar)>,
+    ready: bool,
+    /// Every change the member opened or wrote, in order.
+    log: Vec<(DocumentRoute, Change)>,
+}
+
+impl Room {
+    fn join(member: &RoomMember, workspace_id: u64) -> Result<Self, String> {
+        let _runtime = member.runtime.enter();
+        let peer = PeerHandle::start(
+            PeerConfig {
+                host: member.endpoint.host.clone(),
+                cert: member.endpoint.host_cert.clone(),
+                host_cert: member.endpoint.host_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            Arc::new(member.key.clone()),
+            Arc::new(MemoryPeerStore::default()),
+        );
+        let events = peer.events();
+        let wake = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal = Arc::clone(&wake);
+        peer.on_change(Arc::new(move || {
+            let (flag, condvar) = &*signal;
+            *flag.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            condvar.notify_all();
+        }));
+        peer.join(workspace_id)?;
+        Ok(Self {
+            peer,
+            events,
+            wake,
+            ready: false,
+            log: Vec::new(),
+        })
+    }
+
+    fn pump(&mut self, workspace_id: u64) {
+        for event in self.events.drain() {
+            match event {
+                PeerEvent::Ready {
+                    workspace_id: ready,
+                } if ready == workspace_id => {
+                    self.ready = true;
+                }
+                PeerEvent::Document(document) => {
+                    if tilo_relay_protocol::room_workspace_id(&document.route.cluster_id).ok()
+                        != Some(workspace_id)
+                    {
+                        continue;
+                    }
+                    let Some(mutation) = document.mutation() else {
+                        continue;
+                    };
+                    let bytes = bytes_of(&mutation);
+                    let digest = change_digest(&document.author, &bytes);
+                    self.log.push((document.route, (digest, bytes)));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether a record of the room arrived sealed and opens once the member
+    /// holds its keys.
+    fn keys_pending(&self, workspace_id: u64) -> bool {
+        self.peer.status().routes.iter().any(|(route, status)| {
+            status.awaiting_keys > 0
+                && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
+                    == Some(workspace_id)
+        })
+    }
+
+    /// Take the session's events until `settled`, or until `deadline`.
+    fn settle(&mut self, workspace_id: u64, deadline: Instant, settled: impl Fn(&Self) -> bool) {
+        loop {
+            {
+                let (flag, _) = &*self.wake;
+                *flag.lock().unwrap_or_else(PoisonError::into_inner) = false;
+            }
+            self.pump(workspace_id);
+            if settled(self) {
+                return;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            let (flag, condvar) = &*self.wake;
+            let guard = flag.lock().unwrap_or_else(PoisonError::into_inner);
+            let _ = condvar
+                .wait_timeout_while(guard, left, |changed| !*changed)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+fn bytes_of(mutation: &DocumentMutation) -> Vec<u8> {
+    match mutation {
+        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes.clone(),
+    }
+}
+
+fn change_digest(author: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(author);
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
+}
+
 struct Worker {
-    link: Arc<dyn RoomRecordsLink>,
+    member: RoomMember,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     participant: String,
+    rooms: HashMap<u64, Room>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     clock: u64,
 }
@@ -492,12 +610,13 @@ fn door_outcome(error: &tilo_actions::door::DoorError) -> Outcome {
 }
 
 impl Worker {
-    fn new(link: Arc<dyn RoomRecordsLink>, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+    fn new(link: &dyn RoomRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
         Self {
             participant: hex::encode(link.user_public_key()),
-            link,
+            member: link.member(),
             catalogue,
             shared,
+            rooms: HashMap::new(),
             mounted: BTreeMap::new(),
             clock: 0,
         }
@@ -530,41 +649,42 @@ impl Worker {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Read what the host retains of `workspace_id` and merge whatever the
-    /// mounted records have not seen yet.
+    /// The member's view of `workspace_id`, joining the room first, and
+    /// every change the mounted records have not merged yet.
     fn refresh(&mut self, workspace_id: u64) -> Result<RoomState, ActionHostError> {
-        let bodies = self
-            .link
-            .retained(workspace_id)
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        if !self.rooms.contains_key(&workspace_id) {
+            let room = Room::join(&self.member, workspace_id)
+                .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            self.rooms.insert(workspace_id, room);
+        }
+        let room =
+            self.rooms
+                .get_mut(&workspace_id)
+                .ok_or_else(|| ActionHostError::Unavailable {
+                    reason: "the room was not joined".into(),
+                })?;
+        let deadline = Instant::now()
+            .checked_add(JOIN_WAIT)
+            .unwrap_or_else(Instant::now);
+        room.settle(workspace_id, deadline, |room| {
+            room.ready && !room.keys_pending(workspace_id)
+        });
+        if !room.ready {
+            return Err(ActionHostError::Unavailable {
+                reason: "the host has not joined the room yet".into(),
+            });
+        }
         let mut state = RoomState::default();
-        let mut ciphers = Ciphers::new();
-        for (position, (author, body)) in bodies.iter().enumerate() {
-            let Ok(Some(document)) = open_frame(body, *author, &mut ciphers) else {
-                continue;
-            };
-            if tilo_relay_protocol::room_workspace_id(&document.route.cluster_id).ok()
-                != Some(workspace_id)
-            {
-                continue;
-            }
-            let Some(mutation) = document.mutation() else {
-                continue;
-            };
-            let bytes = match mutation {
-                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
-            };
-            state
-                .room
-                .get_or_insert_with(|| document.route.cluster_id.clone());
-            state.changed.insert(document.route.clone(), position);
+        for (position, (route, change)) in room.log.iter().enumerate() {
+            state.room.get_or_insert_with(|| route.cluster_id.clone());
+            state.changed.insert(route.clone(), position);
             state
                 .records
-                .entry(document.route)
+                .entry(route.clone())
                 .or_default()
-                .push((*blake3::hash(body).as_bytes(), bytes));
+                .push(change.clone());
         }
-        state.revision = bodies.len();
+        state.revision = room.log.len();
         for (route, mounted) in &mut self.mounted {
             let Some(changes) = state.records.get(route) else {
                 continue;
@@ -575,7 +695,7 @@ impl Worker {
                         .app
                         .apply(&DocumentMutation::Incremental(bytes.clone()))
                 {
-                    tracing::warn!(%error, "room actions: a retained change did not merge");
+                    tracing::warn!(%error, "room actions: a change did not merge");
                 }
             }
         }
@@ -921,7 +1041,12 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    fn open_new(&self, workspace_id: u64, room: &str, app: &str) -> Result<ActionOutput, Outcome> {
+    fn open_new(
+        &mut self,
+        workspace_id: u64,
+        room: &str,
+        app: &str,
+    ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
         let mut hosted = HostedApp::open(
             &self.catalogue,
@@ -951,18 +1076,25 @@ impl Worker {
         })
     }
 
-    /// The host holds none of the room's channel keys, so it cannot seal a
-    /// change, and a document never goes out in the clear: refuse.
-    #[allow(
-        clippy::unused_self,
-        reason = "every write of the worker goes through this one door"
-    )]
+    /// Publish `mutation` as the member: sealed with the record's channel
+    /// keys, or held until the room's steward admits the member to it.
     fn commit(
-        &self,
-        _workspace_id: u64,
-        _route: &DocumentRoute,
-        _mutation: &DocumentMutation,
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        Err("the room is end-to-end encrypted and this host holds none of its channel keys".into())
+        let room = self
+            .rooms
+            .get_mut(&workspace_id)
+            .ok_or("the room was not joined")?;
+        room.peer.publish(route.clone(), mutation)?;
+        let bytes = bytes_of(mutation);
+        let digest = change_digest(&self.member.endpoint.host_cert.device_public_key, &bytes);
+        room.log.push((route.clone(), (digest, bytes)));
+        if let Some(mounted) = self.mounted.get_mut(route) {
+            mounted.seen.insert(digest);
+        }
+        Ok(())
     }
 }

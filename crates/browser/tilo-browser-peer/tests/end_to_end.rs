@@ -55,7 +55,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host, &root).await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
     let https = Host::Https(host.https());
 
     // 1. Certification over HTTPS; the laptop approves.

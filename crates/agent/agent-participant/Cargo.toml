@@ -103,10 +103,13 @@ bytes.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["full"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+postcard = { workspace = true, features = ["use-std"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "postcard", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
 
 [lints]
 workspace = true
