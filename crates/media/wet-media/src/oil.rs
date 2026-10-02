@@ -146,6 +146,10 @@ struct Bristle {
     colour: Rgb,
     /// How high a ridge it leaves, `0..=1`.
     ridge: f32,
+    /// How far into the stroke it lands, and how far before the end it
+    /// lifts: bristles meet the canvas unevenly, so ends are ragged.
+    land: f32,
+    lift: f32,
 }
 
 /// What one bristle dab laid and picked up.
@@ -165,6 +169,17 @@ struct Pass<'a> {
     load: f32,
     seed: u64,
     clip: Option<&'a Coverage>,
+    /// How unevenly the bristles land and lift, in brush widths.
+    ragged: f32,
+}
+
+/// One brushstroke of a region's lay-in, before it is painted.
+struct Piece {
+    points: [crate::brush::StrokePoint; 3],
+    size: f32,
+    load: f32,
+    colour: Rgb,
+    seed: u64,
 }
 
 impl OilLayer {
@@ -203,12 +218,18 @@ impl OilLayer {
                 // How far, in cells, a full bristle travels before it is dry.
                 let reach = pass.size * (10.0 + 30.0 * (1.0 - streak * uneven)) + 80.0;
                 let shade = 1.0 + (hash01(pass.seed, 19, key(index)) - 0.5) * 0.1 * (0.5 + streak);
+                // Outer bristles touch down later and lift sooner than the
+                // middle of the brush, so an end narrows as well as frays.
+                let edge = offset.abs();
+                let ragged = pass.size * pass.ragged;
                 Bristle {
                     offset,
                     load: pass.load * (1.0 - streak * 0.6 * uneven),
                     spend: 1.0 / (reach * (0.6 + 0.8 * hash01(pass.seed, 17, key(index)))),
                     colour: pass.colour.scale(shade).clamp(),
                     ridge: hash01(pass.seed, 23, key(index)),
+                    land: ragged * (0.5 * edge + hash01(pass.seed, 29, key(index))),
+                    lift: ragged * (0.5 * edge + hash01(pass.seed, 31, key(index))),
                 }
             })
             .collect()
@@ -226,6 +247,12 @@ impl OilLayer {
         // The paint a full deposit under a bristle's cone-shaped tip lays.
         let footprint = (std::f32::consts::PI * tip * tip / 3.0).max(0.5);
         let body = settings.get("thickness");
+        // How far along the stroke a bristle's contact stays alike: a dry
+        // brush skips in streaks this long, not dot by dot over the weave.
+        let streak_length = (pass.size * 2.0).max(5.0);
+        let lanes = float(bristles.len()) * 0.35;
+        // A short dab keeps most of its bristles however ragged the brush.
+        let room = total * 0.3;
         let mut touched = Area::EMPTY;
         let mut previous: Option<(f32, f32)> = None;
         for sample in pass.samples {
@@ -236,14 +263,27 @@ impl OilLayer {
                 * (0.35 + 0.65 * sample.pressure)
                 * taper(sample.distance, total, pass.size);
             for bristle in &mut bristles {
-                if bristle.load <= 0.002 {
+                if bristle.load <= 0.002
+                    || sample.distance < bristle.land.min(room)
+                    || total - sample.distance < bristle.lift.min(room)
+                {
                     continue;
                 }
                 let centre = (
                     sample.x - sample.ty * bristle.offset * half,
                     sample.y + sample.tx * bristle.offset * half,
                 );
-                let dab = self.dab(bristle, centre, tip, body, pass);
+                let contact = smoothstep(
+                    0.25,
+                    0.75,
+                    fbm(
+                        sample.distance / streak_length,
+                        bristle.offset * lanes,
+                        pass.seed ^ 0x7a3d,
+                        2,
+                    ),
+                );
+                let dab = self.dab(bristle, centre, (tip, contact), body, pass);
                 // Wet paint beneath sticks to the bristle and travels with
                 // it, by how far the bristle dragged through it.
                 if dab.picked_weight > 0.0 {
@@ -262,12 +302,13 @@ impl OilLayer {
         self.wet_area = self.wet_area.union(touched);
     }
 
-    /// One bristle's tip pressed at `centre`.
+    /// One bristle's tip pressed at `centre`, touching the canvas as firmly
+    /// as `contact` (`0..=1`) says.
     fn dab(
         &mut self,
         bristle: &Bristle,
         centre: (f32, f32),
-        tip: f32,
+        (tip, contact): (f32, f32),
         body: f32,
         pass: &Pass<'_>,
     ) -> Dab {
@@ -293,10 +334,13 @@ impl OilLayer {
                 if reach_here <= 0.0 || clip <= 0.0 {
                     continue;
                 }
-                // A loaded brush fills the weave; a dry one catches only its
-                // high points.
+                // A loaded brush fills the weave; a dry one catches where the
+                // bristle presses and the threads stand high, mostly the
+                // former, so broken colour streaks along the stroke.
                 let tooth = self.canvas.ground.at(x, y);
-                let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, tooth);
+                let dryness = 1.0 - smoothstep(0.35, 0.9, bristle.load);
+                let grip = tooth * 0.35 + (0.5 + (contact - 0.5) * dryness) * 0.65;
+                let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
                 let deposit =
                     (reach_here.min(1.0) * clip * catch * bristle.load.min(1.0) * pass.opacity)
                         .clamp(0.0, 1.0);
@@ -374,12 +418,14 @@ impl OilLayer {
                     continue;
                 }
                 let tooth = self.canvas.ground.at(x, y);
-                let catch = smoothstep(0.5 - load, 0.8 - load, tooth);
+                let wander = fbm(float(x) / grain, float(y) / grain, seed ^ 0x5c4b, 3);
+                // A thin coat is scrubbed on unevenly, so where it misses the
+                // weave it misses in patches, not thread by thread.
+                let catch = smoothstep(0.5 - load, 0.8 - load, tooth * 0.7 + wander * 0.3);
                 let deposit = (inside * catch * opacity * (0.55 + 0.4 * load)).clamp(0.0, 1.0);
                 let index = at(width, x, y);
                 let cover = read(&self.cover, width, x, y, 0.0);
                 let under = self.colour_at(x, y);
-                let wander = fbm(float(x) / grain, float(y) / grain, seed ^ 0x5c4b, 3);
                 let paint = region.paint.colour.scale(0.92 + 0.16 * wander);
                 // Into wet paint the two mix; over dry paint this covers.
                 let wet_under = read(&self.wet, width, x, y, 0.0) * cover;
@@ -430,71 +476,94 @@ impl OilLayer {
             coverage
         };
         self.scrub(settings, region, &coverage, seed);
-        let area = coverage.area;
+        let mut pieces = Self::pieces(region, coverage.area, settings.get("load"), seed);
+        // A painter works a passage back and forth rather than row by row,
+        // so later strokes cross earlier ones anywhere in it.
+        pieces.sort_by(|a, b| hash01(a.seed, 47, 0).total_cmp(&hash01(b.seed, 47, 0)));
+        let opacity = region.opacity.clamp(0.0, 1.0) * region.paint.alpha;
+        for piece in pieces {
+            let samples = smooth(&piece.points, 0.6);
+            self.brush(
+                settings,
+                &Pass {
+                    samples: &samples,
+                    size: piece.size,
+                    colour: piece.colour,
+                    opacity,
+                    load: piece.load,
+                    seed: piece.seed,
+                    clip: Some(&coverage),
+                    ragged: 0.6,
+                },
+            );
+        }
+    }
+
+    /// The strokes laying in `area`: overlapping lengths roughly along
+    /// `region.angle`, each a different length, width, lean, curve and
+    /// brushload, landing and lifting rather than starting at full width.
+    fn pieces(region: &Fill, area: Area, load: f32, seed: u64) -> Vec<Piece> {
+        let brush = region.brush.max(2.0);
         let (cx, cy) = (
             float(area.x0.saturating_add(area.x1)) * 0.5,
             float(area.y0.saturating_add(area.y1)) * 0.5,
         );
         let radius = float(area.width()).hypot(float(area.height())) * 0.5 + brush;
-        let (dy, dx) = region.angle.to_radians().sin_cos();
-        let (nx, ny) = (-dy, dx);
         let spacing = brush * 0.45;
         let rows = cell(radius * 2.0 / spacing, 4096).saturating_add(1);
-        let load = settings.get("load");
+        let mut pieces = Vec::new();
         for row in 0..rows {
+            let row_key = mix(key(row));
             let across = float(row) * spacing - radius;
-            let mut along = -radius - hash01(seed, 23, key(row)) * brush * 4.0;
-            // Each piece advances at least 2.4 brush widths.
-            let pieces = cell(radius * 2.0 / (brush * 2.4) + 6.0, 1 << 20);
-            for piece in (0..pieces).map(key) {
+            let mut along = -radius - hash01(seed, 23, row_key) * brush * 4.0;
+            // Each piece advances at least 1.25 brush widths.
+            let most = cell(radius * 2.0 / (brush * 1.25) + 6.0, 1 << 20);
+            for piece in (0..most).map(key) {
                 if along >= radius {
                     break;
                 }
-                let span = brush * (3.0 + 5.0 * hash01(seed, 29, mix(key(row)) ^ piece));
-                let wobble = (hash01(seed, 31, mix(key(row)) ^ piece) - 0.5) * spacing * 0.5;
-                let lean = (hash01(seed, 37, mix(key(row)) ^ piece) - 0.5) * 0.12;
+                let at = |salt: u64| hash01(seed, salt, row_key ^ piece);
+                let span = brush * (2.5 + 6.0 * at(29));
+                let wobble = (at(31) - 0.5) * spacing * 1.6;
+                let angle = region.angle.to_radians() + (at(37) - 0.5) * 0.3;
+                let (dy, dx) = angle.sin_cos();
+                let (nx, ny) = (-dy, dx);
+                let bow = (at(39) - 0.5) * span * 0.16;
                 let start = (
                     cx + dx * along + nx * (across + wobble),
                     cy + dy * along + ny * (across + wobble),
                 );
-                let end_along = along + span;
-                let end = (
-                    cx + dx * end_along + nx * (across + wobble + span * lean),
-                    cy + dy * end_along + ny * (across + wobble + span * lean),
-                );
-                let points = [
-                    crate::brush::StrokePoint::new(start.0, start.1, 0.8),
+                let point = |t: f32, sideways: f32, pressure: f32| {
                     crate::brush::StrokePoint::new(
-                        (start.0 + end.0) * 0.5,
-                        (start.1 + end.1) * 0.5,
-                        1.0,
-                    ),
-                    crate::brush::StrokePoint::new(end.0, end.1, 0.85),
-                ];
-                let samples = smooth(&points, 0.6);
-                let piece_seed = mix(seed ^ mix(key(row)) ^ piece.rotate_left(17));
+                        start.0 + dx * span * t + nx * sideways,
+                        start.1 + dy * span * t + ny * sideways,
+                        pressure,
+                    )
+                };
+                let piece_seed = mix(seed ^ row_key ^ piece.rotate_left(17));
                 // Each brushload is mixed a little differently on the
                 // palette: slightly lighter or darker, warmer or cooler.
-                let value = 0.94 + 0.12 * hash01(piece_seed, 41, 0);
-                let warmth = (hash01(piece_seed, 43, 0) - 0.5) * 0.05;
+                let value = 0.93 + 0.14 * hash01(piece_seed, 41, 0);
+                let warmth = (hash01(piece_seed, 43, 0) - 0.5) * 0.06;
                 let base = region.paint.colour.scale(value);
-                let colour =
-                    Rgb::new(base.r * (1.0 + warmth), base.g, base.b * (1.0 - warmth)).clamp();
-                self.brush(
-                    settings,
-                    &Pass {
-                        samples: &samples,
-                        size: brush,
-                        colour,
-                        opacity: region.opacity.clamp(0.0, 1.0) * region.paint.alpha,
-                        load,
-                        seed: piece_seed,
-                        clip: Some(&coverage),
-                    },
-                );
-                along = end_along - brush * 0.6;
+                pieces.push(Piece {
+                    points: [
+                        point(0.0, 0.0, 0.3 + 0.3 * at(51)),
+                        point(0.5, bow, 1.0),
+                        point(1.0, 0.0, 0.25 + 0.35 * at(53)),
+                    ],
+                    size: brush * (0.75 + 0.45 * at(57)),
+                    load: load * (0.75 + 0.45 * at(59)),
+                    colour: Rgb::new(base.r * (1.0 + warmth), base.g, base.b * (1.0 - warmth))
+                        .clamp(),
+                    seed: piece_seed,
+                });
+                // Overlap by a quarter to a half of the piece, more than its
+                // frayed ends give up, so the lay-in leaves no holes.
+                along += span * (0.5 + 0.25 * at(61));
             }
         }
+        pieces
     }
 }
 
@@ -517,6 +586,7 @@ impl LayerSim for OilLayer {
                         load: settings.get("load"),
                         seed,
                         clip: None,
+                        ragged: 0.35,
                     },
                 );
             }
