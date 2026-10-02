@@ -146,7 +146,10 @@ impl PresentPipe {
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
-                            if queue_wait >= SLOW_FRAME_LIFECYCLE
+                            // Keep the first completed presentation observable even when
+                            // it is fast and the event loop then parks indefinitely.
+                            if serial == 1
+                                || queue_wait >= SLOW_FRAME_LIFECYCLE
                                 || render >= SLOW_FRAME_LIFECYCLE
                                 || total >= SLOW_FRAME_LIFECYCLE
                             {
