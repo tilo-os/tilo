@@ -91,8 +91,11 @@ seeing them.
 
 ### Data, versioned
 
-The user-authored form is `CustomThemeSpec`: a schema version, an id and name,
-eleven authored colours, `radius_px`, `spacing_px` and a font family. It is
+The authored form is `CustomThemeSpec`, and it is the document for built-in
+defaults, distribution defaults, and the user theme. Schema 1 is an id, a name,
+eleven colours, `radius_px`, `spacing_px` and a font. Schema 2 adds
+`motion_scale`, `material_scale` and `icon_scale`. A missing scale is `1.0`, so
+a schema 1 file still opens. It is
 stored in `appearance.custom_theme` of the shared settings record, and Theme
 Studio is its only writer (`docs/settings-and-studios.md`, Themes). Built-in
 presets are the same contract expressed as `PaletteSpec` constructors.
@@ -144,8 +147,8 @@ The theme a person sees is resolved from layers, lowest to highest:
 | # | Layer | Who writes it | Typical contents |
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | [`Theme::dark()`](../../crates/sdk/ui-core/src/theme.rs): the stock dark palette, shape, density, type and motion. This is the code default. It is not a file |
-| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, and optional pins (`palette`, `accent`). Wallpaper, greeter and boot artwork are not part of this layer yet |
-| 3 | User theme | the person, through Settings and Theme Studio | preset or custom theme, accent, shape, density, type, motion, materials, icons |
+| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | the same document as the user theme. Pins may name any of its roles. |
+| 3 | User theme | the person, through Settings and Theme Studio | the same document: colours, radius, spacing, font, motion scale, material scale, icon scale |
 | 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
 
@@ -160,10 +163,11 @@ defaults file, and nothing about this layer is signed.
 **Distribution defaults** (identifiers: `distribution`,
 `distribution_defaults`) are the layer for whoever ships the Tilo OS image —
 an agent-sandbox provider, a hardware vendor, an organisation's managed
-fleet. The layer sets a palette and a default accent, and may **pin**
-`palette` or `accent`. A pin beats the user theme only for that field.
-Accessibility fields are not pinnable. Wallpaper, greeter and boot artwork
-are not stored here yet.
+fleet. The layer sets the same fields a user theme sets, and may **pin** any of
+them (`palette`, `accent`, `shape`, `density`, `type`, `motion`, `material`,
+`icons`). A pin beats the user theme only for that field.
+Accessibility fields are not pinnable. Wallpaper, greeter artwork and boot artwork are image files, not roles on
+this document, so they are not an option on any of the three layers.
 
 Distribution defaults, the user theme, the workspace tint and accessibility
 live in the settings document as **versioned JSON**. The settings store does
