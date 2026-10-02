@@ -78,8 +78,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "imager-linux-x86_64"},
                     {"arch": "aarch64", "runner": "imager-linux-aarch64"},
-                    {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='protected manual main publish uses the release class'):
@@ -90,8 +88,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -110,8 +106,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
 

@@ -114,7 +114,9 @@ class ImagePublicationTests(unittest.TestCase):
                         self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", step)
         with self.subTest(phase='the independent rebuild never sees the cache'):
             repro = self.steps["Independently rebuild the release candidate"]
-            self.assertIn("if: matrix.role == 'reproduce'", repro)
+            self.assertIn("if: steps.release-mode.outputs.publish == 'true'", repro)
+            clear = self.steps["Clear the builder for the independent rebuild"]
+            self.assertIn('docker buildx prune --builder "$BUILDER_NAME" --all --force', clear)
             self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
             self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
             self.assertIn("no-cache: true", repro)
