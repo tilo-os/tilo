@@ -345,6 +345,10 @@ mod tests {
     use ui::tilo_actions::OperationKind;
     use ui::widget::Widget;
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one publish check covers places door, folder ops, and hosted extras"
+    )]
     #[test]
     fn resource_publish_owns_places_and_folder_ops() {
         let published =

@@ -399,7 +399,7 @@ fn remote_resource(remote: &crate::model::Remote) -> Resource {
 }
 
 /// Preference flips bound from live settings for [`tilo_resource::publish`].
-pub(crate) fn document_bound_actions(settings: &Settings) -> Vec<ActionSpec> {
+pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
     let mut actions = Vec::new();
     let next_layout = match settings.diff_layout {
         DiffLayout::Unified => DiffLayout::SideBySide,
@@ -463,6 +463,10 @@ pub(crate) fn document_bound_actions(settings: &Settings) -> Vec<ActionSpec> {
 }
 
 /// View / Effect catalogue on the repository door (no document delta).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one catalogue lists every repository View and Effect"
+)]
 pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
     let mut actions = Vec::new();
     for (id, label, value) in [

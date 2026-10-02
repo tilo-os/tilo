@@ -261,6 +261,10 @@ mod tests {
     use ui::tilo_actions::Action;
     use ui::widget::Widget;
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one publish/hosted extras check covers manager door and live overlay"
+    )]
     #[test]
     fn resource_publish_owns_manager_door_and_hosted_keeps_only_live_extras() {
         let mut doc = AutoCommit::new();

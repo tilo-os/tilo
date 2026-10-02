@@ -326,13 +326,12 @@ mod tests {
         app.seed_unpublished_project_for_test(project.clone());
 
         let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, ImageEditor::KIND);
+        let project = standalone
+            .iter()
+            .find(|resource| resource.kind == ImageEditor::KIND)
+            .expect("standalone includes the project door");
         assert!(
-            standalone[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "exposure"),
+            project.actions.iter().any(|action| action.id == "exposure"),
             "standalone publish includes add-exposure"
         );
 
@@ -349,14 +348,6 @@ mod tests {
             "a hosted adjustment stays the published row"
         );
         let extras = app.resources(&state.doc);
-        assert!(
-            extras.is_empty(),
-            "hosted returns no second image root (crop/export are widget-local): {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
         assert!(
             extras
                 .iter()

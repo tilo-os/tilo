@@ -4501,7 +4501,7 @@ mod tests {
 
     /// Creating a remote-calendar event queues a push; after that push is
     /// drained (as Sync's Effect does), undo must run the inverse document
-    /// action through `apply` so a CalDAV delete is queued. Inverse Automerge
+    /// action through `apply` so a `CalDAV` delete is queued. Inverse Automerge
     /// patches alone leave the server copy to be resurrected by a later pull.
     #[test]
     fn undo_of_remote_event_create_queues_caldav_delete_through_apply() {
@@ -4569,8 +4569,8 @@ mod tests {
             .apply(&mut live)
             .unwrap();
         let delete = CalendarAction::DeleteEvent {
-            id: data.id.clone(),
-            remote_delete: Some(remote.clone()),
+            id: data.id,
+            remote_delete: Some(remote),
         };
         let undo_delete = delete
             .inverse_before(&live)
