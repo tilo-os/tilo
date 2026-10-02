@@ -118,7 +118,7 @@ fn render_shows_the_whole_app_through_the_host_door() {
     assert!(
         value["height"]
             .as_u64()
-            .is_some_and(|drawn| drawn > u64::from(height) / 2 && drawn <= height.into())
+            .is_some_and(|drawn| drawn > u64::from(height) / 2 && drawn <= u64::from(height))
     );
     let hash = ui::tilo_actions::content_hash(output.resources.first().unwrap()).unwrap();
     let png = tilo_content::ContentStore::for_app()

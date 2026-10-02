@@ -76,7 +76,9 @@ pub fn render(
     renderer.draw(art, &mut scene, transform, text, options);
     let mut offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
         .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-    let rgba = offscreen.render(&scene, Color::from_rgba8(120, 120, 120, 255));
+    // A neutral backdrop outside the artwork, the same in every theme so
+    // two looks at one revision are the same picture.
+    let rgba = offscreen.render(&scene, Color::from_rgba8(120, 120, 120, 255)); // picture backdrop
     Ok(Picture {
         png: encode_png(&rgba, width, height)?,
         width,

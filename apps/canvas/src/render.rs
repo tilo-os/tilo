@@ -29,7 +29,7 @@ use crate::model::{Artwork, Gradient, Layer, Mark, Shape};
 
 /// The longest side of a painted layer's simulation grid, in cells. Painted
 /// layers simulate at most this finely; an export scales the result.
-const MAX_CELLS: f64 = 1400.0;
+const MAX_CELLS: f64 = 1400.0; // a simulation budget in cells, not on-screen spacing
 
 /// Cells per artwork unit for `art`'s painted layers.
 pub fn cell_scale(art: &Artwork) -> f64 {
@@ -146,7 +146,9 @@ impl Renderer {
 
     fn draw_ground(&mut self, art: &Artwork, scene: &mut Scene, transform: Affine) {
         let board = art.bounds();
-        let base = colour(&art.ground.colour, &[]).unwrap_or(Color::WHITE);
+        // An unreadable ground colour falls back to white primed canvas: the
+        // artwork's own colour, the same in every theme.
+        let base = colour(&art.ground.colour, &[]).unwrap_or(Color::WHITE); // document colour
         let texture = Texture::parse(&art.ground.texture).unwrap_or_default();
         if texture == Texture::Smooth {
             scene.fill(Fill::NonZero, transform, base, None, &board);
@@ -556,9 +558,11 @@ fn draw_grid(
     .find(|step| span / step <= 12.0)
     .unwrap_or(1000.0);
     let pixel = 1.0 / transform.as_coeffs()[0].abs().max(1e-6);
-    let line = Color::from_rgba8(30, 120, 220, 150);
-    let label = Color::from_rgba8(20, 80, 170, 255);
-    let halo = Color::from_rgba8(255, 255, 255, 210);
+    // The grid is printed into a picture an agent reads, over any artwork:
+    // it must look the same whatever theme the desktop wears.
+    let line = Color::from_rgba8(30, 120, 220, 150); // picture ink, theme-independent
+    let label = Color::from_rgba8(20, 80, 170, 255); // picture ink, theme-independent
+    let halo = Color::from_rgba8(255, 255, 255, 210); // picture ink, theme-independent
     let pen = Stroke::new(pixel);
     let font = narrow((pixel * 11.0).max(0.1));
     let tag = |scene: &mut Scene, text: &mut TextRenderer, x: f64, y: f64, value: f64| {

@@ -75,7 +75,9 @@ impl Default for Tools {
     fn default() -> Self {
         Self {
             tool: LocalState::new(Tool::Brush),
-            colour: LocalState::new(Color::from_rgba8(0x2b, 0x3f, 0x8f, 255)),
+            // The brush starts loaded with ultramarine: a paint colour, not
+            // chrome, so it does not follow the theme.
+            colour: LocalState::new(Color::from_rgba8(0x2b, 0x3f, 0x8f, 255)), // paint
             size: LocalState::new(0.2),
             layer: LocalState::new(String::new()),
         }
@@ -147,6 +149,9 @@ pub struct CanvasSurface {
     space: bool,
     shift: bool,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
+    /// The theme's sizes as of the last layout, for handles hit-tested
+    /// between frames.
+    metrics: ui::tokens::Metrics,
 }
 
 impl CanvasSurface {
@@ -171,6 +176,7 @@ impl CanvasSurface {
             space: false,
             shift: false,
             results: HashMap::new(),
+            metrics: ui::tokens::Metrics::BASE,
         }
     }
 
@@ -193,7 +199,7 @@ impl CanvasSurface {
             .iter()
             .filter_map(|id| self.art.mark(id).map(crate::model::Mark::bounds))
             .reduce(|a, b| a.union(b))
-            .map(SelectionHandles::new)
+            .map(|bounds| SelectionHandles::new(bounds, &self.metrics))
     }
 
     fn layer(&self) -> Option<String> {
@@ -577,10 +583,13 @@ impl Widget for CanvasSurface {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
+        self.metrics = theme.tokens.metrics;
+        // Room for a selection frame's handles and the rotation handle.
+        let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
                 width: taffy::Dimension::auto(),
@@ -590,8 +599,8 @@ impl Widget for CanvasSurface {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             min_size: taffy::Size {
-                width: taffy::Dimension::length(120.0),
-                height: taffy::Dimension::length(120.0),
+                width: least,
+                height: least,
             },
             ..Default::default()
         });

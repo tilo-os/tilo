@@ -14,6 +14,7 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 
 use crate::theme::Theme;
+use crate::tokens::Metrics;
 
 /// A grip on the selection frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,17 +51,29 @@ impl Handle {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectionHandles {
     pub bounds: Rect,
+    /// The pointer target around each handle, in screen pixels.
+    target: f64,
 }
 
-/// Handle size on screen, in logical pixels; the touch target is larger.
-const GRIP: f64 = 9.0;
-const TARGET: f64 = 22.0;
-/// How far above the frame the rotation handle sits, on screen.
-const ROTATE_REACH: f64 = 28.0;
-
 impl SelectionHandles {
-    pub fn new(bounds: Rect) -> Self {
-        Self { bounds }
+    /// The frame around `bounds`, its handles as easy to hit as any control
+    /// under `metrics`.
+    pub fn new(bounds: Rect, metrics: &Metrics) -> Self {
+        Self {
+            bounds,
+            target: f64::from(metrics.min_pointer_target),
+        }
+    }
+
+    /// How big a handle is drawn on screen; its target is larger.
+    fn grip(&self) -> f64 {
+        self.target * 0.3
+    }
+
+    /// How far above the frame the rotation handle sits on screen: one
+    /// target, so its target never overlaps a corner's.
+    fn rotate_reach(&self) -> f64 {
+        self.target
     }
 
     /// Where `handle` sits in content coordinates at `zoom` (screen pixels
@@ -72,13 +85,13 @@ impl SelectionHandles {
             Handle::TopRight => Point::new(b.x1, b.y0),
             Handle::BottomRight => Point::new(b.x1, b.y1),
             Handle::BottomLeft => Point::new(b.x0, b.y1),
-            Handle::Rotate => Point::new(b.center().x, b.y0 - ROTATE_REACH / zoom.max(1e-6)),
+            Handle::Rotate => Point::new(b.center().x, b.y0 - self.rotate_reach() / zoom.max(1e-6)),
         }
     }
 
     /// The handle under `point` (content coordinates), if any.
     pub fn handle_at(&self, point: Point, zoom: f64) -> Option<Handle> {
-        let reach = TARGET / 2.0 / zoom.max(1e-6);
+        let reach = self.target / 2.0 / zoom.max(1e-6);
         std::iter::once(Handle::Rotate)
             .chain(Handle::CORNERS)
             .find(|handle| self.position(*handle, zoom).distance(point) <= reach)
@@ -116,7 +129,7 @@ impl SelectionHandles {
         let top = Point::new(self.bounds.center().x, self.bounds.y0);
         let rotate = self.position(Handle::Rotate, zoom);
         scene.stroke(&line, to_screen, accent, None, &Line::new(top, rotate));
-        let grip = GRIP / zoom;
+        let grip = self.grip() / zoom;
         for handle in Handle::CORNERS {
             let at = self.position(handle, zoom);
             let square = Rect::from_center_size(at, (grip, grip));
@@ -131,7 +144,10 @@ impl SelectionHandles {
     /// The frame moved by `offset`, as during a drag.
     #[must_use]
     pub fn moved(&self, offset: Vec2) -> Self {
-        Self::new(self.bounds + offset)
+        Self {
+            bounds: self.bounds + offset,
+            ..*self
+        }
     }
 }
 
@@ -141,11 +157,21 @@ mod tests {
 
     #[test]
     fn handles_are_hit_at_constant_screen_size_and_turn_drags_into_edits() {
-        let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0));
+        let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let frame = SelectionHandles::new(bounds, &Metrics::BASE);
         assert_eq!(
             frame.handle_at(Point::new(201.0, 151.0), 1.0),
             Some(Handle::BottomRight)
         );
+        // The target is the theme's minimum pointer target, and grows with
+        // its UI scale.
+        let edge = Point::new(
+            200.0 + f64::from(Metrics::BASE.min_pointer_target) * 0.7,
+            150.0,
+        );
+        assert_eq!(frame.handle_at(edge, 1.0), None);
+        let doubled = SelectionHandles::new(bounds, &Metrics::BASE.scaled(2.0));
+        assert_eq!(doubled.handle_at(edge, 1.0), Some(Handle::BottomRight));
         assert_eq!(frame.handle_at(Point::new(150.0, 125.0), 1.0), None);
         // Zoomed out 4x, a handle reaches four times further in content.
         assert_eq!(

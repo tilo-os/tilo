@@ -16,7 +16,7 @@ use ui::tilo_resource::{self, JsonSchema};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
-pub const MAX_SIDE: f64 = 8192.0;
+pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
 /// The most marks one action may add.
 pub const MAX_MARKS_PER_ACTION: usize = 2000;
 /// The most points one stroke or outline may have.
