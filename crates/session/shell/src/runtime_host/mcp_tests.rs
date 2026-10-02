@@ -257,7 +257,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     }).await;
     // Phase `resources_are_live_room_scoped_and_reads_use_authority`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         let resources=server.handle(request("resources/list",&json!({}))).await.unwrap();
@@ -591,7 +591,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
     // Phase `the_admitted_call_is_the_confirmation_and_terminal_content_survives_the_broker`.
     // The MCP client's allow/deny decision admitted the call, so an action
     // whose contract asks for confirmation runs.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture,room,actor)=fixture();
         let actor_name=actor.clone();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);

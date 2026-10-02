@@ -184,12 +184,14 @@ socket2 = { version = "0.6", default-features = false, features = ["all"] }
 spin = { version = "0.9", features = ["std"] }
 spki = { version = "0.8", default-features = false, features = ["pem", "std"] }
 stable_deref_trait = { version = "1" }
+strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
+tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
@@ -399,6 +401,7 @@ socket2 = { version = "0.6", default-features = false, features = ["all"] }
 spin = { version = "0.9", features = ["std"] }
 spki = { version = "0.8", default-features = false, features = ["pem", "std"] }
 stable_deref_trait = { version = "1" }
+strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
@@ -406,6 +409,7 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
+tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
@@ -468,9 +472,7 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
@@ -509,9 +511,7 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
@@ -550,9 +550,7 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
@@ -591,9 +589,7 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
