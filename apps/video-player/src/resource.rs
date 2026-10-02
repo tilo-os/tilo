@@ -193,6 +193,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn hosted_resources_keep_track_extras_without_library_root() {
         let published = ui::tilo_resource::publish::<VideoPlayer>(
             "video-player.application",
