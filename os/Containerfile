@@ -2265,11 +2265,10 @@ COPY \
     os/usr/lib/tilo/web-engine-entitled.conf \
     /usr/lib/tilo/
 
-# hidepid on /proc + the boot self-check that ASSERTS what's actually active.
+# The boot self-check that ASSERTS what's actually active.
 COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
-    os/usr/lib/systemd/system/tilo-hidepid.service \
     /usr/lib/systemd/system/
 
 # ---------------------------------------------------------------------------
@@ -2430,7 +2429,6 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-fs-cloud.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
-    systemctl enable tilo-hidepid.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
