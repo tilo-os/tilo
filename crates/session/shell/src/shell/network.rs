@@ -2558,7 +2558,7 @@ impl ShellNetwork {
                 std::time::Instant::now(),
             )
         });
-        if let Some(frame) = frame {
+        if let Some(frame) = frame.and_then(|frame| Self::seal_live(room, &frame)) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
         }
     }
@@ -2571,8 +2571,45 @@ impl ShellNetwork {
             .map(|mut live| live.keepalives(std::time::Instant::now()))
             .unwrap_or_default();
         for (ws, frame) in due {
-            let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+            if let Some(frame) = self
+                .room_of_topic(ws)
+                .and_then(|room| Self::seal_live(room, &frame))
+            {
+                let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+            }
         }
+    }
+
+    /// The content keys of `channel` of `room`, when this device is admitted.
+    fn live_channel_keys(
+        room: RoomId,
+        channel: collab_types::ChannelId,
+    ) -> Option<channel_crypto::ChannelContentKeys> {
+        let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
+        match access.access(room, channel).0 {
+            crate::shell::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+            _ => None,
+        }
+    }
+
+    /// Seal live `frame` of `room` with its record's channel keys; a frame
+    /// this device cannot seal is never published.
+    fn seal_live(room: RoomId, frame: &[u8]) -> Option<Vec<u8>> {
+        crate::shell::live_presence::seal(&room.to_string(), frame, |channel| {
+            Self::live_channel_keys(room, channel)
+        })
+    }
+
+    /// The room whose workspace topic is `ws`.
+    fn room_of_topic(&self, ws: u64) -> Option<RoomId> {
+        self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == ws)
+        })
     }
 
     /// How this device asks live members to draw it: the person's name,
@@ -2600,18 +2637,15 @@ impl ShellNetwork {
     /// A live member's frame: its pointer and caret reach local apps as
     /// presence of the sender's handle, and its name labels that handle.
     fn handle_live_frame(&self, ws: u64, from: [u8; 32], frame: &[u8]) {
-        let Some(inbound) = crate::shell::live_presence::inbound(frame) else {
+        let Some(room) = self.room_of_topic(ws) else {
             return;
         };
-        let room = self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
-                .read()
-                .rooms()
-                .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
-        });
-        let Some(room) = room else {
+        let Some(frame) = crate::shell::live_presence::open(frame, |channel| {
+            Self::live_channel_keys(room, channel)
+        }) else {
+            return;
+        };
+        let Some(inbound) = crate::shell::live_presence::inbound(&frame) else {
             return;
         };
         let cluster_id = room.to_string();

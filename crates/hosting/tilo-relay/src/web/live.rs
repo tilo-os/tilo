@@ -10,15 +10,16 @@
 //! device loses its live session within one observation plus the relay's
 //! recheck interval, and no recheck ever waits on the workspace locks.
 //!
-//! Frames are validated with the host's canonical codec
-//! ([`tilo_relay_protocol::live::LiveFrame`]).
+//! Frames are checked with the host's canonical codec for sealed live frames
+//! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
+//! sequence and record are read, never their content.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
-use tilo_relay_protocol::live::LiveFrame;
+use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
 
 use crate::web::sessions::Sessions;
@@ -254,16 +255,76 @@ impl LiveAuthority for Authority {
     }
 
     fn presence_seq(&self, frame: &[u8]) -> Option<u64> {
-        match LiveFrame::decode(frame) {
-            Ok(LiveFrame::Presence(presence)) => Some(presence.seq),
+        match SealedLiveFrame::decode(frame) {
+            Ok(sealed) if sealed.kind == LiveKind::Presence => Some(sealed.seq),
             _ => None,
         }
     }
 
     fn ops_valid(&self, record: &str, frame: &[u8]) -> bool {
         matches!(
-            LiveFrame::decode(frame),
-            Ok(LiveFrame::Ops(ops)) if hex::encode(ops.record().digest()) == record
+            SealedLiveFrame::decode(frame),
+            Ok(sealed) if sealed.kind == LiveKind::Ops && hex::encode(sealed.record) == record
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, PresenceFrame};
+
+    use super::*;
+
+    fn record() -> LiveRecord {
+        LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "r1".into(),
+        }
+    }
+
+    fn sealed(kind: LiveKind, seq: u64) -> Vec<u8> {
+        SealedLiveFrame {
+            kind,
+            seq,
+            record: record().digest(),
+            channel: [7; 16],
+            epoch: 1,
+            payload: vec![0x5a; 40],
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[test]
+    fn the_browser_live_plane_reads_only_the_clear_tags_of_sealed_frames() {
+        let authority = Authority(LiveGrants::new());
+        let track = hex::encode(record().digest());
+
+        assert_eq!(
+            authority.presence_seq(&sealed(LiveKind::Presence, 4)),
+            Some(4)
+        );
+        assert_eq!(authority.presence_seq(&sealed(LiveKind::Ops, 4)), None);
+        assert!(authority.ops_valid(&track, &sealed(LiveKind::Ops, 2)));
+        assert!(!authority.ops_valid(&hex::encode([1; 32]), &sealed(LiveKind::Ops, 2)));
+        assert!(!authority.ops_valid(&track, &sealed(LiveKind::Presence, 2)));
+
+        // The same frames in the clear are refused.
+        let presence = LiveFrame::Presence(PresenceFrame {
+            seq: 4,
+            sent_at_ms: 1,
+            focus: Some(record()),
+            pointer: Some([1.0, 2.0]),
+            selection: None,
+            drag: None,
+            participant: None,
+        })
+        .encode()
+        .unwrap();
+        let end = LiveFrame::Ops(OpsFrame::End { record: record() })
+            .encode()
+            .unwrap();
+        assert_eq!(authority.presence_seq(&presence), None);
+        assert!(!authority.ops_valid(&track, &end));
     }
 }

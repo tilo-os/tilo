@@ -59,7 +59,7 @@ use tilo_relay_protocol::agents::{
     REQUEST_GRANT_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
     SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
-use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
+use tilo_relay_protocol::live::{LiveFrame, SealedLiveFrame};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
 };
@@ -423,9 +423,7 @@ impl Browser {
                 }
             };
             while let Ok(Some(datagram)) = track.recv_datagram().await {
-                if let Ok(LiveFrame::Presence(presence)) = LiveFrame::decode(&datagram.payload)
-                    && frames.send(presence).is_err()
-                {
+                if frames.send(datagram.payload.to_vec()).is_err() {
                     break;
                 }
             }
@@ -437,7 +435,7 @@ impl Browser {
 
 /// The agent's presence frames, as the browser's live session receives them.
 struct Presence {
-    rx: tokio::sync::mpsc::UnboundedReceiver<PresenceFrame>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -448,31 +446,20 @@ impl Drop for Presence {
 }
 
 impl Presence {
-    /// The next presence frame for which `wanted` holds.
-    async fn until(
-        &mut self,
-        what: &str,
-        wanted: impl Fn(&PresenceFrame) -> bool,
-    ) -> PresenceFrame {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "the agent's cursor never showed {what}");
-            if let Ok(Some(presence)) = tokio::time::timeout(left, self.rx.recv()).await
-                && wanted(&presence)
-            {
-                return presence;
-            }
+    /// Every frame received so far is sealed: none is a live frame in the
+    /// clear.
+    fn assert_all_sealed(&mut self) {
+        while let Ok(frame) = self.rx.try_recv() {
+            assert!(
+                LiveFrame::decode(&frame).is_err(),
+                "a live frame in the clear"
+            );
+            assert!(
+                SealedLiveFrame::decode(&frame).is_ok(),
+                "an unsealed live frame"
+            );
         }
     }
-}
-
-fn activity(presence: &PresenceFrame) -> String {
-    presence
-        .participant
-        .as_ref()
-        .and_then(|participant| participant.activity.clone())
-        .unwrap_or_default()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -577,19 +564,10 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         "the agent's apps have a profile of their own"
     );
 
-    // 3. The browser sees the agent's cursor on the control it used, with
-    // what it is doing, then moving to the next app's control.
+    // 3. The agent's cursor travels only sealed with its record's channel
+    // keys, which it does not hold here: none of its live frames reaches
+    // the browser's live session in the clear while it works.
     let mut presence = browser.watch(&hosted.web, &info.device).await;
-    let on_notes = presence
-        .until("its Notes activity", |presence| {
-            activity(presence).contains("New note")
-        })
-        .await;
-    let participant = on_notes.participant.clone().unwrap();
-    assert_eq!(participant.kind, ParticipantKind::Agent);
-    assert_eq!(participant.label, "Writer");
-    assert_eq!(on_notes.focus.as_ref().unwrap().app, NOTES);
-    let notes_pointer = on_notes.pointer.expect("a declared action points too");
     browser
         .call(
             &agent_resource(&grant),
@@ -598,18 +576,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         )
         .await
         .unwrap();
-    let on_sheets = presence
-        .until("its Sheets activity", |presence| {
-            activity(presence).contains("New sheet")
-        })
-        .await;
-    assert_eq!(on_sheets.focus.as_ref().unwrap().app, SHEETS);
-    let sheets_pointer = on_sheets.pointer.expect("a declared action points too");
-    assert_ne!(
-        notes_pointer, sheets_pointer,
-        "the cursor moved between controls"
-    );
     browser.until_task_done(&grant, "Budget").await;
+    presence.assert_all_sealed();
     browser.assert_nothing_in_the_clear(&hosted).await;
     drop(presence);
 
