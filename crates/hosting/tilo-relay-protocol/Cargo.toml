@@ -30,6 +30,8 @@ toml.workspace = true
 thiserror.workspace = true
 # Live frames have one canonical encoding the host re-checks before relaying.
 postcard = { workspace = true, features = ["alloc"] }
+# Live frames are sealed with their record's channel content keys.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

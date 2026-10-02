@@ -279,6 +279,34 @@ fn body(app: &HostedApp) -> String {
         .unwrap()
 }
 
+/// Open a sealed live frame with `peer`'s channel keys.
+async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.open_live_then(
+        workspace(),
+        frame,
+        Box::new(move |opened| {
+            let _ = tx.send(opened);
+        }),
+    )
+    .ok()?;
+    LiveFrame::decode(&rx.await.ok()??).ok()
+}
+
+/// Seal a clear live frame with `peer`'s channel keys for wire publish.
+async fn seal_live(peer: &PeerHandle, frame: Vec<u8>) -> Vec<u8> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.seal_live_then(
+        workspace(),
+        frame,
+        Box::new(move |sealed| {
+            let _ = tx.send(sealed);
+        }),
+    )
+    .unwrap();
+    rx.await.unwrap().expect("the page holds the record's keys")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     common::isolate_device();
@@ -485,7 +513,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         if let Ok(Ok(Some(datagram))) =
             tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
         {
-            match LiveFrame::decode(&datagram.payload).unwrap() {
+            let Some(frame) = open_live(&browser, datagram.payload.to_vec()).await else {
+                continue;
+            };
+            match frame {
                 LiveFrame::Presence(presence) => break presence,
                 LiveFrame::Ops(_) => {}
             }
@@ -525,7 +556,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
                 });
             })
             .unwrap();
-        live.publish_presence(&frame);
+        live.publish_presence(&seal_live(&browser, frame).await);
         agent.pump();
         if let Some(member) = agent
             .remote_members()
