@@ -1323,6 +1323,24 @@ impl StatePeer {
             })
             .map(|entry| entry.doc.base_heads())
     }
+
+    /// Heads of a plaintext, causally complete document. Missing, encrypted,
+    /// and incomplete routes return `None` so a caller falls through to a
+    /// restoring read and keeps that refusal.
+    pub fn plaintext_complete_heads(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        let entry = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&entry.doc, &[]).is_empty() {
+            return None;
+        }
+        Some(entry.doc.base_heads())
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents
