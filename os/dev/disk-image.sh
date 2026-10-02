@@ -651,6 +651,14 @@ if [ -n "$BOOT_GAP" ]; then
     *) die "boot-gap disk: $root_dev is not the root filesystem" ;;
   esac
 fi
+if [ "$ROOTFS" = ext4 ] && [ "$COMPOSEFS" = yes ]; then
+  # systemd-repart uses mkfs.ext4 defaults, which omit the filesystem-wide
+  # verity feature. Without it bootc silently installs unverified composefs
+  # objects, and the resulting image cannot perform a verified upgrade.
+  sudo -n tune2fs -O verity "$root_dev"
+  sudo -n tune2fs -l "$root_dev" | grep -Eq '^Filesystem features:.*[[:space:]]verity([[:space:]]|$)' \
+    || die "ext4 root is missing its fs-verity filesystem feature"
+fi
 mkdir -p "$MNT"
 sudo -n mount "$root_dev" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
@@ -777,7 +785,7 @@ fi
 # runs on lacks fs-verity, so check every object here.
 if [ "$COMPOSEFS" = yes ]; then
   sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
-    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs fs-verity support for $ROOTFS"
+    || die "the installed composefs objects lack fs-verity: check $ROOTFS feature flags and kernel $(uname -r) support"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------
