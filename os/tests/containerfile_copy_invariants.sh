@@ -73,6 +73,8 @@ containerfile="$repo/os/Containerfile"
 # PID 1 from unprivileged processes and breaks libsystemd unit lookups.
 # user-tmpfiles.d/tilo-fs.conf is a deliberate addition: it creates the
 # filesystem services' roots, which their PrivateIPC sandbox cannot.
+# The user-tmpfiles.d snippets live in /usr/share, the only system path
+# systemd-tmpfiles --user reads.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -80,7 +82,7 @@ containerfile="$repo/os/Containerfile"
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
-expected_contract=c710c84cc7fcb459c12a9ddef06861b25c6d2fd5d505600f447dee58beb17ffe
+expected_contract=8cb6c8c67d15a5aea1acc735f30a2d85c2ec54784be7fc5cbe0813cedfcfccbf
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
