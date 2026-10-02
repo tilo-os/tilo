@@ -390,3 +390,9 @@ palette-result-count = { $count ->
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
+
+# Calendar section headings in the workspace activity timeline.
+history-day-today = Today
+history-day-yesterday = Yesterday
+history-day-this-week = This week
+history-day-earlier = Earlier
