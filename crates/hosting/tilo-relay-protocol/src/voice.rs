@@ -15,6 +15,10 @@
 //! [`PARTICIPATION_TTL`], or whose connection closed, ends. When the roster
 //! changes, the relay sends each remaining participant a fresh grant.
 //!
+//! A device that does not read the room's governance itself (a browser
+//! session) learns its calls with
+//! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
+//!
 //! Browser and native devices use the same envelopes: a browser session is
 //! one more peer of the relay.
 
@@ -132,6 +136,22 @@ pub struct VoiceGrant {
     pub participants: Vec<VoiceParticipant>,
     /// The token admits no new carrier after this.
     pub expires_at_ns: u64,
+}
+
+/// A call of a room, for a device deciding whether to join it
+/// ([`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls)).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallSummary {
+    /// The call as governance records it.
+    pub state: CallState,
+    /// The chat app the call's voice channel belongs to.
+    pub app_id: String,
+    /// The chat record holding the channel.
+    pub record_id: String,
+    /// The voice channel.
+    pub channel_id: String,
+    /// Who is in the call now.
+    pub participants: Vec<VoiceParticipant>,
 }
 
 /// One participant of a call.

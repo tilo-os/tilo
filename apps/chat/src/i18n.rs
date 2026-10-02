@@ -53,6 +53,19 @@ mod tests {
             "chat-mention-agent-tag",
             "chat-identity-available",
             "chat-identity-in-voice",
+            "chat-call-connected",
+            "chat-call-reconnecting",
+            "chat-call-joining",
+            "chat-call-unavailable",
+            "chat-call-open",
+            "chat-call-join",
+            "chat-call-leave-action",
+            "chat-call-mute-action",
+            "chat-call-unmute-action",
+            "chat-call-status",
+            "chat-call-select-input",
+            "chat-call-input",
+            "chat-call-input-hint",
             "chat-call-mute",
             "chat-call-unmute",
             "chat-call-deafen",
@@ -60,6 +73,14 @@ mod tests {
             "chat-call-audio-only",
             "chat-call-collapse",
             "chat-call-leave",
+            "chat-call-issue-unavailable",
+            "chat-call-issue-denied",
+            "chat-call-issue-permission-denied",
+            "chat-call-issue-source-lost",
+            "chat-call-issue-capture-failed",
+            "chat-call-issue-transport-failed",
+            "chat-call-issue-session-ended",
+            "chat-call-issue-stale",
             "chat-emoji-insert",
             "chat-emoji-choose",
             "chat-emoji-group",
@@ -70,5 +91,29 @@ mod tests {
             assert_ne!(s, key, "{key} has no entry in the catalogue");
             assert!(!s.trim().is_empty(), "{key} resolves to nothing");
         }
+    }
+}
+
+#[cfg(test)]
+mod call_title_tests {
+    #[test]
+    fn call_title_interpolates_the_channel() {
+        let title = super::t_args("chat-call-title", &[("channel", "standup".into())]);
+        assert!(title.contains("standup"));
+        assert!(!title.contains("chat-call-title"));
+        assert!(!title.contains("$channel"));
+    }
+    #[test]
+    fn stream_status_interpolates_the_inventory_and_state() {
+        let status = super::t("chat-call-reconnecting");
+        let text = super::t_args(
+            "chat-call-stream-status",
+            &[("count", "2".into()), ("status", status.clone().into())],
+        );
+        assert!(text.contains('2'));
+        assert!(text.contains(&status));
+        assert!(!text.contains("chat-call-stream-status"));
+        assert!(!text.contains("$count"));
+        assert!(!text.contains("$status"));
     }
 }

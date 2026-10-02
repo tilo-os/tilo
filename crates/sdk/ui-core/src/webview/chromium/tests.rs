@@ -927,9 +927,12 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             assert!(!tab.request_close());
             std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
             tilo_test_env::wait_until("the native close acknowledgment", || {
-                !first.runtime.routes.lock().unwrap().contains_key(&id)
+                tab.drain_events().contains(&WebViewEvent::TabClosed)
             });
-            assert!(tab.drain_events().contains(&WebViewEvent::TabClosed));
+            assert!(
+                !first.runtime.routes.lock().unwrap().contains_key(&id),
+                "route is retired before close acknowledgment is observable"
+            );
             drop(tab);
             let count = first.runtime.routes.lock().unwrap().len();
             assert_eq!(
