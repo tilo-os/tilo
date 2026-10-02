@@ -1285,11 +1285,11 @@ impl CodeApp {
         }
     }
 
-    /// Project opening is an external filesystem import, not a user/agent
-    /// mutation. Project it once into durable records so every existing file,
-    /// not only newly-created scratch files, has an addressable resource and a
-    /// validated action target. IDs are UUIDs persisted in the shared document;
-    /// absolute disk locations stay solely in `disk_path` local provenance.
+    /// Project opening imports the filesystem once into durable records so
+    /// every existing file, not only newly-created scratch files, has an
+    /// addressable resource. Each record is a `CreateFile` or `CreateFolder`
+    /// action. IDs are UUIDs persisted in the shared document; absolute disk
+    /// locations stay solely in `disk_path` local provenance.
     fn import_project_file_records(&mut self, doc: &mut AutoCommit) {
         let records: Vec<_> = self
             .session
@@ -1341,39 +1341,35 @@ impl CodeApp {
             if EditorDoc::file(doc, &record.id).is_some() {
                 continue;
             }
-            if self.actions.is_hosted() {
-                let action = if record.kind == "folder" {
-                    actions::CodeEditorAction::CreateFolder {
-                        id: record.id.clone(),
-                        name: record.name.clone(),
-                        parent: record.parent.clone(),
-                        order: record.order,
-                    }
-                } else {
-                    let seed = self
-                        .session
-                        .project
-                        .node_for_resource(&record.id)
-                        .and_then(|node| self.session.project.file_seed(node).ok())
-                        .map(|(text, _stamp)| text)
-                        .unwrap_or_default();
-                    actions::create_file_action(
-                        record.id.clone(),
-                        record.name.clone(),
-                        record.parent.clone(),
-                        record.order,
-                        seed,
-                    )
-                };
-                self.actions.dispatch_with_context(
-                    doc,
-                    actions::CODE_EDITOR_ACTION_TYPE,
-                    &action,
-                    actions::history_context(&action, &record.name, &self.project_id),
-                );
+            let action = if record.kind == "folder" {
+                actions::CodeEditorAction::CreateFolder {
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                    parent: record.parent.clone(),
+                    order: record.order,
+                }
             } else {
-                EditorDoc::create_file_record(doc, &record);
-            }
+                let seed = self
+                    .session
+                    .project
+                    .node_for_resource(&record.id)
+                    .and_then(|node| self.session.project.file_seed(node).ok())
+                    .map(|(text, _stamp)| text)
+                    .unwrap_or_default();
+                actions::create_file_action(
+                    record.id.clone(),
+                    record.name.clone(),
+                    record.parent.clone(),
+                    record.order,
+                    seed,
+                )
+            };
+            self.actions.dispatch_with_context(
+                doc,
+                actions::CODE_EDITOR_ACTION_TYPE,
+                &action,
+                actions::history_context(&action, &record.name, &self.project_id),
+            );
         }
     }
 
