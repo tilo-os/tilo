@@ -338,7 +338,14 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
     Ok(answer)
 }
 
-/// The media layers can use.
+/// A medium's number as an agent reads it: two decimals say what an f32
+/// slider value means; its float noise says nothing.
+fn hundredths(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+/// The media layers can use. Each pigment palette is listed once, under
+/// the first medium that uses it, and named by every medium that does.
 pub fn media(art: &Artwork) -> Value {
     let engines = tilo_wet_media::Engines::builtin();
     let engines: Vec<Value> = engines
@@ -351,30 +358,51 @@ pub fn media(art: &Artwork) -> Value {
                 "parameters": engine.parameters().iter().map(|spec| json!({
                     "id": spec.id,
                     "description": spec.description,
-                    "min": spec.min,
-                    "max": spec.max,
-                    "default": spec.default,
+                    "min": hundredths(f64::from(spec.min)),
+                    "max": hundredths(f64::from(spec.max)),
+                    "default": hundredths(f64::from(spec.default)),
                 })).collect::<Vec<_>>(),
             })
         })
         .collect();
+    let mut palettes = serde_json::Map::new();
+    let mut seen: Vec<(Vec<String>, String)> = Vec::new();
     let media: Vec<Value> = media::available(art)
         .iter()
         .map(|medium| {
+            let pigments: Vec<String> = medium
+                .palette
+                .iter()
+                .map(|pigment| format!("{} {}", pigment.name, pigment.colour))
+                .collect();
+            let palette = if let Some((_, id)) = seen.iter().find(|(listed, _)| *listed == pigments)
+            {
+                id.clone()
+            } else {
+                palettes.insert(medium.id.clone(), pigments.clone().into());
+                seen.push((pigments, medium.id.clone()));
+                medium.id.clone()
+            };
+            let params: serde_json::Map<String, Value> = medium
+                .params
+                .iter()
+                .map(|(name, value)| (name.clone(), hundredths(*value).into()))
+                .collect();
             json!({
                 "id": medium.id,
                 "label": medium.label,
                 "engine": medium.engine,
                 "description": medium.description,
                 "ground": medium.ground,
-                "params": medium.params,
+                "params": params,
                 "saved_in_artwork": art.media.contains_key(&medium.id),
-                "pigments": medium.palette.iter().map(|pigment| format!("{} {}", pigment.name, pigment.colour)).collect::<Vec<_>>(),
+                "palette": palette,
             })
         })
         .collect();
     json!({
         "media": media,
+        "palettes": palettes,
         "engines": engines,
         "textures": ["smooth", "paper", "cold-press", "rough", "linen"],
         "plain_layers": "a layer with no medium draws crisp vector art; pigment:<name> resolves against every palette there",
