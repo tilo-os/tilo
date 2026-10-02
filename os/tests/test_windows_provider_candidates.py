@@ -11,6 +11,19 @@ GUEST = "registry.tilo.so/tilo/guest@sha256:" + "2" * 64
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_candidate_images_have_distinct_bounded_cohort_tags(self):
+        script = SCRIPT.with_name("dev-image-cohort.sh")
+        def cohort(series, run):
+            return subprocess.run(["bash", str(script), series], check=True,
+                                  env={**os.environ, "TILO_DEV_INPUT_COHORT": run},
+                                  capture_output=True, text=True).stdout.strip()
+        source = "main-543c9a7"
+        self.assertEqual(cohort(source, ""), source)
+        self.assertNotEqual(cohort(source, "75222"), source)
+        self.assertNotEqual(cohort(source, "75222"), cohort(source, "75216"))
+        self.assertEqual(cohort("", "75222"), "")
+        self.assertLessEqual(len(cohort("a" * 110, "9" * 20) + "-orangepi-3b-v2-1"), 128)
+
     def run_gate(self, **changes):
         env = dict(os.environ, GITHUB_REF="refs/heads/main", GITHUB_EVENT_NAME="workflow_call",
                    BUILD_MODE="dev", HARDWARE_PROFILE="generic",

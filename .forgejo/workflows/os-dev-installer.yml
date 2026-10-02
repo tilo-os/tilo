@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       os_image:
-        description: "Exact ARM64 dev OS image (registry.tilo.so/tilo/tilo-ci@sha256:<digest>)"
+        description: "Exact ARM64 CI-built image (registry.tilo.so/tilo/tilo-vm or tilo-ci, pinned by digest)"
         required: true
         type: string
       installer_rootfs:
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           ./os/dev/assert-native-arch.sh aarch64
-          [[ "$TILO_IMAGE" =~ ^registry\.tilo\.so/tilo/tilo-ci@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$TILO_IMAGE" =~ ^registry\.tilo\.so/tilo/tilo-(ci|vm)@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::os_image must pin one published ARM64 dev image by digest'; exit 1;
           }
           case "$TILO_INSTALLER_ROOTFS" in
@@ -78,6 +78,39 @@ jobs:
           }
           printf 'base_image=%s\nbase_source=%s\nbuild_source=%s\n' \
             "$TILO_IMAGE" "$source_revision" "$GITHUB_SHA" > dev-installer-source.txt
+          if [[ "$TILO_IMAGE" = registry.tilo.so/tilo/tilo-vm@* ]]; then
+            # Generic dev images deliberately have no UKI. The installer uses
+            # the UKI boot layout for encrypted target installs; adapt only its
+            # boot files, retaining every already-built dev component.
+            layout="$(podman run --rm --entrypoint /bin/sh "$TILO_IMAGE" -ec '
+              test "$(cat /usr/lib/tilo/image-flavour)" = dev
+              set -- /boot/EFI/Linux/*.efi
+              if [ "$#" = 1 ] && [ -f "$1" ]; then
+                echo sealed
+              elif [ "$#" = 1 ] && [ "$1" = "/boot/EFI/Linux/*.efi" ] && [ ! -e "$1" ]; then
+                echo unsealed
+              else
+                echo "ambiguous dev UKI tree" >&2; exit 1
+              fi
+            ')"
+            if [ "$layout" = unsealed ]; then
+              ./os/dev/install-cached-cosign.sh
+              RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
+              adapted="localhost/tilo-dev-installer-base:$GITHUB_RUN_ID"
+              adapter_context="$TILO_OUTPUT/boot-adapter"
+              mkdir -p "$adapter_context/os/dev"
+              cp os/dev/uki.sh os/dev/uki-hardware-profile.py \
+                os/dev/hardware_profile.py os/dev/make-boot-splash.py "$adapter_context/os/dev/"
+              podman build --build-arg "BASE_IMAGE=$TILO_IMAGE" \
+                --build-arg "RPMS_REF=$RPMS_REF" \
+                -t "$adapted" -f os/Containerfile.dev-installer-base "$adapter_context"
+              printf 'boot_adapter=%s\n' "$(podman image inspect "$adapted" --format '{{.Id}}')" \
+                >> dev-installer-source.txt
+              export TILO_IMAGE="$adapted"
+            elif [ "$layout" != sealed ]; then
+              echo '::error::dev image boot layout is ambiguous'; exit 1
+            fi
+          fi
           ./os/dev/build-custom-installer.sh --reuse-image-installer
       - name: Pack the sparse medium once for Windows WHPX
         run: |
