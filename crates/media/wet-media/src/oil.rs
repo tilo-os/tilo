@@ -639,6 +639,19 @@ impl OilLayer {
         let opacity = region.opacity.clamp(0.0, 1.0) * region.paint.alpha;
         let glaze = Glaze::over(self, settings.get("glaze"), opacity, coverage.area);
         let glaze = glaze.as_ref();
+        // Where the gradient fades the paint out, the passage is worked
+        // thinner, however many of its strokes cross there.
+        let fading = region
+            .field
+            .as_ref()
+            .filter(|field| field.stops.iter().any(|stop| stop.2 < 1.0));
+        let before: Option<Vec<CellState>> = fading.map(|_| {
+            let area = coverage.area;
+            (area.y0..area.y1)
+                .flat_map(|y| (area.x0..area.x1).map(move |x| (x, y)))
+                .map(|(x, y)| self.state(x, y))
+                .collect()
+        });
         self.scrub((settings, glaze), region, &coverage, seed);
         let mut pieces = Self::pieces(region, coverage.area, settings.get("load"), seed);
         // A painter works a passage back and forth rather than row by row,
@@ -661,6 +674,45 @@ impl OilLayer {
                     glaze,
                 },
             );
+        }
+        if let (Some(field), Some(before)) = (fading, before) {
+            self.fade_back(coverage.area, &before, field);
+        }
+    }
+
+    /// Return each cell of `area` toward its state in `before` as far as
+    /// `field` fades the paint out there.
+    fn fade_back(&mut self, area: Area, before: &[CellState], field: &ColourField) {
+        let width = self.width();
+        for (local, old) in before.iter().enumerate() {
+            let (x, y) = area.position(local);
+            let keep = 1.0 - field.alpha(float(x) + 0.5, float(y) + 0.5);
+            if keep <= 0.0 {
+                continue;
+            }
+            let now = self.state(x, y);
+            let mixed: Vec<f32> = now
+                .iter()
+                .zip(old)
+                .map(|(new, old)| new + (old - new) * keep)
+                .collect();
+            let index = at(width, x, y);
+            if let [red, green, blue, cover, thickness, wet] = mixed[..] {
+                // The colour of thinned paint is still its own: only its
+                // cover gives way to what is beneath.
+                let colour = if old[3] > 0.0 {
+                    Rgb::new(red, green, blue)
+                } else {
+                    Rgb::new(now[0], now[1], now[2])
+                };
+                self.write(index, colour, cover);
+                if let Some(slot) = self.thickness.get_mut(index) {
+                    *slot = thickness;
+                }
+                if let Some(slot) = self.wet.get_mut(index) {
+                    *slot = wet;
+                }
+            }
         }
     }
 
@@ -960,8 +1012,19 @@ impl OilLayer {
         let reach = float(taps.saturating_add(1));
         for tap in 0..=taps.saturating_mul(2) {
             let offset = float(tap) - float(taps);
-            let [sr, sg, sb, s_cover, s_thickness, s_wet] =
-                self.sample(px + dx * offset * step, py + dy * offset * step);
+            // The hairs fan out across the stroke as well, so a band laid
+            // along it softens at its sides too; mirrored taps keep the
+            // kernel centred, so softening never shifts the paint.
+            let fan = if tap == taps {
+                0.0
+            } else {
+                (offset.abs() * 0.618_034).fract().mul_add(2.0, -1.0) * offset.signum()
+            };
+            let across = fan * step * float(taps) * 0.35;
+            let [sr, sg, sb, s_cover, s_thickness, s_wet] = self.sample(
+                px + dx * offset * step - dy * across,
+                py + dy * offset * step + dx * across,
+            );
             let moves = if s_cover > 0.0 { s_wet } else { 1.0 };
             let share = moves * (1.0 - offset.abs() / reach);
             weight += share;

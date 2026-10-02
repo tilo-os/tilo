@@ -395,7 +395,7 @@ fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> O
         .iter()
         .filter_map(|(at, text)| {
             let paint = tilo_wet_media::parse_paint(text, palette)?;
-            Some((narrow(*at), paint.colour))
+            Some((narrow(*at), paint.colour, paint.alpha))
         })
         .collect();
     let kind = if gradient.kind == "radial" {

@@ -219,8 +219,8 @@ fn an_oil_fill_follows_its_colour_field() {
         (0.0, 0.0),
         (160.0, 0.0),
         vec![
-            (0.0, paint("#202840").colour),
-            (1.0, paint("#f0d8a0").colour),
+            (0.0, paint("#202840").colour, 1.0),
+            (1.0, paint("#f0d8a0").colour, 1.0),
         ],
     );
     let pixels = painter("oil", Texture::Linen)
@@ -228,6 +228,34 @@ fn an_oil_fill_follows_its_colour_field() {
         .to_vec();
     let (left, right) = (column(&pixels, 20), column(&pixels, 140));
     assert!(left < 250.0 && right > 450.0, "left {left} right {right}");
+}
+
+/// A gradient that fades to clear thins its paint out evenly, however its
+/// strokes overlap: full cover at one end, bare at the other, half between.
+#[test]
+fn an_oil_fill_fades_out_where_its_field_is_clear() {
+    let mut fill = band_fill("#f0d8a0", 0.0, 160.0, false);
+    fill.field = ColourField::new(
+        FieldKind::Linear,
+        (0.0, 0.0),
+        (160.0, 0.0),
+        vec![
+            (0.0, paint("#f0d8a0").colour, 1.0),
+            (1.0, paint("#f0d8a0").colour, 0.0),
+        ],
+    );
+    let pixels = painter("oil", Texture::Linen)
+        .paint(&[Painted::new("glow", Mark::Fill(fill))])
+        .to_vec();
+    let cover = |x: usize| {
+        (30..90)
+            .map(|y| f32::from(alpha(&pixels, x, y)))
+            .sum::<f32>()
+            / 60.0
+    };
+    assert!(cover(20) > 200.0, "{}", cover(20));
+    assert!((cover(80) - 128.0).abs() < 30.0, "{}", cover(80));
+    assert!(cover(155) < 20.0, "{}", cover(155));
 }
 
 /// A blender drags wet paint across the meeting of two colours, so the

@@ -529,7 +529,7 @@
                               "minItems": 2,
                               "maxItems": 2
                             },
-                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
                           }
                         },
                         "additionalProperties": false,
@@ -749,7 +749,7 @@
                         "minItems": 2,
                         "maxItems": 2
                       },
-                      "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                      "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
                     }
                   },
                   "additionalProperties": false,
@@ -1323,7 +1323,7 @@
                       "minItems": 2,
                       "maxItems": 2
                     },
-                    "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                    "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
                   }
                 },
                 "additionalProperties": false,
@@ -1566,7 +1566,7 @@
                 "minItems": 2,
                 "maxItems": 2
               },
-              "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+              "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
             }
           },
           "additionalProperties": false,
@@ -2154,7 +2154,7 @@
                                     "minItems": 2,
                                     "maxItems": 2
                                   },
-                                  "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                                  "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
                                 }
                               },
                               "additionalProperties": false,
@@ -2299,7 +2299,7 @@
                               "minItems": 2,
                               "maxItems": 2
                             },
-                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
                           }
                         },
                         "additionalProperties": false,
