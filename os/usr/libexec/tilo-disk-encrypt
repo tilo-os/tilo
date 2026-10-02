@@ -211,7 +211,7 @@ cmd_prepare_partition() {
   cryptsetup open --key-file "$key" "$part" "$mapper"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -L root "/dev/mapper/$mapper" ;;
+    ext4) mkfs.ext4 -q -F -O verity -L root "/dev/mapper/$mapper" ;;
     xfs) mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
@@ -331,7 +331,7 @@ EOF
   log "  making the $fs root filesystem"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4)  mkfs.ext4 -q -L root "/dev/mapper/$mapper" ;;
+    ext4)  mkfs.ext4 -q -O verity -L root "/dev/mapper/$mapper" ;;
     xfs)   mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   local root_fs_uuid

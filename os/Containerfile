@@ -2964,6 +2964,12 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
+    # The linker cache is current as built. Recording /etc as updated for this
+    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
+    # critical chain of a release VM) to regenerate it.
+    && ldconfig \
+    && /usr/lib/systemd/systemd-update-done --root=/ \
+    && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && sh /usr/local/libexec/tilo-verify-rpm-files.sh \

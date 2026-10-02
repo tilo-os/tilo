@@ -250,6 +250,40 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
 }
 
+#[test]
+fn an_unchanged_committed_read_does_not_restore_the_room() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let read = |reader, known| {
+        joined.owner.with_current(joined.room, |view| {
+            view.read_document(reader, APP, "", known, usize::MAX, joined.now)
+        })
+    };
+    crate::document_read::reset_room_restores();
+    let Ok(DocumentRead::Captured(document)) = read(member, None) else {
+        panic!("the first read admits the document");
+    };
+    assert!(
+        crate::document_read::room_restores() > 0,
+        "a first read restores the room so the counter can see a later skip"
+    );
+    let restores = crate::document_read::room_restores();
+    assert!(matches!(
+        read(member, Some(document.revision)),
+        Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
+    ));
+    assert_eq!(
+        crate::document_read::room_restores(),
+        restores,
+        "an idle reread of the same revision must not restore the room"
+    );
+    assert!(
+        read(stranger, Some(document.revision)).is_err(),
+        "a device outside the room cannot reuse a revision it was never given"
+    );
+}
+
 /// What a sealed write says, which no file of the keyless owner may hold.
 const SECRET: &str = "only key holders read this";
 

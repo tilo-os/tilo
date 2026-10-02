@@ -462,6 +462,7 @@ a11y-notifications-cleared = Notifications cleared
 a11y-notifications-undo = Undo clear notifications
 a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
 a11y-notifications = Notifications
+notification-action-open = Open
 notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
