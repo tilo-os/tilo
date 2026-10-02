@@ -183,8 +183,11 @@ COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_u
 # unchanged crate is neither recompiled nor relinked.
 FROM dev-compile-toolchain AS dev-builder
 WORKDIR /build
+# A private socket lets this compile overlap the production compile without
+# sharing its sccache server or falling back after a TCP port collision.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    SCCACHE_SERVER_UDS=/tmp/tilo-dev-image-sccache.sock \
     RUSTC_WRAPPER=sccache \
     SCCACHE_IDLE_TIMEOUT=0 \
     CARGO_INCREMENTAL=0 \
@@ -219,7 +222,7 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
     --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     export PATH="/usr/lib/tilo-dev-builder/bin:$PATH" \
-    && trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && trap 'status=$?; if [ "$status" != 0 ]; then df -h /build /build/target /tmp; df -i /build /build/target /tmp; fi; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) printf 'TILO_DEV_RUST_LTO must be thin or off\n' >&2; exit 1 ;; esac \
     && if [ -n "$SCCACHE_BUCKET" ]; then \
          export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL \
