@@ -5,22 +5,12 @@ name: CI / app SDK
 # builds outside this repository, that every web-capable app runs in headless
 # Chromium, and that web bundles only shrink.
 on:
+  # Every pull request runs this workflow so its policy and web checks always
+  # report (as skipped when the change cannot affect them): a required check
+  # that never reports would block, and one that is merely absent was merged
+  # past by hand. `changes` applies the same path list as the push trigger.
   pull_request:
     branches: ["main"]
-    paths:
-      - ".cargo/config.toml"
-      - ".forgejo/workflows/app-sdk.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "apps/**"
-      - "crates/**"
-      - "rust-toolchain.toml"
-      - "tools/policy/app_capability*"
-      - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
-      - "tools/sdk/**"
-      - "tools/web/**"
-      - "vendor/**"
   push:
     branches: ["main"]
     paths:
@@ -54,11 +44,48 @@ env:
   WASM_BINDGEN_VERSION: "0.2.108"
 
 jobs:
+  changes:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+    outputs:
+      relevant: ${{ steps.paths.outputs.relevant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Does the change reach the app SDK lanes
+        id: paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ '${{ github.event_name }}' != pull_request ] || [ -z "$base" ]; then
+            echo relevant=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The push trigger's path list (keep the two in step).
+          git diff --name-only "$base" HEAD | python3 -c '
+          import fnmatch, sys
+          patterns = [".cargo/config.toml", ".forgejo/workflows/app-sdk.yml", "Cargo.lock",
+                      "Cargo.toml", "apps/*", "crates/*", "rust-toolchain.toml",
+                      "tools/policy/app_capability*", "tools/policy/app_portability*",
+                      "tools/policy/check_app_*", "tools/sdk/*", "tools/web/*", "vendor/*"]
+          hit = any(fnmatch.fnmatch(path.strip(), p) for path in sys.stdin for p in patterns)
+          print("relevant=" + ("true" if hit else "false"))' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
   # Compile-free gates: portability rules and their shrink-only baseline, the
   # capabilities each app's code uses against its manifest, the
   # manifest-generated desktop registry, the SDK patch list outside apps
   # carry, the publishable crate set, and the web size budgets.
   policy:
+    needs: [changes]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: runner-quality
     timeout-minutes: 20
     container:
@@ -90,6 +117,8 @@ jobs:
         run: python3 tools/sdk/publish_check.py --report-only
 
   builder:
+    needs: [changes]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: runner-quality
     timeout-minutes: 5
     container:
