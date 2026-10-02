@@ -57,6 +57,9 @@ pub(crate) struct Attachment {
     pub changed: Rc<Cell<bool>>,
     /// Schedules a frame for the mount.
     pub notify: Arc<dyn Fn() + Send + Sync>,
+    /// Who the mount's person is: the desktop changes it publishes name
+    /// them, so every page's Activity says whose they were.
+    pub author: String,
 }
 
 struct Replica {
@@ -173,6 +176,23 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let mut records = room.stored.clone();
     records.extend(room.open_records());
     records.into_iter().collect()
+}
+
+/// The room's desktop document with every peer's changes, for Activity.
+/// `None` until the room delivered or published one.
+pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
+    let room = room(id)?;
+    let room = room.borrow();
+    let doc = room.desktop.document();
+    (!doc.base_heads().is_empty()).then(|| doc.clone())
+}
+
+/// Read the retained desktop's frontier without cloning its whole history.
+pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::ChangeHash>> {
+    let room = room(id)?;
+    let room = room.borrow();
+    let heads = room.desktop.document().base_heads();
+    (!heads.is_empty()).then_some(heads)
 }
 
 pub(crate) fn close(id: u32) {
@@ -595,12 +615,13 @@ impl Room {
     }
 
     fn send_desktop(&mut self) {
-        let Some(value) = self.mounts.values().find_map(|mounted| {
-            mounted
-                .attachment
-                .desktop
-                .as_ref()
-                .map(|(handle, shared)| crate::desktop::shared_value(handle, shared))
+        let Some((value, author)) = self.mounts.values().find_map(|mounted| {
+            mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
+                (
+                    crate::desktop::shared_value(handle, shared),
+                    mounted.attachment.author.clone(),
+                )
+            })
         }) else {
             return;
         };
@@ -608,10 +629,17 @@ impl Room {
             return;
         }
         let doc = self.desktop.document_mut();
-        if doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_err() {
-            return;
+        // The same change the desktop's own history log would make: its
+        // time, and who made it.
+        if !tilo_desktop_surface::history_log::record(
+            doc,
+            &value,
+            &author,
+            crate::history::now_seconds(),
+        ) && doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok()
+        {
+            doc.commit();
         }
-        doc.commit();
         let mutation = if self.desktop_snapshotted {
             let (delta, heads) = self.desktop.pending_outbound_delta();
             if delta.is_empty() {

@@ -106,3 +106,21 @@ test('open links the app before dispatching its full id',async()=>{
  await assert.rejects(unavailable.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.nope'}),/not available/);
  unavailable.close();
 });
+
+
+test('retained activity and notification commands preserve the runtime contract', async () => {
+ const raw={version:1,generation:'g',entries:[],capabilities:{workspaceHistory:true,workspaceReplay:true,notifications:true},
+  workspaceActivity:{workspace:'7',view:'replay',playing:false,coverage:'complete',inSurface:true},
+  notifications:{active:0,retained:2,centerOpen:true}};
+ const sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:command=>sent.push(JSON.parse(command)),active:()=>true});
+ assert.equal(nav.controller.getSnapshot().workspaceActivity.inSurface,true);
+ assert.equal(nav.controller.getSnapshot().notifications.retained,2);
+ for(const view of ['catch-up','explore','replay'])
+  await nav.controller.dispatch({kind:'workspace-activity',generation:'g',workspace:'7',view});
+ await nav.controller.dispatch({kind:'notification-center',generation:'g',open:true});
+ assert.deepEqual(sent.map(command=>command.kind),['workspace-activity','workspace-activity','workspace-activity','notification-center']);
+ assert.deepEqual(sent.slice(0,3).map(command=>command.view),['catch-up','explore','replay']);
+ assert.equal(sent[3].open,true);
+ nav.close();
+});

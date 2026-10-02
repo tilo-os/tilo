@@ -2481,6 +2481,12 @@ impl RoomActivityPane {
         self.feed_coverage.excluded_apps = apps;
     }
 
+    /// A host bounded the retained desktop document's history projection.
+    /// Call after refreshing records, which rebuilds the other coverage counts.
+    pub fn mark_desktop_history_capped(&mut self) {
+        self.feed_coverage.capped_records = self.feed_coverage.capped_records.saturating_add(1);
+    }
+
     pub fn feed_coverage(&self) -> &FeedCoverage {
         &self.feed_coverage
     }
