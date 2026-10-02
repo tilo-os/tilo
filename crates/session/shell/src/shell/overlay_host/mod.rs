@@ -10546,7 +10546,13 @@ impl ShellOverlayHost {
         let Some(app_id) = target.app_id.as_deref() else {
             return;
         };
-        let Some(workspace) = chrome.borrow().tree().desktop.active_workspace().cloned() else {
+        // Opening from history is the person opening the app: the launch
+        // must see an author grant or the document comes up view-only.
+        let Some(workspace) = ({
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.workspace_after_opening_app(app_id)
+        }) else {
             return;
         };
         let result = match history_target_address(target) {
