@@ -1,7 +1,9 @@
-//! Wi-Fi and identity written onto a target root by the setup machine.
+//! Wi-Fi, SSH login keys, and identity written onto a target root by the
+//! setup machine.
 //!
 //! The collaborative install profile records the network name and whether to
-//! enroll. The passphrase and the human root secret never enter that profile.
+//! enroll. The passphrase, the login keys, and the human root secret never
+//! enter that profile.
 //! Enrollment certifies a new device key; the root secret stays on the machine
 //! that already holds it. The privileged writer only copies a prepared tree.
 
@@ -61,18 +63,147 @@ pub fn stage_setup_handoff(
     if needs_wifi && wifi_psk.is_empty() {
         return Err("A Wi-Fi password is required when a network name is set.".into());
     }
+    let root = prepare_handoff_root()?;
+    if let Err(error) = apply_setup_handoff(&root, profile, wifi_psk, local) {
+        let _ = fs::remove_dir_all(&root);
+        return Err(error);
+    }
+    Ok(Some(StagedHandoff { root }))
+}
+
+/// Stage Wi-Fi and an owner SSH key without enrolling an identity.
+///
+/// Either piece may be absent. Only enrollment needs this machine's
+/// identity, so a write that joins a network or carries the owner's key
+/// works on a setup machine that has none.
+///
+/// # Errors
+///
+/// Returns a string when the network or the key is unusable, or when the
+/// staged files cannot be written.
+pub fn stage_access_handoff(
+    profile: &InstallProfile,
+    wifi_psk: &str,
+    ssh_public_key: &str,
+) -> Result<Option<StagedHandoff>, String> {
+    let ssid = profile.wifi_ssid.trim();
+    let needs_wifi = !ssid.is_empty();
+    let needs_key = !ssh_public_key.trim().is_empty();
+    if !needs_wifi && !needs_key {
+        return Ok(None);
+    }
+    if needs_wifi && wifi_psk.is_empty() {
+        return Err("A Wi-Fi password is required when a network name is set.".into());
+    }
+    validate_bringup_ssh_key(ssh_public_key)?;
+    let root = prepare_handoff_root()?;
+    let staged = (|| {
+        if needs_wifi {
+            write_wifi_connection(&root, ssid, wifi_psk)?;
+        }
+        install_bringup_ssh_key(&root, ssh_public_key)
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_dir_all(&root);
+        return Err(error);
+    }
+    Ok(Some(StagedHandoff { root }))
+}
+
+/// Path of the owner SSH key inside a handoff tree.
+///
+/// The installer applies this request only when it installs a development
+/// image, as key-only login for the account it creates. A production install
+/// refuses it instead of opening SSH.
+pub const BRINGUP_SSH_KEY: &str = "etc/tilo/bringup-ssh.pub";
+
+/// Add the owner SSH key to a staged tree. An empty key adds nothing.
+///
+/// # Errors
+///
+/// Returns a string when the key is not one OpenSSH public key, or the file
+/// cannot be written.
+pub fn install_bringup_ssh_key(root: &Path, ssh_public_key: &str) -> Result<(), String> {
+    let Some(line) = bringup_ssh_key_line(ssh_public_key)? else {
+        return Ok(());
+    };
+    let path = root.join(BRINGUP_SSH_KEY);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&path, line).map_err(|error| error.to_string())?;
+    set_mode(&path, 0o644).map_err(|error| error.to_string())
+}
+
+/// Accept nothing, or exactly one OpenSSH public key of a type the
+/// installer admits, with no `authorized_keys` options.
+///
+/// # Errors
+///
+/// Returns a string describing why the text is not such a key.
+pub fn validate_bringup_ssh_key(ssh_public_key: &str) -> Result<(), String> {
+    bringup_ssh_key_line(ssh_public_key).map(|_| ())
+}
+
+fn bringup_ssh_key_line(text: &str) -> Result<Option<String>, String> {
+    use base64::Engine as _;
+    const REFUSED: &str =
+        "The SSH key must be one public key: its type, the key, and an optional comment.";
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.lines().count() != 1 || text.contains("PRIVATE KEY") {
+        return Err(REFUSED.into());
+    }
+    let mut parts = text.split_whitespace();
+    let kind = parts.next().unwrap_or_default();
+    let blob = parts.next().unwrap_or_default();
+    if !matches!(
+        kind,
+        "ssh-ed25519"
+            | "ssh-rsa"
+            | "ecdsa-sha2-nistp256"
+            | "ecdsa-sha2-nistp384"
+            | "ecdsa-sha2-nistp521"
+    ) {
+        return Err(REFUSED.into());
+    }
+    // The wire encoding starts with the type name again. A blob whose name
+    // differs, or that is not base64 at all, is not this key.
+    let wire = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .map_err(|_| REFUSED.to_string())?;
+    let named = wire
+        .get(..4)
+        .and_then(|len| usize::try_from(u32::from_be_bytes(len.try_into().ok()?)).ok())
+        .and_then(|len| wire.get(4..4 + len));
+    if named != Some(kind.as_bytes()) {
+        return Err(REFUSED.into());
+    }
+    Ok(Some(format!("{kind} {blob}\n")))
+}
+
+fn prepare_handoff_root() -> Result<PathBuf, String> {
     let dir = tempfile::Builder::new()
         .prefix("tilo-imager-handoff-")
         .tempdir()
         .map_err(|error| error.to_string())?;
-    let root = dir.keep();
+    set_mode(dir.path(), 0o700).map_err(|error| error.to_string())?;
+    Ok(dir.keep())
+}
+
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&root, fs::Permissions::from_mode(0o700));
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
     }
-    apply_setup_handoff(&root, profile, wifi_psk, local)?;
-    Ok(Some(StagedHandoff { root }))
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
 }
 
 /// Place the profile's Wi-Fi connection and, when requested, this machine's
@@ -96,6 +227,9 @@ pub fn apply_setup_handoff(
         let label = profile.device_label.trim();
         if label.is_empty() {
             return Err("A device name is required to enroll this machine's identity.".into());
+        }
+        if profile.user.username.trim().is_empty() {
+            return Err("Choose the account name before enrolling this device.".into());
         }
         let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
             .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-rooms.json"));
@@ -153,6 +287,7 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
     }
     let staged_var = staged.join("var");
     if staged_var.is_dir() {
+        refuse_human_root_secret(&staged_var)?;
         copy_tree(&staged_var, &var)?;
     }
     Ok(())
@@ -217,6 +352,7 @@ pub fn embed_setup_handoff(
 }
 
 fn pack_setup_handoff(staged: &Path) -> io::Result<Vec<u8>> {
+    refuse_human_root_secret(&staged.join("var"))?;
     let mut files = Vec::new();
     collect_files(staged, &mut files)?;
     files.sort();
@@ -255,16 +391,22 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-fn nm_quoted(value: &str) -> String {
-    let mut quoted = String::from("\"");
-    for ch in value.chars() {
-        if ch == '\\' || ch == '"' {
-            quoted.push('\\');
+/// Escape a value for a NetworkManager keyfile.
+///
+/// NetworkManager keeps surrounding quotes as part of the SSID and the
+/// password, so a quoted `studio` looks for a network named `"studio"` and
+/// never associates. GLib only needs a backslash escaped, and a leading
+/// space written as `\s`.
+fn nm_keyfile_value(value: &str) -> String {
+    let rest = value.trim_start_matches(' ');
+    let mut escaped = "\\s".repeat(value.len() - rest.len());
+    for ch in rest.chars() {
+        if ch == '\\' {
+            escaped.push('\\');
         }
-        quoted.push(ch);
+        escaped.push(ch);
     }
-    quoted.push('"');
-    quoted
+    escaped
 }
 
 fn now_ns() -> u64 {
@@ -276,7 +418,7 @@ fn now_ns() -> u64 {
 }
 
 fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), String> {
-    if ssid.len() > 32 || ssid.bytes().any(|byte| byte < 0x20 || byte == b'"') {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.bytes().any(|byte| byte < 0x20 || byte == b'"') {
         return Err(
             "Wi-Fi name must be 1–32 characters without quotes or control characters.".into(),
         );
@@ -291,10 +433,15 @@ fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), Strin
     let dir = root.join("etc/NetworkManager/system-connections");
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join("tilo-setup.nmconnection");
-    let ssid = nm_quoted(ssid);
-    let psk = nm_quoted(psk);
+    let ssid = nm_keyfile_value(ssid);
+    let psk = nm_keyfile_value(psk);
+    // No `permissions` key: an empty value can read as a user restriction
+    // that never autoconnects, while a missing key is system-wide. The fixed
+    // uuid is the one profile this handoff ever writes. NetworkManager's
+    // default retry limit blocks the profile after four failures, which
+    // strands a machine whose access point came up late; 0 keeps trying.
     let body = format!(
-        "[connection]\nid=tilo-setup\ntype=wifi\nautoconnect=true\npermissions=\n\n[wifi]\nmode=infrastructure\nssid={ssid}\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk={psk}\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n"
+        "[connection]\nid=tilo-setup\nuuid=3f1c0a6e-7b2d-4e59-9c18-6a4d2b8e0f71\ntype=wifi\nautoconnect=true\nautoconnect-retries=0\n\n[wifi]\nmode=infrastructure\nssid={ssid}\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk={psk}\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n"
     );
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -345,23 +492,42 @@ fn first_existing(candidates: &[Option<PathBuf>]) -> Option<PathBuf> {
     candidates.iter().find_map(Clone::clone)
 }
 
+fn refuse_human_root_secret(staged_var: &Path) -> io::Result<()> {
+    let secret = staged_var.join("lib/tilo/user-identity/privkey.bin");
+    match fs::symlink_metadata(&secret) {
+        Ok(meta) if meta.is_file() => Err(io::Error::other(
+            "refusing to copy the human root secret onto the target",
+        )),
+        Ok(_) | Err(_) => Ok(()),
+    }
+}
+
+/// Copy regular files and directories. Symlinks are skipped on the source
+/// side and replaced on the target side, so the copy never writes through a
+/// link planted on either disk.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     for entry in walkdir(from)? {
         let relative = entry.strip_prefix(from).map_err(io::Error::other)?;
         let dest = to.join(relative);
-        if entry.is_dir() {
+        let meta = fs::symlink_metadata(&entry)?;
+        if meta.is_dir() {
             fs::create_dir_all(&dest)?;
+            continue;
+        }
+        if !meta.is_file() {
             continue;
         }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
+        if fs::symlink_metadata(&dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            fs::remove_file(&dest)?;
+        }
         fs::copy(&entry, &dest)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let mode = fs::metadata(&entry)?.mode() & 0o777;
-            fs::set_permissions(&dest, fs::Permissions::from_mode(mode))?;
+            use std::os::unix::fs::MetadataExt;
+            set_mode(&dest, meta.mode() & 0o777)?;
         }
     }
     Ok(())
@@ -374,7 +540,7 @@ fn walkdir(root: &Path) -> io::Result<Vec<PathBuf>> {
         out.push(dir.clone());
         for entry in fs::read_dir(&dir)? {
             let path = entry?.path();
-            if path.is_dir() {
+            if fs::symlink_metadata(&path)?.is_dir() {
                 stack.push(path);
             } else {
                 out.push(path);
@@ -473,10 +639,13 @@ mod tests {
                 .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
         )
         .unwrap();
-        assert!(connection.contains("ssid=\"studio\""));
-        assert!(connection.contains("psk=\"correct-horse\""));
-        assert_eq!(nm_quoted("my network"), "\"my network\"");
-        assert_eq!(nm_quoted("a\\b"), "\"a\\\\b\"");
+        assert!(connection.contains("\nssid=studio\n"));
+        assert!(connection.contains("\npsk=correct-horse\n"));
+        assert!(connection.contains("\nuuid="));
+        assert!(!connection.contains("permissions="));
+        assert_eq!(nm_keyfile_value("my network"), "my network");
+        assert_eq!(nm_keyfile_value("a\\b"), "a\\\\b");
+        assert_eq!(nm_keyfile_value("  lead"), "\\s\\slead");
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
         assert!(!media.contains("orange-pi"));
@@ -601,5 +770,105 @@ mod tests {
         let header = String::from_utf8_lossy(&bytes[header_at..header_at + 80]);
         assert!(header.starts_with(SETUP_HANDOFF_MAGIC));
         assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
+    }
+
+    /// An obviously synthetic key: a well-formed ed25519 encoding of zeros.
+    const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test@example";
+
+    #[test]
+    fn access_handoff_writes_wifi_and_the_owner_key_without_an_identity() {
+        let profile = InstallProfile {
+            wifi_ssid: "studio".into(),
+            ..InstallProfile::default()
+        };
+        let stage = stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"))
+            .unwrap()
+            .expect("Wi-Fi and a key stage a tree");
+        let root = stage.path();
+        assert!(
+            root.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection")
+                .is_file()
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(BRINGUP_SSH_KEY)).unwrap(),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+        );
+        assert!(!root.join("var").exists(), "no identity was asked for");
+        fs::remove_dir_all(root).unwrap();
+
+        let none = stage_access_handoff(&InstallProfile::default(), "", "").unwrap();
+        assert!(none.is_none());
+        let err = stage_access_handoff(&profile, "", "").unwrap_err();
+        assert!(err.contains("Wi-Fi password"));
+    }
+
+    #[test]
+    fn the_owner_key_is_exactly_one_public_key() {
+        validate_bringup_ssh_key("").unwrap();
+        validate_bringup_ssh_key(TEST_KEY).unwrap();
+        for bad in [
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", // placeholder
+            &format!("{TEST_KEY}\n{TEST_KEY}"),
+            "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "ssh-ed25519 not-base64!",
+            // An RSA type name over an ed25519 encoding.
+            "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_human_root_secret_never_leaves_the_setup_machine() {
+        let staged = tempfile::tempdir().unwrap();
+        let secret = staged.path().join("var/lib/tilo/user-identity/privkey.bin");
+        fs::create_dir_all(secret.parent().unwrap()).unwrap();
+        fs::write(&secret, b"human-root-secret").unwrap();
+
+        let mnt = tempfile::tempdir().unwrap();
+        let var = mnt.path().join("state/os/fedora/var");
+        fs::create_dir_all(mnt.path().join("state/deploy/abcd/etc")).unwrap();
+        fs::create_dir_all(&var).unwrap();
+        assert!(install_staged_onto_mounted_root(mnt.path(), staged.path()).is_err());
+        assert!(!var.join("lib/tilo/user-identity/privkey.bin").exists());
+
+        let device = tempfile::NamedTempFile::new().unwrap();
+        let device_len = 1000 + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
+        device.as_file().set_len(device_len).unwrap();
+        assert!(embed_setup_handoff(device.path(), 1000, device_len, staged.path()).is_err());
+        assert!(
+            !fs::read(device.path())
+                .unwrap()
+                .windows(17)
+                .any(|window| window == b"human-root-secret")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_copy_does_not_follow_symlinks_on_either_side() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        fs::write(&secret, b"keep").unwrap();
+
+        let staged = tempfile::tempdir().unwrap();
+        fs::create_dir_all(staged.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink(&secret, staged.path().join("etc/leak")).unwrap();
+        fs::write(staged.path().join("etc/marker"), b"new").unwrap();
+
+        let target = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&secret, target.path().join("marker")).unwrap();
+        copy_tree(&staged.path().join("etc"), target.path()).unwrap();
+
+        assert!(!target.path().join("leak").exists());
+        assert_eq!(fs::read(&secret).unwrap(), b"keep");
+        let marker = target.path().join("marker");
+        assert!(
+            !fs::symlink_metadata(&marker)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&marker).unwrap(), b"new");
     }
 }
