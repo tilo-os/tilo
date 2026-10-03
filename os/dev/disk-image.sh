@@ -915,8 +915,35 @@ if [ -n "$ETC_OVERLAY" ]; then
   # context onto DST, which left the deployment's /etc labelled
   # `unconfined_u:object_r:var_t` (the runner's work directory) instead of
   # `etc_t`, so confined services (ldconfig, accounts-daemon) could not use it.
+  # Every directory the overlay lands in that the deployment already has:
+  # /etc itself and each existing parent of an overlay entry. Their label,
+  # mode and owner must come out exactly as they went in.
+  existing_dirs=("$t_etc")
+  while IFS= read -r dir; do
+    sudo -n test -d "$t_etc/$dir" && existing_dirs+=("$t_etc/$dir")
+  done < <(cd "$ETC_OVERLAY" && find . -mindepth 1 -type d -printf '%P\n' | LC_ALL=C sort)
+  # The label is read as the xattr itself: a runner without SELinux enabled
+  # still stores and copies it, and stat's %C would only print "?" there.
+  dir_metadata() {
+    sudo -n python3 - "${existing_dirs[@]}" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    st = os.stat(path)
+    try:
+        label = os.getxattr(path, "security.selinux").rstrip(b"\0").decode()
+    except OSError:
+        label = "-"
+    print(f"{st.st_mode & 0o7777:o} {st.st_uid}:{st.st_gid} {label} {path}")
+PY
+  }
+  before_overlay="$(dir_metadata)"
   sudo -n tar -C "$ETC_OVERLAY" --no-xattrs --no-selinux -cf - . \
     | sudo -n tar -C "$t_etc" --no-same-owner --no-overwrite-dir -xf -
+  after_overlay="$(dir_metadata)"
+  if [ "$before_overlay" != "$after_overlay" ]; then
+    diff <(printf '%s\n' "$before_overlay") <(printf '%s\n' "$after_overlay") >&2 || true
+    die "the validation overlay changed the label, mode or owner of an existing /etc directory"
+  fi
   overlay_label_args=(--rm --privileged -v "$t_etc:/target-etc")
   if [ -n "$SRC_REF" ]; then
     overlay_label_args+=(--network host
