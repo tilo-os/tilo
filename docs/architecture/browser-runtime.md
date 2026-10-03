@@ -510,6 +510,26 @@ peer.workspaces.list(): Promise<[{room, name, generation, members}]>;
 peer.workspaces.create(name) / enter(room): Promise<{room, name, generation, members}>;
 ```
 
+An owner can admit someone in advance whom another party vouches for (a
+co-founder whose email a backend verified, a teammate an admin listed):
+
+```ts
+peer.membership.preAdmit({tokenSha256 /* hex */, label, role?, expiresIn?}): Promise<string /* invitation */>;
+joinWorkspace({origin, invitation, admissionToken, …});   // admitted at once
+peer.membership.list() → {…, notices: [{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}]};
+```
+
+The owner's unlocked root signs a `PreAdmission` (room, role, the SHA-256
+of a one-time token, a label, an expiry of at most 30 days); the host
+verifies it is the room owner's and issues a single-use invitation with it
+(`RoomsRequest::PreAdmit`). Whoever vouches hands the person the invitation
+and the token, never the room's keys. The person redeems it with the token
+(`JoinStep::ProvePreAdmitted`): the host admits the device without the
+owner, spends the grant and records a `RoomNotice::PreAdmitted`
+(`RoomsRequest::Notices`), and the owner may remove them like any member. A
+wrong token is refused; without one the request waits for the owner as
+usual.
+
 An invitation names its inviter: the host records the user root of the
 device that asked and the `displayName` the peer connected with, and signs
 both into the invitation (`tilo_peer_state::join::Inviter`, invitation
