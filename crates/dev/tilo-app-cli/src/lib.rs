@@ -4293,6 +4293,16 @@ fn rust_code_only(source: &str) -> String {
             block_depth = 1;
             output.push_str("  ");
             index += 2;
+        } else if let Some(end) = raw_string_end(bytes, index) {
+            // A raw string's quotes are not delimiters: `r#"a="b""#`.
+            for &byte in &bytes[index..end] {
+                output.push(if byte == b'\n' { '\n' } else { ' ' });
+            }
+            index = end;
+        } else if let Some(length) = char_literal_length(bytes, index) {
+            // `'"'` is a character, not the start of a string.
+            output.push_str(&" ".repeat(length));
+            index += length;
         } else if bytes[index] == b'"' {
             string = true;
             output.push(' ');
@@ -4303,6 +4313,75 @@ fn rust_code_only(source: &str) -> String {
         }
     }
     output
+}
+
+/// Where the raw string literal (`r"…"`, `r#"…"#`, `br#"…"#`) starting at
+/// `index` ends, if one starts there.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the byte cursor is bounded by the slice and advances by inspected token widths"
+)]
+fn raw_string_end(bytes: &[u8], index: usize) -> Option<usize> {
+    let starts_word = index == 0
+        || !bytes
+            .get(index - 1)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
+    let mut at = index;
+    if bytes.get(at) == Some(&b'b') {
+        at += 1;
+    }
+    if !starts_word || bytes.get(at) != Some(&b'r') {
+        return None;
+    }
+    at += 1;
+    let hashes = bytes[at..].iter().take_while(|byte| **byte == b'#').count();
+    at += hashes;
+    if bytes.get(at) != Some(&b'"') {
+        return None;
+    }
+    at += 1;
+    while at < bytes.len() {
+        if bytes[at] == b'"'
+            && bytes.len() >= at + 1 + hashes
+            && bytes[at + 1..at + 1 + hashes]
+                .iter()
+                .all(|byte| *byte == b'#')
+        {
+            return Some(at + 1 + hashes);
+        }
+        at += 1;
+    }
+    Some(bytes.len())
+}
+
+/// The length of the character literal (`'"'`, `'\''`, `'\u{22}'`) starting
+/// at `index`, if one starts there; a lifetime (`'a`) is not one.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the byte cursor is bounded by the slice and advances by inspected token widths"
+)]
+fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index) != Some(&b'\'') {
+        return None;
+    }
+    if bytes.get(index + 1) == Some(&b'\\') {
+        // The escaped character itself may be a quote: `'\''`.
+        let close = bytes
+            .get(index + 3..)?
+            .iter()
+            .take(10)
+            .position(|byte| *byte == b'\'')?;
+        return Some(close + 4);
+    }
+    let width = match bytes.get(index + 1)? {
+        byte if *byte < 0x80 => 1,
+        byte if *byte >= 0xf0 => 4,
+        byte if *byte >= 0xe0 => 3,
+        _ => 2,
+    };
+    (bytes.get(index + 1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
 fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
