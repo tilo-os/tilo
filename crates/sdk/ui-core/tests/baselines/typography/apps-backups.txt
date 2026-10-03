@@ -1,0 +1,6 @@
+# The typography ratchet for apps-backups: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/backups/src/app.rs legacy_size_api 41
+apps/backups/src/app.rs literal_font_size 1
+apps/backups/src/paint.rs legacy_size_api 9
