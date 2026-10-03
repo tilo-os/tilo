@@ -501,10 +501,6 @@ impl ui::widget::Decorator for LibraryNav {
             .set_sections(library_sections(&self.live, &self.door));
         Widget::sync(&mut self.nav, state, path);
     }
-
-    fn name(&self) -> &'static str {
-        "ShortcutsLibrary"
-    }
 }
 
 // ------------------------------------------------------------------ pages
@@ -754,6 +750,40 @@ fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     }
 }
 
+/// Run shortcut `id` with what its input fields hold.
+fn run_button(ui: &Ui, id: &str, fields: &[(ActionParam, LocalState<String>)]) -> Button {
+    let button = Button::new(&format!("run-{id}"), "shortcuts-run", None);
+    if fields.is_empty() {
+        return ui.door_button(
+            button.role(ButtonRole::Primary),
+            door::RUN,
+            serde_json::Map::from_iter([("shortcut".into(), Value::String(id.to_owned()))]),
+        );
+    }
+    let run_id = id.to_owned();
+    let values = fields.to_vec();
+    let arguments = move |()| {
+        let inputs: serde_json::Map<String, Value> = values
+            .iter()
+            .map(|(input, value)| (input.name.to_string(), editor::literal(&value.get(), input)))
+            .collect();
+        serde_json::Map::from_iter([
+            ("shortcut".to_owned(), Value::String(run_id.clone())),
+            ("inputs".to_owned(), Value::Object(inputs)),
+        ])
+    };
+    let binding = ui
+        .door_resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == door::RUN)
+        .and_then(|spec| ActionBinding::new(&ui.door_resource, spec, arguments).ok());
+    match binding {
+        Some(binding) => button.role(ButtonRole::Primary).on_action(binding),
+        None => button.with_enabled(false),
+    }
+}
+
 fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
     let id = shortcut.id.clone();
     let fields: Vec<(ActionParam, LocalState<String>)> = shortcut
@@ -761,41 +791,7 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
         .iter()
         .map(|input| (input.clone(), LocalState::new(String::new())))
         .collect();
-    let run = if fields.is_empty() {
-        ui.door_button(
-            Button::new(&format!("run-{id}"), "shortcuts-run", None).role(ButtonRole::Primary),
-            door::RUN,
-            serde_json::Map::from_iter([("shortcut".into(), Value::String(id.clone()))]),
-        )
-    } else {
-        let run_id = id.clone();
-        let values = fields.clone();
-        let arguments = move |()| {
-            let inputs: serde_json::Map<String, Value> = values
-                .iter()
-                .map(|(input, value)| {
-                    (input.name.to_string(), editor::literal(&value.get(), input))
-                })
-                .collect();
-            serde_json::Map::from_iter([
-                ("shortcut".to_owned(), Value::String(run_id.clone())),
-                ("inputs".to_owned(), Value::Object(inputs)),
-            ])
-        };
-        ui.door_resource
-            .actions
-            .iter()
-            .find(|spec| spec.id == door::RUN)
-            .and_then(|spec| ActionBinding::new(&ui.door_resource, spec, arguments).ok())
-            .map_or_else(
-                || Button::new(&format!("run-{id}"), "shortcuts-run", None).with_enabled(false),
-                |binding| {
-                    Button::new(&format!("run-{id}"), "shortcuts-run", None)
-                        .role(ButtonRole::Primary)
-                        .on_action(binding)
-                },
-            )
-    };
+    let run = run_button(ui, &id, &fields);
     let edit = ui.bind(
         Button::new(&format!("edit-{id}"), "shortcuts-edit", None),
         Workbench::OPEN_SHORTCUT.map({
