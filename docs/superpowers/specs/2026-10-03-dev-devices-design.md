@@ -56,9 +56,13 @@ headless in the account's user manager, or on seat0 as the transient unit
 
 ## Architecture-aware sources
 
-- `--from sha:`/`ci:` pulls from `registry.tilo.so/tilo/tilo-ci`, where CI publishes OS
-  builds as one index per commit; the device's podman (or the host's, with the device's
-  `--arch`) takes its own architecture.
+- `--from sha:`/`ci:` takes the component out of CI's dev image of the build
+  (`registry.tilo.so/tilo/tilo-vm:<tag>-ci`, one index over both architectures). For a
+  device the host pulls it for the device's `--arch`, copies out the component's files,
+  removes the image and uploads only that layer (adapter capability
+  `ci_layers_from_host`); its provenance is the one a pull on the device would write
+  (`Provenance::from_ci`: authority, image digest, the commit from the image's revision
+  label). A VM keeps pulling in the guest.
 - `--builder host` with a `TILO_VM_CARGO` drop-in builds anywhere (the ARM builder); the
   layer's target and rustc are read from the binary it produced, so the device's ABI check
   sees what was really built.

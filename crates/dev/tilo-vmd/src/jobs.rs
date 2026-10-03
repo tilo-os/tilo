@@ -482,17 +482,7 @@ pub fn app_package_args(dir: &str, out: &Path) -> Vec<String> {
 }
 
 pub fn ci_provenance(job: &CiJob, digest: Option<String>, revision: Option<String>) -> Provenance {
-    let mut provenance = Provenance::local(&job.component);
-    provenance.authority = "ci".into();
-    provenance.builder = Some("ci".into());
-    provenance.source_commit = revision.or_else(|| job.provenance.source_commit.clone());
-    provenance.base_image_digest = digest;
-    provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
-    provenance
-        .cargo_profile
-        .clone_from(&job.provenance.cargo_profile);
-    provenance.features.clone_from(&job.provenance.features);
-    provenance
+    Provenance::from_ci(&job.provenance, std::env::consts::ARCH, digest, revision)
 }
 
 /// What a failed `podman pull` means.
@@ -679,6 +669,18 @@ mod tests {
             assert_eq!(p.builder.as_deref(), Some("ci"));
             assert_eq!(p.source_commit.as_deref(), Some("abc"));
             assert_eq!(p.base_image_digest.as_deref(), Some("sha256:d"));
+            assert_eq!(
+                p.target,
+                Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+            );
+            // The host's extraction for an aarch64 device writes the same record.
+            let host =
+                Provenance::from_ci(&job.provenance, "aarch64", Some("sha256:d".into()), None);
+            assert_eq!(host.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+            assert_eq!(
+                (host.authority.as_str(), host.builder.as_deref()),
+                ("ci", Some("ci"))
+            );
         }
         // Phase `app_packaging_commands`.
         {

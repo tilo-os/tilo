@@ -93,14 +93,15 @@ pub fn podman_arch(arch: &str) -> &str {
 }
 
 /// Host-side extraction commands: pull, create a stopped container, copy
-/// each path out (a trailing `/` copies the directory), remove it.
+/// each path out (a trailing `/` copies the directory); then the cleanup
+/// that removes the container and the image, which only the layer outlives.
 pub fn host_commands(
     image: &str,
     arch: &str,
     container: &str,
     paths: &[String],
     tree: &Path,
-) -> (Vec<CommandLine>, CommandLine) {
+) -> (Vec<CommandLine>, Vec<CommandLine>) {
     let mut commands = vec![
         CommandLine::new("podman", &["pull", "--arch", podman_arch(arch), image]),
         CommandLine::new(
@@ -116,8 +117,48 @@ pub fn host_commands(
                 .arg(tree.join(relative).display().to_string()),
         );
     }
-    let cleanup = CommandLine::new("podman", &["rm", "--force", container]);
+    let cleanup = vec![
+        CommandLine::new("podman", &["rm", "--force", container]),
+        CommandLine::new("podman", &["rmi", image]),
+    ];
     (commands, cleanup)
+}
+
+/// What the pulled image says about itself, for the layer's provenance.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Pulled {
+    pub digest: Option<String>,
+    /// `org.opencontainers.image.revision`: the commit CI built.
+    pub revision: Option<String>,
+}
+
+/// `podman image inspect` of the pulled image: its digest and revision.
+pub fn inspect_command(image: &str) -> CommandLine {
+    CommandLine::new(
+        "podman",
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Digest}} {{index .Labels \"org.opencontainers.image.revision\"}}",
+            image,
+        ],
+    )
+}
+
+/// The [`inspect_command`] answer.
+pub fn parse_inspect(output: &str) -> Pulled {
+    let mut words = output.split_whitespace();
+    let mut next = || {
+        words
+            .next()
+            .filter(|w| !w.is_empty() && *w != "<no" && *w != "<no value>")
+            .map(str::to_owned)
+    };
+    Pulled {
+        digest: next().filter(|d| d.starts_with("sha256:")),
+        revision: next().filter(|r| r.bytes().all(|b| b.is_ascii_hexdigit())),
+    }
 }
 
 /// Run the host extraction; `tree` receives `usr/...`.
@@ -130,7 +171,7 @@ pub fn extract_on_host(
     arch: &str,
     paths: &[String],
     tree: &Path,
-) -> Result<Option<String>, CliError> {
+) -> Result<Pulled, CliError> {
     let container = format!("tilo-vm-ci-{}", uuid::Uuid::new_v4().simple());
     let (commands, cleanup) = host_commands(image, arch, &container, paths, tree);
     let mut result = Ok(());
@@ -179,18 +220,18 @@ pub fn extract_on_host(
             break;
         }
     }
-    let _ = runner.output(&cleanup);
-    result?;
-    let digest = runner
-        .output(&CommandLine::new(
-            "podman",
-            &["image", "inspect", "--format", "{{.Digest}}", image],
-        ))
+    // Read before the cleanup removes the image.
+    let pulled = runner
+        .output(&inspect_command(image))
         .ok()
         .filter(|o| o.success)
-        .map(|o| o.stdout.trim().to_owned())
-        .filter(|d| !d.is_empty());
-    Ok(digest)
+        .map(|o| parse_inspect(&o.stdout))
+        .unwrap_or_default();
+    for command in &cleanup {
+        let _ = runner.output(command);
+    }
+    result?;
+    Ok(pulled)
 }
 
 #[cfg(test)]
@@ -257,7 +298,28 @@ mod tests {
                     "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
                 ]
             );
-            assert_eq!(cleanup.display(), "podman rm --force c1");
+            let cleanup: Vec<String> = cleanup.iter().map(CommandLine::display).collect();
+            assert_eq!(
+                cleanup,
+                [
+                    "podman rm --force c1",
+                    "podman rmi registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
+                ]
+            );
+            assert_eq!(
+                parse_inspect("sha256:ab12 fff3babf03ebbefb1e3757b8a9e0263c2c815943\n"),
+                Pulled {
+                    digest: Some("sha256:ab12".into()),
+                    revision: Some("fff3babf03ebbefb1e3757b8a9e0263c2c815943".into()),
+                }
+            );
+            assert_eq!(
+                parse_inspect("sha256:ab12 <no value>\n"),
+                Pulled {
+                    digest: Some("sha256:ab12".into()),
+                    revision: None,
+                }
+            );
         }
     }
 }

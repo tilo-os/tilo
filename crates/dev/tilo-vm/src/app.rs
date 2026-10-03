@@ -896,7 +896,11 @@ impl App {
                 if low { "  LOW: tilo-vm gc" } else { "" }
             ));
         }
-        lines.push(format!("  builds: {}", describe_tools(&hello.tools)));
+        let ci_from_host = Self::adapter(&vm)?.ci_layers_from_host();
+        lines.push(format!(
+            "  builds: {}",
+            describe_tools(&hello.tools, ci_from_host)
+        ));
         if let Some(lease) = &status.seat0 {
             lines.push(format!(
                 "  seat0: held by slot {} since {}",
@@ -1044,7 +1048,10 @@ impl App {
             ),
         ));
         let tools = &hello.tools;
-        let builds = describe_tools(tools);
+        let builds = describe_tools(
+            tools,
+            Self::adapter(vm).is_ok_and(|adapter| adapter.ci_layers_from_host()),
+        );
         let upgrade = if tools.can_build() || self.vm_has_bootc(vm) == Some(true) {
             "tilo-vm vm upgrade   (a dev image with cargo, rsync and python3)"
         } else {
@@ -3968,7 +3975,8 @@ impl App {
             paths: component.paths.clone(),
             provenance,
         };
-        if remote.hello.tools.podman {
+        let from_host = Self::adapter(vm)?.ci_layers_from_host();
+        if remote.hello.tools.podman && !from_host {
             eprintln!("tilo-vm: pulling {image} in VM {}", vm.name);
             return match self.vm_job(vm, "ci-layer", &job) {
                 Ok(JobOutput::Layer { hash, .. }) => Ok(hash),
@@ -3980,21 +3988,28 @@ impl App {
                 Err(error) => Err(error),
             };
         }
-        // No podman in the VM: pull here, upload the layer.
+        // A device, or a VM without podman: pull here, upload only the layer.
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let staging = build::Staging::new(&worktree)?;
         let arch = remote.hello.arch.clone();
-        eprintln!("tilo-vm: pulling {image} on this host (the VM has no podman)");
+        let why = if from_host {
+            "only the layer goes to the device"
+        } else {
+            "the VM has no podman"
+        };
+        eprintln!("tilo-vm: pulling {image} ({arch}) on this host; {why}");
         let runner = &mut self.runner;
-        let digest = self.receipt.phase("pull", || {
+        let pulled = self.receipt.phase("pull", || {
             ci::extract_on_host(runner, &image, &arch, &job.paths, &staging.tree())
         })?;
         build::pack(&staging.tree(), &staging.archive())?;
-        let mut provenance = job.provenance;
-        provenance.authority = "ci".into();
-        provenance.builder = Some("ci".into());
-        provenance.base_image_digest = digest;
-        provenance.target = Some(format!("{arch}-unknown-linux-gnu"));
+        // The record the VM's own pull would have written.
+        let provenance = tilo_vm_protocol::Provenance::from_ci(
+            &job.provenance,
+            &arch,
+            pulled.digest,
+            pulled.revision,
+        );
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -4800,7 +4815,7 @@ fn entry_image(registry: &Registry, name: &str) -> Option<String> {
 }
 
 /// Where builds and CI extraction run for a VM with these tools.
-pub fn describe_tools(tools: &VmTools) -> String {
+pub fn describe_tools(tools: &VmTools, ci_from_host: bool) -> String {
     let build = if tools.can_build() {
         format!(
             "in the VM (sccache {})",
@@ -4817,7 +4832,9 @@ pub fn describe_tools(tools: &VmTools) -> String {
             tools.missing_for_build().join(", ")
         )
     };
-    let ci = if tools.podman {
+    let ci = if ci_from_host {
+        "CI layers extracted on this host, only the layer sent"
+    } else if tools.podman {
         "CI layers pulled in the VM"
     } else {
         "CI layers pulled on this host"
@@ -6439,7 +6456,18 @@ mod tests {
                 choose_builder(Some(Builder::Host), &bare, true, "linux").unwrap(),
                 (Builder::Host, None)
             );
-            assert!(describe_tools(&ready).starts_with("in the VM"));
+            assert!(describe_tools(&ready, false).starts_with("in the VM"));
+            // A device gets only the layer, whatever tools it has.
+            assert!(
+                describe_tools(&ready, true)
+                    .ends_with("CI layers extracted on this host, only the layer sent")
+            );
+            assert!(hypervisor::adapter("device").unwrap().ci_layers_from_host());
+            assert!(
+                !hypervisor::adapter("libvirt")
+                    .unwrap()
+                    .ci_layers_from_host()
+            );
         }
 
         // Phase: a_refused_key_names_the_install_step.

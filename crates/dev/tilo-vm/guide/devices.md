@@ -33,7 +33,7 @@ A board image runs its account's session without a greeter
 once one is connected. That session is the **`device` slot**:
 
 ```sh
-tilo-vm swap --slot device shell --from sha:1a2b3c4   # CI's aarch64 build of a main commit
+tilo-vm swap --slot device shell --from sha:1a2b3c4   # CI's aarch64 build of a main commit; only the layer travels
 tilo-vm swap --slot device shell                      # your worktree (see Builds below)
 tilo-vm status --slot device                          # generation, session, components
 tilo-vm slot show device                              # every file and its sha256 and layer
@@ -57,13 +57,14 @@ work on a device too, beside the device's session.
 
 ## Builds
 
-- **CI** (`--from sha:<commit>`, `--from ci:<tag>`): the device pulls the
-  build of its own architecture out of CI's dev image of that commit,
-  `registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`. The aarch64 lane builds the
-  newest main commit only, so check that a commit has arm64 first
-  (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
-  The pull needs room for the whole image on the device; `tilo-vm status`
-  shows its free space.
+- **CI** (`--from sha:<commit>`, `--from ci:<tag>`): this host (it needs
+  podman) pulls CI's dev image of that commit for the device's architecture,
+  `registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`, copies out only the
+  component's files, removes the image again, and uploads just that layer
+  with its provenance (`authority = "ci"`, the image's digest and the commit
+  CI built). The board never downloads the multi-gigabyte image. The aarch64
+  lane builds the newest main commit only, so check that a commit has arm64
+  first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
 - **Your worktree on a builder of the device's architecture**
   (`--builder host` with `TILO_VM_CARGO`): any cargo drop-in that builds for
   aarch64 and leaves the binaries in the target dir `cargo metadata` names
