@@ -128,10 +128,10 @@ shadow plus, on dark themes, a 1 px light inner edge.
 
 ## Type
 
-The UI face is Instrument Sans, one face for the whole system (why, and its
-provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). Greek and
-Cyrillic fall back to faces matched to it, at its x-height and stem weight
-(Geologica, Onest); Vietnamese and every other script fall back to Noto. A
+The UI face is Tilo Sans, one face for the whole system (why, and its
+provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). It sets Latin,
+Vietnamese and Greek; Cyrillic falls back to Onest, matched to its x-height
+and stem weight, and every other script to Noto. A
 theme or the accessibility layer may choose the built-in Hyperlegible face
 (Atkinson Hyperlegible Next) instead.
 Reading text is serif and code is mono, both from the font catalog.
@@ -166,7 +166,9 @@ one header row across the top of the window that holds each column's header:
 sidebar, list title and detail toolbar together read as one unified toolbar.
 The sidebar toggle sits at the top-leading corner of the sidebar; when the
 sidebar is hidden it moves to the leading edge of the next column. One
-system-wide shortcut toggles it in every app. Narrow windows collapse the
+system-wide shortcut toggles it in every app. History, where an app has it,
+is one glyph at the row's trailing edge that reads as on while History
+shows; no app draws a History button of its own. Narrow windows collapse the
 sidebar into a floating drawer instead of squeezing content.
 
 ## Space and density
