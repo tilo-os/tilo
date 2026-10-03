@@ -526,9 +526,15 @@ fn diff_block_resource_id(block: &ChangeBlock, fingerprint: &str, occurrence: us
 /// Local two-way comparison resource — live when hosted, never document state.
 pub fn local_comparison_resource(ctx: &DiffResourceCtx) -> Resource {
     let title = if ctx.left_label.is_empty() && ctx.right_label.is_empty() {
-        "Local comparison".into()
+        crate::i18n::t("compare-title-empty")
     } else {
-        format!("{} ↔ {}", ctx.left_label, ctx.right_label)
+        crate::i18n::t_args(
+            "compare-title",
+            &[
+                ("left", crate::i18n::text(&ctx.left_label)),
+                ("right", crate::i18n::text(&ctx.right_label)),
+            ],
+        )
     };
     let mut root = Resource::new(
         "diffmerge.local-comparison",
