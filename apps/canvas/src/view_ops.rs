@@ -698,7 +698,7 @@ pub fn media(art: &Artwork) -> Value {
         "media": media,
         "palettes": palettes,
         "engines": engines,
-        "textures": ["smooth", "paper", "cold-press", "rough", "linen"],
+        "textures": tilo_wet_media::Texture::ALL.map(tilo_wet_media::Texture::name),
         "plain_layers": "a layer with no medium draws crisp vector art; pigment:<name> resolves against every palette there",
     })
 }

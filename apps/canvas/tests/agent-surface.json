@@ -2262,7 +2262,7 @@
                 "string",
                 "null"
               ],
-              "description": "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough` or `linen`."
+              "description": "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
             },
             "palette": {
               "type": "array",
@@ -2307,7 +2307,7 @@
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
-    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen) and colour.",
+    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
     "operation": "Document",
     "params": [
       {
@@ -2355,13 +2355,13 @@
         "name": "texture",
         "ty": "text",
         "required": false,
-        "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`.",
+        "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`."
+          "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
         },
         "nullable": true
       },
