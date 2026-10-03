@@ -83,18 +83,25 @@ fn matrix(affine: Affine) -> String {
     format!("matrix({})", affine.as_coeffs().map(num).join(" "))
 }
 
-/// The artwork as an SVG document. `painted` renders a painted layer alone
-/// over transparency as a PNG, which the document embeds.
-pub fn export(art: &Artwork, mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>) -> String {
+/// The artwork as an SVG document, on its ground when `ground`. `painted`
+/// renders a painted layer alone over transparency as a PNG, which the
+/// document embeds.
+pub fn export(
+    art: &Artwork,
+    ground: bool,
+    mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>,
+) -> String {
     let mut out = Writer::default();
-    let ground = colour(&art.ground.colour, &[]).unwrap_or(crate::render::BLANK_GROUND);
-    let _ = write!(
-        out.body,
-        r#"<rect id="{GROUND_ID}" width="{}" height="{}"{}/>"#,
-        num(art.width),
-        num(art.height),
-        paint_attr("fill", ground)
-    );
+    if ground {
+        let ground = colour(&art.ground.colour, &[]).unwrap_or(crate::render::BLANK_GROUND);
+        let _ = write!(
+            out.body,
+            r#"<rect id="{GROUND_ID}" width="{}" height="{}"{}/>"#,
+            num(art.width),
+            num(art.height),
+            paint_attr("fill", ground)
+        );
+    }
     for layer in art.layers.iter().filter(|layer| layer.visible) {
         let palette = media::palette_for(art, &layer.id);
         let _ = write!(out.body, r#"<g data-layer="{}""#, escape(&layer.id));
