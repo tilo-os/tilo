@@ -139,7 +139,7 @@ pub mod prelude {
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
-        ResourceSurface, Setting, SurfaceCx, ViewCx,
+        ResourceSurface, SeedCx, Setting, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
         self, ActionCx, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model, Refusal, Replica,
