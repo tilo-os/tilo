@@ -251,6 +251,18 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
     raise GateError(f"the session exposed no {kind} {name!r} over AT-SPI")
 
 
+def is_app_connection(client: AtspiClient, app_name: str) -> bool:
+    """Whether a new AT-SPI connection is APP_NAME: its application node or
+    one of its windows carries the app's display name."""
+    try:
+        names = [client.property(ROOT_PATH, "Name")]
+        children = client.call(ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+        names += [client.property(path, "Name") for path in PATH_RE.findall(children)[:8]]
+    except GateError:
+        return False
+    return any(app_name in name for name in names)
+
+
 def open_in_session(address: str, app_name: str) -> tuple[str, int]:
     """Open APP_NAME through the compositor's app palette; return its bus and pid."""
     shell = shell_client(address)
@@ -273,24 +285,37 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         if time.monotonic() >= deadline:
             raise GateError("the app palette exposed no editable query over AT-SPI")
         time.sleep(POLL_SECONDS * 4)
-    _, row = wait_for_shell_node(shell, app_name)
-    result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0")
-    if "true" not in result:
-        raise GateError(f"AT-SPI palette row {app_name!r} was rejected: {result.strip()}")
-    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        for bus, pid in bus_pids(address).items():
-            if bus in before:
-                continue
-            client = AtspiClient(address, bus)
-            try:
-                name = client.property(ROOT_PATH, "Name")
-            except GateError:
-                continue
-            if f"'{app_name}'" in name:
-                return bus, pid
-        time.sleep(POLL_SECONDS * 4)
-    raise GateError(f"{app_name!r} was opened but never appeared on the AT-SPI bus")
+    # The palette names an app's launch row "Open <app>". More than one
+    # palette tree can be exported (one per output); activate rows in turn
+    # until the app appears.
+    row_name = f"Open {app_name}"
+    tree, _ = wait_for_shell_node(shell, row_name)
+    rows = [
+        path for path in AtspiClient.named(tree, row_name)
+        if "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+    ]
+    for row in rows:
+        result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
+        if "true" not in result:
+            continue
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS / len(rows)
+        while time.monotonic() < deadline:
+            for bus, pid in bus_pids(address).items():
+                if bus in before:
+                    continue
+                if is_app_connection(AtspiClient(address, bus), app_name):
+                    return bus, pid
+            time.sleep(POLL_SECONDS * 4)
+    seen = []
+    for bus in sorted(set(bus_pids(address)) - before):
+        try:
+            seen.append(AtspiClient(address, bus).property(ROOT_PATH, "Name").strip())
+        except GateError:
+            seen.append(f"{bus} (no application node)")
+    raise GateError(
+        f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
+        f"new connections: {', '.join(seen) or 'none'}"
+    )
 
 
 def close_app(pid: int) -> None:
