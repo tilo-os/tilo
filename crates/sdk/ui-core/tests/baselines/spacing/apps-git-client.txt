@@ -1,7 +1,0 @@
-# The spacing ratchet for apps-git-client: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/git-client/src/app.rs pixel_const 9
-apps/git-client/src/changes.rs pixel_const 8
-apps/git-client/src/diffview.rs pixel_const 2
-apps/git-client/src/history.rs pixel_const 4
