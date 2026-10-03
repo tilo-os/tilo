@@ -125,3 +125,48 @@ pub(crate) struct HeaderRequests {
     pub new_note: Cell<bool>,
     pub note_menu: Cell<bool>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slot_reports_its_node_and_rect_and_forgets_the_node_on_reset() {
+        let place = ColumnPlace::default();
+        assert_eq!(place.node(), None);
+        let mut slot = place.slot();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = slot.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        assert_eq!(place.node(), Some(node));
+        assert!(
+            nodes.contains_key(&node),
+            "the slot is registered for layout"
+        );
+
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+            )
+            .unwrap();
+        slot.apply_layout(&taffy, node, Point::new(10.0, 20.0));
+        assert_eq!(place.rect(), Rect::new(10.0, 20.0, 310.0, 220.0));
+        assert_eq!(slot.get_rect(), place.rect());
+
+        place.reset();
+        assert_eq!(place.node(), None, "a column the shell hides has no node");
+    }
+
+    #[test]
+    fn header_requests_are_taken_once() {
+        let requests = HeaderRequests::default();
+        requests.new_note.set(true);
+        assert!(requests.new_note.take());
+        assert!(!requests.new_note.take());
+        assert!(!requests.note_menu.take());
+    }
+}
