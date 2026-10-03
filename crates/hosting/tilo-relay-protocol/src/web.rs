@@ -25,6 +25,12 @@
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //!
+//! A host started without a certificate serves only `/install` until it has
+//! one: the body is the root-signed `DeviceCert` for its device key as JSON
+//! (what a page's root issues), with the install token the host was
+//! provisioned with in [`INSTALL_TOKEN_HEADER`]. `200` answers
+//! [`Installed`] as JSON; every other route answers `503` meanwhile.
+//!
 //! `/join` is the one route after `/certify` a device calls without a
 //! session: a person a host does not know yet joins through it. Routes after
 //! the handshake carry the session token in
@@ -40,6 +46,20 @@ use crate::auth::{Hello, HelloAck, HelloAck2};
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
+/// Header carrying the install token of a host awaiting its certificate.
+pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
+/// The route that installs a waiting host's certificate.
+pub const INSTALL_ROUTE: &str = "/install";
+
+/// A waiting host's answer to an accepted `/install` (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Installed {
+    /// The host's device key, hex.
+    pub device_public_key: String,
+    /// The identity it now serves, hex.
+    pub user_public_key: String,
+}
+
 /// WebTransport path of the live relay.
 pub const LIVE_PATH: &str = "/moq/live";
 /// Longest an `/events` or `/certify/wait` poll is held.

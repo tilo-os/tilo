@@ -65,6 +65,12 @@ pub struct WebArgs {
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    /// Without a device certificate yet, create the device key, print its
+    /// public half and serve only `/peer/v1/install` on `--web` until a
+    /// root-signed host certificate for it arrives with the token in this
+    /// file; then start as usual.
+    #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
+    pub install_token_file: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -219,6 +225,51 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
 ///
 /// # Errors
 /// The listener cannot bind or load its certificate.
+/// Before the relay starts: when `--install-token-file` is given and the
+/// identity under `identity_root` has no certificate yet, wait for one on
+/// the browser listener. Prints `{"event": "awaiting_certificate",
+/// "devicePublicKey": …}` while waiting.
+///
+/// # Errors
+///
+/// The token or device key cannot be read, or the listener fails.
+pub async fn await_certificate(
+    identity_root: &Path,
+    args: &WebArgs,
+    state_root: &Path,
+) -> anyhow::Result<()> {
+    let (Some(token_file), Some(listen)) = (&args.install_token_file, args.web) else {
+        return Ok(());
+    };
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    if paths.device_cert.is_file() {
+        return Ok(());
+    }
+    let token = std::fs::read_to_string(token_file)
+        .with_context(|| format!("read {}", token_file.display()))?;
+    let (device, _) =
+        tilo_user_identity::load_or_create_device_key(&paths).context("create the device key")?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "awaiting_certificate",
+            "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
+        })
+    );
+    let cert = tilo_relay::web::install::await_certificate(
+        &web_config(args, listen, state_root),
+        paths,
+        &token,
+    )
+    .await
+    .context("wait for the device certificate")?;
+    tracing::info!(
+        user = %hex::encode(cert.user_public_key),
+        "device certificate installed"
+    );
+    Ok(())
+}
+
 pub async fn serve(
     relay: &Relay,
     args: &WebArgs,
