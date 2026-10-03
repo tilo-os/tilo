@@ -1402,9 +1402,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
             !app.export_is_offered(),
             "a render in flight disables Export"
         );
-        let l = app
-            .with_dialog_layout(super::VideoEditorApp::export_layout)
-            .expect("rendered dialog layout");
+        let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
         assert_eq!(
             app.cursor_shape(l.confirm.center()),
             Some(CursorIcon::Default),
@@ -9576,7 +9574,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
         app.text_scale = 2.0;
         let r = app.regions();
         assert!(app.topbar_is_compact());
-        assert!(r.topbar.height() > TOPBAR_H);
+        assert!(r.topbar.height() > f64::from(Theme::dark().tokens.metrics.header_height));
         assert!(r.transport.height() > TRANSPORT_H);
         assert!(r.ruler.height() > RULER_H);
 

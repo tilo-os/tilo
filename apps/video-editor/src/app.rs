@@ -95,11 +95,8 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 
 const GOTO_CARD_W: f64 = 260.0;
 
-const ADD_TRACK_H: f64 = 24.0;
-
 // ---- layout constants ----------------------------------------------------
-const TOPBAR_H: f64 = 48.0;
-/// Width of the export progress / outcome chip under the topbar.
+/// Widest the export progress / outcome chip in the header row grows.
 const EXPORT_CHIP_W: f64 = 176.0;
 const TIMELINE_H: f64 = 320.0;
 const BIN_W: f64 = 268.0;
@@ -171,9 +168,6 @@ const KEY_BOX: f64 = 20.0;
 
 const BIN_BREAKPOINT: f64 = 900.0;
 
-/// A top-bar command's height before a theme is known: the pointer target a
-/// Regular control is built to.
-const TOPBAR_TOUCH_TARGET: f64 = 32.0;
 const TOPBAR_EDGE: f64 = S3;
 const TOPBAR_GAP: f64 = S3;
 /// At this width the Split button is redundant with its stable `S` shortcut
@@ -1353,7 +1347,7 @@ pub struct VideoEditorApp {
     /// The theme the chrome was last drawn with: the default theme until the
     /// first frame, so geometry measured before that frame (an event, a
     /// test) agrees with what it paints.
-    chrome_theme: Option<Theme>,
+    chrome_theme: Theme,
     hit_text: std::cell::RefCell<Option<TextRenderer>>,
     help_scroll: f64,
     /// What a `Save` should do once the destination comes back: just save, or
@@ -1566,7 +1560,7 @@ impl VideoEditorApp {
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
-            chrome_theme: Some(Theme::dark()),
+            chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
             save_then_open: None,
@@ -1764,16 +1758,12 @@ impl VideoEditorApp {
     /// header and the body below it never overlap at any text size or window
     /// height. Everything else, the clip's facts included, scrolls.
     fn inspector_header(&self, r: &Regions) -> InspectorHeader {
-        let scale = self.inspector_ui_scale();
         self.with_dialog_layout(|_, tr, theme| {
             let name = line_height(tr, &theme.text(TextRole::Heading));
             let sub = line_height(tr, &theme.text(TextRole::Caption));
             InspectorHeader {
                 height: (S3 + name + S1 + sub + S3).min(r.inspector.height()),
             }
-        })
-        .unwrap_or(InspectorHeader {
-            height: 64.0 * scale,
         })
     }
 
@@ -1842,13 +1832,6 @@ impl VideoEditorApp {
                 project,
             }
         })
-        .unwrap_or(TopbarWidths {
-            import: 96.0,
-            split: 72.0,
-            export: 96.0,
-            history: 96.0,
-            project: PROJECT_BTN_W,
-        })
     }
 
     /// Canvas chrome has fixed logical geometry, whereas text is scaled by
@@ -1860,17 +1843,12 @@ impl VideoEditorApp {
 
     /// The editor's one header row: the window's header height.
     fn topbar_height(&self) -> f64 {
-        self.chrome_theme
-            .as_ref()
-            .map_or(TOPBAR_H, |t| f64::from(t.tokens.metrics.header_height))
-            * self.chrome_scale()
+        f64::from(self.chrome_theme.tokens.metrics.header_height) * self.chrome_scale()
     }
 
     /// A topbar control: a Regular control's height.
     fn topbar_target(&self) -> f64 {
-        self.chrome_theme.as_ref().map_or(TOPBAR_TOUCH_TARGET, |t| {
-            ButtonFace::height(ControlSize::Regular, t)
-        })
+        ButtonFace::height(ControlSize::Regular, &self.chrome_theme)
     }
 
     fn timeline_height(&self) -> f64 {
@@ -2112,7 +2090,6 @@ impl VideoEditorApp {
             .with_dialog_layout(|_, tr, theme| {
                 ui::widget::BadgeFace::intrinsic_width(&words, tr, theme)
             })
-            .unwrap_or(64.0)
             .min(m.readout.width());
         Rect::new(m.readout.x1 - w, m.readout.y0, m.readout.x1, m.readout.y1)
     }
@@ -2130,18 +2107,16 @@ impl VideoEditorApp {
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
         let lanes = self.lane_rects(r);
         let y = lanes.last().map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
-        let (h, widths) = self
-            .with_dialog_layout(|_, tr, theme| {
-                let h = ButtonFace::height(ControlSize::Small, theme);
-                let mut width = |kind| {
-                    ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
-                        .icon(Icon::Plus)
-                        .control_size(ControlSize::Small)
-                        .intrinsic_width(tr, theme)
-                };
-                (h, [width(TrackKind::Video), width(TrackKind::Audio)])
-            })
-            .unwrap_or_else(|| (ADD_TRACK_H, [r.gutter.width() / 2.0; 2]));
+        let (h, widths) = self.with_dialog_layout(|_, tr, theme| {
+            let h = ButtonFace::height(ControlSize::Small, theme);
+            let mut width = |kind| {
+                ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
+                    .icon(Icon::Plus)
+                    .control_size(ControlSize::Small)
+                    .intrinsic_width(tr, theme)
+            };
+            (h, [width(TrackKind::Video), width(TrackKind::Audio)])
+        });
         if y + h > r.timeline.y1 {
             return Vec::new();
         }
@@ -2330,17 +2305,15 @@ impl VideoEditorApp {
     /// it at the playhead and opens its words for typing.
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let scale = self.bin_ui_scale();
-        let (w, h) = self
-            .with_dialog_layout(|_, tr, theme| {
-                let face = ButtonFace::new(Rect::ZERO, "Title")
-                    .icon(Icon::Plus)
-                    .control_size(ControlSize::Small);
-                (
-                    face.intrinsic_width(tr, theme),
-                    ButtonFace::height(ControlSize::Small, theme),
-                )
-            })
-            .unwrap_or((62.0 * scale, 28.0 * scale));
+        let (w, h) = self.with_dialog_layout(|_, tr, theme| {
+            let face = ButtonFace::new(Rect::ZERO, "Title")
+                .icon(Icon::Plus)
+                .control_size(ControlSize::Small);
+            (
+                face.intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Small, theme),
+            )
+        });
         let x1 = r.bin.x1 - S2 * scale;
         let y0 = r.bin.y0 + (self.bin_list_top() - h) / 2.0;
         Rect::new(x1 - w, y0, x1, y0 + h)
@@ -2719,10 +2692,7 @@ impl VideoEditorApp {
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
         // The panels slide over the theme's own base duration.
-        let duration = self.chrome_theme.as_ref().map_or_else(
-            || ui::tokens::motion::Durations::default().base(),
-            |theme| theme.tokens.motion.durations.base(),
-        );
+        let duration = self.chrome_theme.tokens.motion.durations.base();
         self.bin_flap.tick(layout, dt, duration);
         self.inspector_flap.tick(insp, dt, duration);
     }
@@ -5532,14 +5502,12 @@ impl VideoEditorApp {
         if !self.project.media.is_empty() {
             return None;
         }
-        let (w, h) = self
-            .with_dialog_layout(|_, tr, theme| {
-                (
-                    ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
-                    ButtonFace::height(ControlSize::Regular, theme),
-                )
-            })
-            .unwrap_or((184.0, 32.0));
+        let (w, h) = self.with_dialog_layout(|_, tr, theme| {
+            (
+                ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Regular, theme),
+            )
+        });
         let cx = r.bin.center().x;
         let cy = r.bin.y0 + self.bin_list_top() + 80.0;
         Some(Rect::new(cx - w / 2.0, cy, cx + w / 2.0, cy + h))
@@ -5682,16 +5650,14 @@ impl VideoEditorApp {
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
         // As wide as the reading it carries, a Small control centred on the
         // ruler band; the ruler omits ticks behind it.
-        let (w, h) = self
-            .with_dialog_layout(|app, tr, theme| {
-                let words = app.zoom_words();
-                let face = ButtonFace::new(Rect::ZERO, &words).control_size(ControlSize::Small);
-                (
-                    face.intrinsic_width(tr, theme),
-                    ButtonFace::height(ControlSize::Small, theme),
-                )
-            })
-            .unwrap_or((84.0 * self.text_scale, ADD_TRACK_H));
+        let (w, h) = self.with_dialog_layout(|app, tr, theme| {
+            let words = app.zoom_words();
+            let face = ButtonFace::new(Rect::ZERO, &words).control_size(ControlSize::Small);
+            (
+                face.intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Small, theme),
+            )
+        });
         let width = w.min((r.ruler.width() - S2).max(0.0));
         let x1 = r.ruler.x1 - S2;
         let y = r.ruler.y0 + ((r.ruler.height() - h) / 2.0).max(0.0);
@@ -6214,7 +6180,7 @@ impl VideoEditorApp {
     /// Keeping this lifecycle work separate makes the draw pass read as the
     /// actual visual stacking order.
     fn prepare_draw_frame(&mut self, theme: &Theme) -> Regions {
-        self.chrome_theme = Some(theme.clone());
+        self.chrome_theme = theme.clone();
         self.advance_playback();
         #[cfg(any(feature = "gst", feature = "decode"))]
         self.pump_monitor();
@@ -6885,9 +6851,7 @@ impl Widget for VideoEditorApp {
                 let entry =
                     self.with_dialog_layout(|app, tr, theme| app.goto_layout(&r, tr, theme).entry);
                 if let Some(field) = self.goto_entry.as_mut() {
-                    if let Some(rect) = entry {
-                        field.apply_layout_external(rect);
-                    }
+                    field.apply_layout_external(entry);
                     let before = field.value().to_string();
                     field.handle_event(event, ctx);
                     if field.value() != before {
@@ -7050,11 +7014,10 @@ impl Widget for VideoEditorApp {
                 // timeline behind it must not zoom or pan. The shortcut
                 // sheet's body scrolls when the window cannot hold the table.
                 if self.is_modal() {
-                    if self.navigation.help_open
-                        && let Some(max) = self.with_dialog_layout(|app, tr, theme| {
+                    if self.navigation.help_open {
+                        let max = self.with_dialog_layout(|app, tr, theme| {
                             app.help_layout(tr, theme).max_scroll
-                        })
-                    {
+                        });
                         self.help_scroll = (self.help_scroll - dy * 40.0).clamp(0.0, max);
                     }
                     *ctx.handled = true;
@@ -7122,9 +7085,7 @@ impl Widget for VideoEditorApp {
             // Laid out from the current state — see `chrome_theme`. A
             // disabled Export offers no pointer: a hand over a button that
             // will refuse is a lie about what the click does.
-            let Some(l) = self.with_dialog_layout(VideoEditorApp::export_layout) else {
-                return Some(CursorIcon::Default);
-            };
+            let l = self.with_dialog_layout(VideoEditorApp::export_layout);
             let over_btn = if l.confirm.contains(point) {
                 self.export_is_offered()
             } else if l.cancel.contains(point) {
@@ -8830,9 +8791,7 @@ impl VideoEditorApp {
 
     /// A Small control's height, for the statuses in the header row.
     fn topbar_small_height(&self) -> f64 {
-        self.chrome_theme
-            .as_ref()
-            .map_or(28.0, |t| ButtonFace::height(ControlSize::Small, t))
+        ButtonFace::height(ControlSize::Small, &self.chrome_theme)
     }
 
     /// Card and buttons for the unsaved-work question.
@@ -9270,22 +9229,19 @@ impl VideoEditorApp {
         Rect::new(px - 6.0, r.ruler.y0, px + 6.0, r.ruler.y0 + 16.0)
     }
 
-    fn with_dialog_layout<T>(
-        &self,
-        f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T,
-    ) -> Option<T> {
-        let theme = self.chrome_theme.as_ref()?;
+    fn with_dialog_layout<T>(&self, f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T) -> T {
+        let theme = &self.chrome_theme;
         // A layout measured inside another one (the inspector's header while
         // the go-to card is being placed) gets its own renderer rather than a
         // second borrow of the shared one.
         let Ok(mut slot) = self.hit_text.try_borrow_mut() else {
             let mut tr = TextRenderer::new();
             tr.set_text_scale(theme.text_scale);
-            return Some(f(self, &mut tr, theme));
+            return f(self, &mut tr, theme);
         };
         let tr = slot.get_or_insert_with(TextRenderer::new);
         tr.set_text_scale(theme.text_scale);
-        Some(f(self, tr, theme))
+        f(self, tr, theme)
     }
 
     fn help_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> HelpLayout {
