@@ -23,7 +23,7 @@
 )]
 
 use file_explorer::FileExplorerWidget;
-use file_explorer::files_app::STATUS_BUBBLE_SAFE_INSET_PX;
+use file_explorer::files_app::status_bubble_safe_inset;
 use file_explorer::model::ViewMode;
 use ui::headless::Framed;
 use ui::theme::Theme;
@@ -186,7 +186,7 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     h.wheel(1000.0);
     h.relayout();
     let content_after = h.rect_of("FileView");
-    let safe_inset = f64::from(STATUS_BUBBLE_SAFE_INSET_PX);
+    let safe_inset = f64::from(status_bubble_safe_inset(&ui::Theme::dark()));
     let max_offset = (content_before.height() - (viewport.height() - safe_inset)).max(0.0);
     let bottom = applied_offset(&h);
     assert!(

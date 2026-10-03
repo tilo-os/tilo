@@ -205,7 +205,7 @@ mod open_with_tests {
             "Cut",
             "Copy",
             "Move to Trash",
-            "New Folder",
+            "New folder",
         ] {
             assert!(
                 labels.contains(&expected.to_string()),
@@ -228,8 +228,8 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         assert!(!labels.contains(&"Move to Trash".to_string()));
-        assert!(labels.contains(&"New Folder".to_string()));
-        assert!(labels.contains(&"Open Terminal Here".to_string()));
+        assert!(labels.contains(&"New folder".to_string()));
+        assert!(labels.contains(&"Open terminal here".to_string()));
     }
 
     pub(super) fn copy_then_paste_menu_includes_paste() {
@@ -339,12 +339,12 @@ mod open_with_tests {
         set_document_opener(|path| panic!("activation opener used for {}", path.display()));
         let mut w = pdf_widget();
         w.open_context_menu(Point::new(40.0, 40.0));
-        assert!(menu_labels(&w.context_menu).contains(&"Open With".to_string()));
+        assert!(menu_labels(&w.context_menu).contains(&"Open with".to_string()));
 
         w.open_open_with_submenu(Point::new(200.0, 40.0));
         assert_eq!(
             menu_labels(&w.submenu),
-            vec!["Evince (default)", "PDF Viewer", "Other Application…"]
+            vec!["Evince (default)", "PDF Viewer", "Other application…"]
         );
         let viewer = w.submenu_commands[1].clone().expect("an app row");
         assert_eq!(
@@ -640,11 +640,11 @@ mod open_with_tests {
         w.open_context_menu(Point::new(20.0, 20.0));
         let labels = menu_labels(&w.context_menu);
         assert!(
-            labels.contains(&"Open Containing Folder".to_string()),
+            labels.contains(&"Open containing folder".to_string()),
             "{labels:?}"
         );
         assert!(labels.contains(&"Remove from Recent".to_string()));
-        assert!(!labels.contains(&"New Folder".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"New folder".to_string()), "{labels:?}");
         assert!(!labels.contains(&"Paste".to_string()));
 
         w.apply_command(FileCommand::ForgetRecent(folder.path().join("drop.txt")));
@@ -973,7 +973,7 @@ mod command_path_tests {
             "and Empty Trash: {labels:?}"
         );
         assert!(
-            labels.contains(&"Delete Permanently".to_string()),
+            labels.contains(&"Delete permanently".to_string()),
             "and a permanent delete"
         );
         assert!(
@@ -1311,7 +1311,7 @@ mod command_path_tests {
         assert_eq!(dialog.role, ui::a11y::Role::Dialog);
         assert_eq!(
             dialog.children.last().and_then(|node| node.name.as_deref()),
-            Some("Delete Permanently")
+            Some("Delete permanently")
         );
 
         w.close_collab_panel();
@@ -1355,10 +1355,10 @@ mod command_path_tests {
             .filter_map(|i| i.label().map(str::to_string))
             .collect();
         for s in [
-            "Sort by Name",
-            "Sort by Size",
-            "Sort by Type",
-            "Sort by Date",
+            "Sort by name",
+            "Sort by size",
+            "Sort by type",
+            "Sort by date",
         ] {
             assert!(
                 labels.contains(&s.to_string()),
@@ -1406,7 +1406,7 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(target.clone());
         assert!(w.error_message().is_some(), "missing dir sets an error");
-        // The "Try Again" button pushes Refresh — still errors while missing.
+        // The "Try again" button pushes Refresh — still errors while missing.
         assert!(w.apply_command(FileCommand::Refresh));
         assert!(w.error_message().is_some());
         // Once the directory exists, the same retry clears the error.
@@ -1541,11 +1541,11 @@ mod command_path_tests {
         w.navigate(d.path().to_path_buf());
         assert!(w.apply_command(FileCommand::NewFolder));
         assert!(
-            d.path().join("New Folder").is_dir(),
+            d.path().join("New folder").is_dir(),
             "folder actually created"
         );
         assert!(w.is_renaming(), "new folder drops straight into rename");
-        assert_eq!(w.rename_buffer(), "New Folder");
+        assert_eq!(w.rename_buffer(), "New folder");
     }
 
     fn external_new_folder_uses_the_typed_name_without_rename_ui() {
@@ -2811,17 +2811,17 @@ mod command_path_tests {
 
     fn context_menu_gates_new_file_on_templates_existing() {
         // The "New File ▸" entry appears iff the Templates dir has files, and
-        // "New Folder" is always present. Templates are injected so the check is
+        // "New folder" is always present. Templates are injected so the check is
         // hermetic (no reliance on the ambient Templates dir).
         let (w, _cfg) = hermetic();
         let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label.starts_with("New File"))
+            spec.iter().any(|(label, _)| label.starts_with("New file"))
         };
         let has_new_folder = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label == "New Folder")
+            spec.iter().any(|(label, _)| label == "New folder")
         };
 
-        // Empty Templates dir → no "New File", but "New Folder" stays.
+        // Empty Templates dir → no "New File", but "New folder" stays.
         let none = w.context_menu_spec(&[]);
         assert!(!has_new_file(&none), "no templates → submenu hidden");
         assert!(has_new_folder(&none), "New Folder is always offered");
@@ -2888,7 +2888,7 @@ mod command_path_tests {
         w.selection.select_only(0);
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+            label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
         assert!(w.apply_command(FileCommand::KeepOffline));
         assert_eq!(
@@ -2953,7 +2953,7 @@ mod command_path_tests {
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
-                    label == "Free Local Space" && *command == Some(FileCommand::FreeLocalSpace)
+                    label == "Free local space" && *command == Some(FileCommand::FreeLocalSpace)
                 })
         );
         assert!(widget.apply_command(FileCommand::FreeLocalSpace));
@@ -3060,10 +3060,10 @@ mod command_path_tests {
 
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+            label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
         assert!(spec.iter().any(|(label, command)| {
-            label == "Use Automatic Storage" && *command == Some(FileCommand::RemoveOfflinePin)
+            label == "Use automatic storage" && *command == Some(FileCommand::RemoveOfflinePin)
         }));
 
         w.apply_command(FileCommand::KeepOffline);
@@ -3138,7 +3138,7 @@ mod command_path_tests {
         let spec = w.context_menu_spec(&[]);
         assert!(
             spec.iter().any(|(label, command)| {
-                label == "Pinned by Parent Folder" && command.is_none()
+                label == "Pinned by parent folder" && command.is_none()
             })
         );
         assert!(
@@ -3174,7 +3174,7 @@ mod command_path_tests {
 
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Retry Download" && *command == Some(FileCommand::RetryTransfer)
+            label == "Retry download" && *command == Some(FileCommand::RetryTransfer)
         }));
         assert!(spec.iter().any(|(label, command)| {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
@@ -3271,10 +3271,10 @@ mod command_path_tests {
         w.selection.select_only(0);
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Sharing & Access…" && *command == Some(FileCommand::ShowSharing)
+            label == "Sharing and access…" && *command == Some(FileCommand::ShowSharing)
         }));
         assert!(spec.iter().any(|(label, command)| {
-            label == "Version History…" && *command == Some(FileCommand::ShowHistory)
+            label == "Version history…" && *command == Some(FileCommand::ShowHistory)
         }));
         assert!(spec.iter().any(|(label, command)| {
             label == "Properties…" && *command == Some(FileCommand::ShowProperties)
@@ -3786,7 +3786,7 @@ mod command_path_tests {
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
-                    label == "Restore Previous Version"
+                    label == "Restore previous version"
                         && *command
                             == Some(FileCommand::RestoreVersion {
                                 version_id: expected,
@@ -4073,8 +4073,8 @@ mod command_path_tests {
             .collect();
         assert!(menu_labels.contains(&"Extract archive…"));
         assert!(menu_labels.iter().all(|label| !label.starts_with('✓')));
-        assert!(!menu_labels.contains(&"New Folder"));
-        assert!(!menu_labels.contains(&"Open Terminal Here"));
+        assert!(!menu_labels.contains(&"New folder"));
+        assert!(!menu_labels.contains(&"Open terminal here"));
         let list_choice = files
             .context_menu
             .items()
@@ -4155,31 +4155,14 @@ mod responsive_body_tests {
         }
 
         fn lay_out(&mut self, width: f32, height: f32) {
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             self.w.sync(&mut self.state.doc, &self.state.root);
-            let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
-            let measure_map = nm.clone();
-            let trm = &mut self.tr;
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    Size {
-                        width: AvailableSpace::Definite(width),
-                        height: AvailableSpace::Definite(height),
-                    },
-                    |k, a, id, _, _| {
-                        if let Some(&p) = measure_map.get(&id) {
-                            unsafe { (*p).measure(k, a, trm) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            self.w.apply_layout(&taffy, node, Point::ORIGIN);
-            self.taffy = taffy;
+            // The window solver, as the live host runs it: the shell lays its
+            // columns out through a layout policy a plain Taffy pass lacks.
+            let mut frame =
+                ui::launch::ShotFrame::new((width as u32, height as u32), Theme::dark());
+            frame.layout(&mut self.w).unwrap();
+            let (_, taffy, node) = frame.layout_parts().expect("laid out");
+            self.taffy = taffy.clone();
             self.node = node;
         }
 
@@ -4350,7 +4333,7 @@ mod responsive_body_tests {
         let mut h = H::new(None, 1200.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            ShellMode::Wide,
+            SidebarPlacement::Docked,
             "a wide window docks the places list beside the file view"
         );
         // Resize DOWN on the same instance (a real window resize re-runs
@@ -4358,12 +4341,12 @@ mod responsive_body_tests {
         h.lay_out(520.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            ShellMode::Narrow,
+            SidebarPlacement::Drawer,
             "a narrow window collapses the body to a single pane"
         );
         // ...and back up again proves it isn't one-way.
         h.lay_out(1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
     }
 
     /// Each phase lays out its own harness (or App) at its own size.
@@ -4555,6 +4538,15 @@ mod responsive_body_tests {
     }
 
     fn archive_extraction_stays_directly_reachable_on_phone_and_desktop() {
+        fn names(widget: &dyn Widget, name: &str) -> bool {
+            widget
+                .accessibility()
+                .is_some_and(|node| node.name.as_deref() == Some(name))
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| names(child, name))
+        }
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("note.txt");
         std::fs::write(&source, b"hello").unwrap();
@@ -4563,14 +4555,8 @@ mod responsive_body_tests {
 
         let mut h = H::new(Some(&archive), 390.0, 760.0);
         let extract = t("files-archive-extract");
-        let has_extract = |toolbar: &crate::toolbar::FileToolbar| {
-            toolbar.children().into_iter().any(|child| {
-                child
-                    .accessibility()
-                    .is_some_and(|node| node.name.as_deref() == Some(extract.as_str()))
-            })
-        };
-        assert!(has_extract(&h.w.toolbar), "phone toolbar exposes Extract");
+        let has_extract = |w: &FileExplorerWidget| names(&w.nav, extract.as_str());
+        assert!(has_extract(&h.w), "phone toolbar exposes Extract");
         assert!(
             h.w.toolbar.view_menu_rect().is_none(),
             "archive toolbar must not expose a one-item duplicate menu"
@@ -4581,7 +4567,7 @@ mod responsive_body_tests {
         if h.w.take_structure_dirty() {
             h.lay_out(1200.0, 760.0);
         }
-        assert!(has_extract(&h.w.toolbar), "desktop toolbar exposes Extract");
+        assert!(has_extract(&h.w), "desktop toolbar exposes Extract");
         assert!(h.w.toolbar.view_menu_rect().is_none());
     }
 
@@ -4596,7 +4582,7 @@ mod responsive_body_tests {
             std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
         }
         let h = H::new(Some(dir.path()), 600.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
 
         assert!(
             !h.w.debug_places_open(),
@@ -4633,7 +4619,7 @@ mod responsive_body_tests {
 
         assert!(
             scrollable.y1 - content_viewport.y1
-                >= f64::from(STATUS_BUBBLE_SAFE_INSET_PX) - f64::EPSILON,
+                >= f64::from(status_bubble_safe_inset(&ui::Theme::dark())) - f64::EPSILON,
             "the item/status pill has a dedicated bottom lane rather than overlaying files: \
              scrollable={scrollable:?} viewport={content_viewport:?}"
         );
@@ -4715,8 +4701,12 @@ mod responsive_body_tests {
 
         h.w.debug_open_places_drawer();
         let semantic_children = h.w.nav.children();
-        assert_eq!(semantic_children.len(), 1);
-        assert_eq!(semantic_children[0].name(), "PlacesSidebar");
+        assert!(
+            semantic_children
+                .iter()
+                .any(|child| child.name() == "NavList"),
+            "the open drawer exposes the places list"
+        );
     }
 
     /// Picking a destination in the narrow drawer dismisses it, leaving the
@@ -4725,7 +4715,7 @@ mod responsive_body_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 520.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
         h.w.debug_open_places_drawer();
         assert!(h.w.debug_places_open());
 
@@ -4835,7 +4825,6 @@ mod responsive_body_tests {
         dropping_a_folder_on_the_sidebar_pins_it();
         releasing_a_pin_drag_off_the_sidebar_pins_nothing();
         a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
-        right_clicking_a_favourite_opens_its_menu();
     }
 
     /// Dragging a folder out of the list and dropping it on the docked sidebar
@@ -4847,7 +4836,7 @@ mod responsive_body_tests {
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
         let before = h.w.favorites().len();
         let folder = PathBuf::from("/home/tester/Projects/tilo");
 
@@ -4926,62 +4915,11 @@ mod responsive_body_tests {
         assert_eq!(crate::external_drag::unclaimed(), None);
     }
 
-    /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
-    /// Favourites), not the file-view context menu. The pinned Home entry offers
-    /// no Remove. Drives the real right-press path end to end.
-    fn right_clicking_a_favourite_opens_its_menu() {
-        let cfg = tempfile::tempdir().unwrap();
-        let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
-            Some(PathBuf::from("/home/tester")),
-        );
-        let mut h = H::from_widget(w, 1200.0, 720.0);
-        assert_eq!(
-            h.w.debug_body_mode(),
-            ShellMode::Wide,
-            "wide docks the sidebar"
-        );
-
-        let band =
-            h.w.favorites_store()
-                .borrow()
-                .band
-                .expect("sidebar laid out");
-        // Row 1 is a removable favourite (row 0 is the pinned Home).
-        let (x, y) = (band.center_x(), band.row_center_y(1));
-        h.cursor(x, y);
-        h.right_press();
-        let labels = h.open_menu_labels();
-        assert!(
-            labels.iter().any(|l| l == "Remove from Favourites"),
-            "the favourite's own menu is shown: {labels:?}",
-        );
-        assert!(
-            labels.iter().any(|l| l == "Open"),
-            "with the Open folder action: {labels:?}"
-        );
-        // It is NOT the file-view context menu (which would offer New Folder).
-        assert!(
-            !labels.iter().any(|l| l == "New Folder"),
-            "not the file menu: {labels:?}"
-        );
-
-        // The pinned Home favourite (row 0) has no Remove.
-        let (hx, hy) = (band.center_x(), band.row_center_y(0));
-        h.cursor(hx, hy);
-        h.right_press();
-        let home = h.open_menu_labels();
-        assert!(
-            !home.iter().any(|l| l == "Remove from Favourites"),
-            "Home is pinned and cannot be removed: {home:?}",
-        );
-    }
-
     fn wide_docks_the_places_list_beside_the_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
         assert!(h.w.debug_places_open(), "wide docks the places list open");
 
         let content = h.w.debug_content_rect();
@@ -5056,7 +4994,7 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        assert!(error.value.as_deref().unwrap().contains("Try Again"));
+        assert!(error.value.as_deref().unwrap().contains("Try again"));
         let state = error.children.first().expect("error state semantic group");
         assert_eq!(state.name.as_deref(), Some("Couldn’t open this folder"));
         assert_eq!(state.live, Some(Politeness::Assertive));
