@@ -85,7 +85,8 @@ containerfile="$repo/os/Containerfile"
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
-expected_contract=59d815025b2c0dcab6845d6073e7e4f65dfcacebca68b46add8f9db7b8fd39a3
+# The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
+expected_contract=907cb38e6dbd04fd1b07d37cfc1d3c54900c3a2549d52ddbe8c1b47b7b18188a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

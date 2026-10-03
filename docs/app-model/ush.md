@@ -27,12 +27,19 @@ An environment is a synced record declared by the Terminal app
 ```rust
 pub struct Environment {
     pub name: String,
-    pub runtime: String,          // the env-runtime image, tapp:<hex>
-    pub tools: Vec<ToolRef>,      // tool images built for `runtime`
+    pub runtime: RuntimeRef,      // { release, images: arch -> tapp:<hex> }
+    pub tools: Vec<ToolRef>,      // { packages, images: arch -> tapp:<hex> }
     pub grants: Json<Vec<CapOverride>>, // FsPath grants, subject so.tilo.ush
     pub home: HomePolicy,         // Persistent (default) | Ephemeral
 }
 ```
+
+The record is architecture-neutral: a node stacks the images for its own
+architecture (`x86_64`, `aarch64`). When a tool has no usable image for it —
+none recorded, or one this node cannot materialise — the session builds it
+there through the tool builder, for the same packages on that node's image of
+the runtime release, and records the id with `add-tool`, so the next session is
+a cache hit.
 
 Its actions are `add-tool`, `remove-tool`, `grant-dir`, `revoke-grant`,
 `set-runtime` and `rename`. History and undo come from the record layer; there
@@ -207,8 +214,10 @@ sessions it starts. Images live in the package store; tests point
   reaches the network the machine reaches.
 - **Images are not fetched from the registry yet.** The supervisor
   materialises images through the package store (`materialized_tree`), from
-  the system app store and the user's store; a tool image built on another
-  device reaches this one once the store is given a registry fetcher.
+  the system app store and the user's store. Images this device signed (its
+  own tool builds) are trusted; one another device of yours built is rebuilt
+  here rather than fetched, until the store has a registry fetcher and the
+  fleet's device keys as publishers.
 
 ## Verifying it yourself
 
