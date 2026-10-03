@@ -956,7 +956,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     let mut recent = Resource::new(
         "video-player.history.local",
         "media.history",
-        format!("Recent videos: {} on this device", ctx.library.recent.len(),),
+        format!("Recent videos: {} on this device", ctx.library.recent.len()),
     );
     if !ctx.library.recent.is_empty()
         && let Ok(clear) = ActionSpec::operation(
