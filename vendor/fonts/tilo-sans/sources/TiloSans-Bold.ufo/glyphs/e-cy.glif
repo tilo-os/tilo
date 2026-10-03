@@ -2,17 +2,17 @@
 <glyph name="e-cy" format="2">
   <advance width="562"/>
   <unicode hex="0454"/>
-  <anchor x="278" y="0" name="bottom"/>
-  <anchor x="278" y="510" name="top"/>
+  <anchor x="281" y="0" name="bottom"/>
+  <anchor x="281" y="510" name="top"/>
   <outline>
     <contour>
       <point x="291" y="-10" type="curve" smooth="yes"/>
-      <point x="411" y="-10"/>
-      <point x="503" y="53"/>
-      <point x="535" y="148" type="curve"/>
-      <point x="381" y="148" type="line"/>
-      <point x="361" y="122"/>
-      <point x="329" y="108"/>
+      <point x="421" y="-10"/>
+      <point x="518" y="63"/>
+      <point x="542" y="173" type="curve"/>
+      <point x="395" y="173" type="line"/>
+      <point x="378" y="130"/>
+      <point x="339" y="108"/>
       <point x="293" y="108" type="curve" smooth="yes"/>
       <point x="220" y="108"/>
       <point x="176" y="165"/>
@@ -20,12 +20,12 @@
       <point x="176" y="345"/>
       <point x="220" y="402"/>
       <point x="293" y="402" type="curve" smooth="yes"/>
-      <point x="322" y="402"/>
-      <point x="348" y="393"/>
-      <point x="368" y="376" type="curve"/>
-      <point x="530" y="376" type="line"/>
-      <point x="494" y="464"/>
-      <point x="405" y="520"/>
+      <point x="334" y="402"/>
+      <point x="369" y="384"/>
+      <point x="389" y="351" type="curve"/>
+      <point x="539" y="351" type="line"/>
+      <point x="510" y="453"/>
+      <point x="415" y="520"/>
       <point x="291" y="520" type="curve" smooth="yes"/>
       <point x="131" y="520"/>
       <point x="20" y="409"/>
@@ -35,8 +35,8 @@
     </contour>
     <contour>
       <point x="166" y="212" type="line"/>
-      <point x="348" y="212" type="line"/>
-      <point x="348" y="312" type="line"/>
+      <point x="329" y="212" type="line"/>
+      <point x="329" y="312" type="line"/>
       <point x="166" y="312" type="line"/>
     </contour>
   </outline>
