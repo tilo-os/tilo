@@ -9,7 +9,7 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-use canvas::actions::{AddLayer, Draw, EditMarks, NewMark, NewStroke, SaveMedium};
+use canvas::actions::{AddLayer, Arrange, Draw, EditMarks, NewMark, NewStroke, SaveMedium};
 use canvas::media::MediumSpec;
 use canvas::model::Shape;
 use canvas::{ArtworkResource, CanvasAction};
@@ -621,4 +621,90 @@ fn clipped_marks_measure_what_shows() {
         hit.is_none_or(|mark| mark.id != "sheen"),
         "the sheen is cut away there: {hit:?}"
     );
+}
+
+/// A mark slots in directly above or below another, as shading goes over
+/// a shape but under what stands in front of it.
+#[test]
+fn marks_go_directly_above_or_below_another() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![
+            rect("hill", 0.0, "#557755"),
+            rect("tree", 10.0, "#224422"),
+            rect("title", 20.0, "#ffffff"),
+            rect("shade", 30.0, "#000000"),
+        ],
+    )))
+    .unwrap();
+    let order = |art: &Replica<ArtworkResource>| {
+        art.state()
+            .unwrap()
+            .marks
+            .iter()
+            .map(|mark| mark.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let arrange = |to: &str, of: &str| {
+        CanvasAction::Arrange(Arrange {
+            ids: vec!["shade".into()],
+            to: to.into(),
+            of: Some(of.into()),
+        })
+    };
+    apply(&mut art, arrange("above", "hill")).unwrap();
+    assert_eq!(order(&art), ["hill", "shade", "tree", "title"]);
+    apply(&mut art, arrange("below", "title")).unwrap();
+    assert_eq!(order(&art), ["hill", "tree", "shade", "title"]);
+    let refused = apply(&mut art, arrange("above", "shade")).unwrap_err();
+    assert!(refused.contains("`of`"), "{refused}");
+}
+
+/// A gradient travels with its mark, and a flat fill replaces it.
+#[test]
+fn a_gradient_moves_with_its_mark_and_a_fill_replaces_it() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let gradient: canvas::model::Gradient = serde_json::from_value(json!({
+        "kind": "linear", "from": [0, 10], "to": [50, 50],
+        "stops": [[0, "#ff0000"], [1, "#0000ff"]]
+    }))
+    .unwrap();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![NewMark {
+            gradient: Some(gradient),
+            ..rect("card", 0.0, "#ffffff")
+        }],
+    )))
+    .unwrap();
+    let edit = |edit: EditMarks| {
+        CanvasAction::edit(EditMarks {
+            ids: vec!["card".into()],
+            ..edit
+        })
+    };
+    apply(
+        &mut art,
+        edit(EditMarks {
+            move_by: Some([100.0, 5.0]),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let moved = state.mark("card").unwrap().style.gradient.clone().unwrap();
+    assert_eq!((moved.from, moved.to), ([100.0, 15.0], [150.0, 55.0]));
+    apply(
+        &mut art,
+        edit(EditMarks {
+            fill: Some("#202020".into()),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let card = state.mark("card").unwrap();
+    assert!(card.style.gradient.is_none(), "{:?}", card.style);
+    assert_eq!(card.style.fill.as_deref(), Some("#202020"));
 }

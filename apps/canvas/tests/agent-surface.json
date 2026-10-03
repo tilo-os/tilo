@@ -195,7 +195,7 @@
     "action": "arrange",
     "resource_kind": "canvas.artwork",
     "label": "Arrange marks",
-    "description": "Bring marks to the front or back of their layer, or one step forward or backward.",
+    "description": "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
     "operation": "Document",
     "params": [
       {
@@ -215,12 +215,26 @@
         "name": "to",
         "ty": "text",
         "required": true,
-        "description": "`front`, `back`, `forward` or `backward`.",
+        "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
         "schema": {
           "type": "string",
-          "description": "`front`, `back`, `forward` or `backward`."
+          "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
         },
         "nullable": false
+      },
+      {
+        "name": "of",
+        "ty": "text",
+        "required": false,
+        "description": "The mark or group `above` and `below` are relative to.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The mark or group `above` and `below` are relative to."
+        },
+        "nullable": true
       }
     ]
   },
@@ -246,7 +260,7 @@
     "action": "compare",
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
-    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
     "operation": "View",
     "params": [
       {
@@ -272,13 +286,13 @@
         "name": "mode",
         "ty": "text",
         "required": false,
-        "description": "`side-by-side` (default), `overlay` or `difference`.",
+        "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ).",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "`side-by-side` (default), `overlay` or `difference`."
+          "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
         },
         "nullable": true
       },
@@ -763,7 +777,7 @@
                   "string",
                   "null"
                 ],
-                "description": "`multiply`, `screen`, `overlay`, … (see the refusal for all)."
+                "description": "`normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color` or `luminosity`."
               },
               "shadow": {
                 "type": [
@@ -1313,13 +1327,13 @@
         "name": "fill",
         "ty": "text",
         "required": false,
-        "description": "A colour, or `none`.",
+        "description": "A colour (replacing a gradient), or `none`.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "A colour, or `none`."
+          "description": "A colour (replacing a gradient), or `none`."
         },
         "nullable": true
       },
@@ -1561,7 +1575,25 @@
     "label": "Export SVG",
     "description": "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
     "operation": "Effect",
-    "params": []
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": false,
+        "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
+        },
+        "nullable": true
+      }
+    ]
   },
   {
     "resource": "canvas.artwork",
