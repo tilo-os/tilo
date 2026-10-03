@@ -464,10 +464,10 @@ fn units<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<Vec<&'a Mark>>, Act
     Ok(units)
 }
 
-/// The extent of a unit of marks.
-fn extent(unit: &[&Mark]) -> ui::vello::kurbo::Rect {
+/// The extent of a unit of marks: what of them can show.
+fn extent(art: &Artwork, unit: &[&Mark]) -> ui::vello::kurbo::Rect {
     unit.iter()
-        .map(|mark| mark.bounds())
+        .map(|mark| art.visible_bounds(mark))
         .reduce(|a, b| a.union(b))
         .unwrap_or_default()
 }
@@ -744,7 +744,7 @@ impl EditMarks {
             check_group(art, group, &[])?;
         }
         for unit in units {
-            let centre = extent(&unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
+            let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
                 * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
                 * ui::vello::kurbo::Affine::scale(scale)
@@ -1160,7 +1160,7 @@ impl Align {
                 "give an edge (left, center, right, top, middle, bottom), distribute (horizontal, vertical) or both",
             ));
         }
-        let boxes: Vec<Rect> = units.iter().map(|unit| extent(unit)).collect();
+        let boxes: Vec<Rect> = units.iter().map(|unit| extent(art, unit)).collect();
         let target = match self.to.as_deref() {
             None => boxes
                 .iter()
@@ -1170,7 +1170,7 @@ impl Align {
             Some("artwork") => art.bounds(),
             Some(id) => {
                 let unit: Vec<&Mark> = units_of(art, id)?;
-                extent(&unit)
+                extent(art, &unit)
             }
         };
         let mut shifts = vec![(0.0, 0.0); boxes.len()];
