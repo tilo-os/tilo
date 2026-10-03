@@ -158,6 +158,9 @@ pub struct CanvasSurface {
     /// Focus came from a press on the canvas, not the keyboard: the
     /// pointer already says where the person is, so no ring is drawn.
     pressed_into_focus: bool,
+    /// Whether the window was narrower than the compact breakpoint the last
+    /// time the canvas looked; `None` before it first did.
+    was_narrow: Option<bool>,
     space: bool,
     modifiers: ModifiersState,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
@@ -204,6 +207,7 @@ impl CanvasSurface {
             staged_view: None,
             focused: false,
             pressed_into_focus: false,
+            was_narrow: None,
             space: false,
             modifiers: ModifiersState::empty(),
             results: HashMap::new(),
@@ -983,11 +987,36 @@ impl CanvasSurface {
                 }
             }
         }
+        self.follow_width();
         let zoom = self.zoom();
         if self.tools.zoom.with(|shown| (*shown - zoom).abs() > 1e-9) {
             // The readout is drawn before the canvas: wake the window so it
             // shows the new zoom in the next frame.
             self.tools.zoom.writer().set(zoom);
+        }
+    }
+
+    /// Put the sidebar away when the window becomes narrower than the
+    /// compact breakpoint, and bring it back when it widens again. Only a
+    /// crossing changes it, so a person who opens or closes it in between
+    /// keeps their choice.
+    fn follow_width(&mut self) {
+        if self.rect.width() <= 1.0 {
+            return;
+        }
+        let shown = self.tools.sidebar.with(|shown| *shown);
+        let sidebar = if shown {
+            f64::from(crate::SIDEBAR)
+        } else {
+            0.0
+        };
+        let window = self.rect.x1 + sidebar;
+        let narrow = window < f64::from(self.metrics.compact_breakpoint);
+        if self.was_narrow != Some(narrow) {
+            if self.was_narrow.is_some() || narrow {
+                self.tools.sidebar.writer().set(!narrow);
+            }
+            self.was_narrow = Some(narrow);
         }
     }
 

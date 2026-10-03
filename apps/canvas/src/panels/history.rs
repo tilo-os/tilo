@@ -107,7 +107,15 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .with_intrinsic_height()
             .with_gap(2.0)
             .push(now_row(&tools));
+        // A rule where the hand changes, between a person's steps and an
+        // agent's run or one run and the next, so each reads as its own.
+        let mut hand: Option<(Option<&str>, &str)> = None;
         for entry in &entries {
+            let this = (entry.run.as_deref(), entry.author.as_str());
+            if hand.is_some_and(|before| before != this) {
+                list = list.push(Box::new(ui::widget::Divider::horizontal()));
+            }
+            hand = Some(this);
             list = list.push(entry_row(cx, &tools, entry));
         }
         Box::new(
