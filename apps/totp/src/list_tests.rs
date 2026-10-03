@@ -273,3 +273,38 @@ fn painting_every_row_state_paints() {
     calm.reduce_motion = true;
     assert!(!paint(&mut list, &mut text, &calm));
 }
+
+/// Large text grows the rows and keeps their parts apart.
+#[test]
+fn large_text_grows_the_rows_and_keeps_the_parts_apart() {
+    let (small, _, _) = laid_out(VIEWPORT);
+    let theme = Theme::dark().with_text_scale(2.0);
+    let mut text = TextRenderer::new();
+    // The renderer scales text the way the launch harness does for a 200% theme.
+    text.set_text_scale(theme.text_scale);
+    let mut list = AccountList::new();
+    list.set_viewport(VIEWPORT, COLUMN);
+    list.set_accounts(demo_accounts());
+    list.layout(&mut text, &theme);
+
+    assert!(
+        list.row_rect(0).height() > small.row_rect(0).height(),
+        "rows grow with the text"
+    );
+    for (i, layout) in list.layouts.iter().enumerate() {
+        assert!(
+            layout.face.width() > 0.0,
+            "row {i} keeps room for its title"
+        );
+        for action in &layout.actions {
+            assert!(
+                action.x1 <= layout.code.x0 + 0.01,
+                "row {i}: actions stay left of the code"
+            );
+        }
+        assert!(
+            layout.code.x1 <= COLUMN.width() + 0.01,
+            "row {i}: the code stays inside the row"
+        );
+    }
+}
