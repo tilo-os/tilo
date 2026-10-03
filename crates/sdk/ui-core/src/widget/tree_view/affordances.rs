@@ -573,7 +573,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .draw(scene, transform, track, metrics, theme, false);
     }
 
-    /// The open context menu, painted above everything else the tree draws.
+    /// The open context menu, painted in the window's top layer.
     pub(super) fn paint_context_menu(
         &mut self,
         scene: &mut Scene,
@@ -584,7 +584,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     ) {
         if self.menu.is_open() {
             self.menu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
