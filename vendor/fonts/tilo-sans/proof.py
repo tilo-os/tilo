@@ -54,7 +54,8 @@ FONTS = ROOT / "fonts"
 SOURCES = ROOT / "sources"
 PROOFS = ROOT / "proofs"
 CHROME = Path.home() / ".cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell"
-MOCK_FONTS = Path("/var/home/quinten/tilo/tilo/.claude/worktrees/ui-look-investigation/target/mock/fonts")
+# Candidate comparison fonts (Onest, Geologica); override with TILO_MOCK_FONTS.
+MOCK_FONTS = Path(os.environ.get("TILO_MOCK_FONTS", REPO / "target/mock/fonts"))
 
 UPRIGHT = FONTS / "TiloSans[wdth,wght].ttf"
 ITALIC = FONTS / "TiloSans-Italic[wdth,wght].ttf"

@@ -15,7 +15,7 @@ from fontTools.pens.boundsPen import ControlBoundsPen
 
 SRC = Path(__file__).resolve().parents[2] / "sources"
 WORK = Path(__file__).resolve().parents[2] / "proofs" / "work" / "greek-dev"
-CHROME = "/home/quinten/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell"
+CHROME = str(Path.home() / ".cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell")
 
 
 def glyph_path(font, name):
