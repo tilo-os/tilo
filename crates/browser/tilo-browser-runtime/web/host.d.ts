@@ -187,6 +187,13 @@ export interface MountOptions {
   resolveApp?: AppResolver;
   /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
   local?: LocalDesktop;
+  /**
+   * The desktop's Invite (its launchpad card and the people control in its
+   * top bar) calls this; without it the desktop offers no invitation.
+   */
+  onInvite?: () => void;
+  /** The workspace name a desktop this mount seeds starts with. */
+  workspaceName?: string;
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
