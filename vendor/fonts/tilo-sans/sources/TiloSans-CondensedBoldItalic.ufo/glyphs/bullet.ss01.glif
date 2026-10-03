@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="bullet.ss01" format="2">
+  <advance width="327"/>
+  <outline>
+    <component base="period.ss01" xScale="1.4" yScale="1.4" xOffset="76" yOffset="252"/>
+  </outline>
+</glyph>

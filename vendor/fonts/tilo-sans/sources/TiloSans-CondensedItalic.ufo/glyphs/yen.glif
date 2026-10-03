@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="yen" format="2">
+  <advance width="412"/>
+  <unicode hex="00A5"/>
+  <outline>
+    <contour>
+      <point x="112" y="0" type="line"/>
+      <point x="182" y="0" type="line"/>
+      <point x="259" y="336" type="line"/>
+      <point x="507" y="720" type="line"/>
+      <point x="429" y="720" type="line"/>
+      <point x="219" y="384" type="line"/>
+      <point x="249" y="384" type="line"/>
+      <point x="192" y="720" type="line"/>
+      <point x="119" y="720" type="line"/>
+      <point x="189" y="336" type="line"/>
+    </contour>
+    <contour>
+      <point x="30" y="272" type="line"/>
+      <point x="391" y="272" type="line"/>
+      <point x="404" y="330" type="line"/>
+      <point x="43" y="330" type="line"/>
+    </contour>
+    <contour>
+      <point x="218" y="392" type="line"/>
+      <point x="208" y="450" type="line"/>
+      <point x="71" y="450" type="line"/>
+      <point x="58" y="392" type="line"/>
+    </contour>
+    <contour>
+      <point x="306" y="450" type="line"/>
+      <point x="271" y="392" type="line"/>
+      <point x="419" y="392" type="line"/>
+      <point x="432" y="450" type="line"/>
+    </contour>
+  </outline>
+</glyph>

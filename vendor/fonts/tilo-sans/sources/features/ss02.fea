@@ -1,0 +1,17 @@
+feature ss02 {
+featureNames {
+  name "Single Story a";
+};
+sub a by a.ss02;
+sub aacute by aacute.ss02;
+sub abreve by abreve.ss02;
+sub acaron by acaron.ss02;
+sub acircumflex by acircumflex.ss02;
+sub adieresis by adieresis.ss02;
+sub agrave by agrave.ss02;
+sub amacron by amacron.ss02;
+sub aogonek by aogonek.ss02;
+sub aring by aring.ss02;
+sub atilde by atilde.ss02;
+sub adieresis.ss01 by adieresis.ss01.ss02;
+} ss02;

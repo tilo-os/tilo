@@ -1,0 +1,113 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>ascender</key>
+    <integer>740</integer>
+    <key>capHeight</key>
+    <integer>720</integer>
+    <key>copyright</key>
+    <string>Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans Project Authors.</string>
+    <key>descender</key>
+    <integer>-205</integer>
+    <key>familyName</key>
+    <string>Tilo Sans</string>
+    <key>guidelines</key>
+    <array>
+      <dict>
+        <key>angle</key>
+        <integer>0</integer>
+        <key>x</key>
+        <integer>217</integer>
+        <key>y</key>
+        <integer>-40</integer>
+      </dict>
+    </array>
+    <key>italicAngle</key>
+    <integer>0</integer>
+    <key>openTypeHeadCreated</key>
+    <string>2022/07/30 15:19:26</string>
+    <key>openTypeHheaAscender</key>
+    <integer>970</integer>
+    <key>openTypeHheaDescender</key>
+    <integer>-250</integer>
+    <key>openTypeHheaLineGap</key>
+    <integer>0</integer>
+    <key>openTypeNameDescription</key>
+    <string>Tilo Sans extends Instrument Sans by Rodrigo Fuenzalida and Jordan Egstad (https://github.com/Instrument/instrument-sans) with additional scripts and forms for the Tilo desktop. Licensed under the SIL Open Font License 1.1.</string>
+    <key>openTypeNameDesigner</key>
+    <string>Rodrigo Fuenzalida, Jordan Egstad (Instrument Sans); The Tilo Sans Project Authors</string>
+    <key>openTypeNameDesignerURL</key>
+    <string>https://www.rfuenzalida.com</string>
+    <key>openTypeNameLicense</key>
+    <string>This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org</string>
+    <key>openTypeNameLicenseURL</key>
+    <string>https://openfontlicense.org</string>
+    <key>openTypeNameManufacturer</key>
+    <string>The Tilo Sans Project Authors</string>
+    <key>openTypeOS2Selection</key>
+    <array>
+      <integer>7</integer>
+    </array>
+    <key>openTypeOS2StrikeoutPosition</key>
+    <integer>301</integer>
+    <key>openTypeOS2StrikeoutSize</key>
+    <integer>38</integer>
+    <key>openTypeOS2Type</key>
+    <array/>
+    <key>openTypeOS2TypoAscender</key>
+    <integer>970</integer>
+    <key>openTypeOS2TypoDescender</key>
+    <integer>-250</integer>
+    <key>openTypeOS2TypoLineGap</key>
+    <integer>0</integer>
+    <key>openTypeOS2WinAscent</key>
+    <integer>986</integer>
+    <key>openTypeOS2WinDescent</key>
+    <integer>350</integer>
+    <key>postscriptBlueValues</key>
+    <array>
+      <integer>-15</integer>
+      <integer>0</integer>
+      <integer>510</integer>
+      <integer>525</integer>
+      <integer>720</integer>
+      <integer>735</integer>
+      <integer>740</integer>
+      <integer>755</integer>
+    </array>
+    <key>postscriptOtherBlues</key>
+    <array>
+      <integer>-220</integer>
+      <integer>-205</integer>
+    </array>
+    <key>postscriptStemSnapH</key>
+    <array>
+      <integer>108</integer>
+      <integer>112</integer>
+    </array>
+    <key>postscriptStemSnapV</key>
+    <array>
+      <integer>138</integer>
+      <integer>144</integer>
+    </array>
+    <key>postscriptUnderlinePosition</key>
+    <integer>-180</integer>
+    <key>postscriptUnderlineThickness</key>
+    <integer>38</integer>
+    <key>styleMapFamilyName</key>
+    <string>Tilo Sans Condensed Bold</string>
+    <key>styleMapStyleName</key>
+    <string>regular</string>
+    <key>styleName</key>
+    <string>Condensed Bold</string>
+    <key>unitsPerEm</key>
+    <integer>1000</integer>
+    <key>versionMajor</key>
+    <integer>1</integer>
+    <key>versionMinor</key>
+    <integer>1</integer>
+    <key>xHeight</key>
+    <integer>510</integer>
+  </dict>
+</plist>

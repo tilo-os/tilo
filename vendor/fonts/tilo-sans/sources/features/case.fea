@@ -1,0 +1,19 @@
+feature case {
+sub colon by colon.case;
+sub semicolon by semicolon.case;
+sub exclam by exclam.case;
+sub exclamdown by exclamdown.case;
+sub question by question.case;
+sub questiondown by questiondown.case;
+sub bullet by bullet.case;
+sub periodcentered.loclCAT by periodcentered.loclCAT.case;
+sub hyphen by hyphen.case;
+sub endash by endash.case;
+sub emdash by emdash.case;
+sub parenleft by parenleft.case;
+sub parenright by parenright.case;
+sub braceleft by braceleft.case;
+sub braceright by braceright.case;
+sub bracketleft by bracketleft.case;
+sub bracketright by bracketright.case;
+} case;

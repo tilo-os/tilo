@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="questiondown.ss01" format="2">
+  <advance width="420"/>
+  <outline>
+    <contour>
+      <point x="202" y="-215" type="curve" smooth="yes"/>
+      <point x="312" y="-215"/>
+      <point x="390" y="-145"/>
+      <point x="390" y="-16" type="curve"/>
+      <point x="257" y="-16" type="line"/>
+      <point x="257" y="-72"/>
+      <point x="238" y="-97"/>
+      <point x="206" y="-97" type="curve" smooth="yes"/>
+      <point x="180" y="-97"/>
+      <point x="164" y="-81"/>
+      <point x="164" y="-43" type="curve" smooth="yes"/>
+      <point x="164" y="44"/>
+      <point x="281" y="68"/>
+      <point x="281" y="256" type="curve"/>
+      <point x="151" y="256" type="line"/>
+      <point x="151" y="107"/>
+      <point x="24" y="95"/>
+      <point x="24" y="-47" type="curve" smooth="yes"/>
+      <point x="24" y="-145"/>
+      <point x="92" y="-215"/>
+    </contour>
+    <component base="period.ss01" xScale="-1.0" yScale="-1.0" xOffset="338.0" yOffset="510.0"/>
+  </outline>
+</glyph>

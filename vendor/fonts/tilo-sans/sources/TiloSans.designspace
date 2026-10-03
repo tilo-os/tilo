@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<designspace format="5.0">
+  <axes>
+    <axis tag="wdth" name="Width" minimum="75" maximum="100" default="100">
+      <map input="75" output="75"/>
+      <map input="88" output="87.5"/>
+      <map input="100" output="100"/>
+      <labels>
+        <label uservalue="75" name="Condensed"/>
+        <label uservalue="87.5" name="SemiCondensed"/>
+        <label uservalue="100" name="Normal" elidable="true"/>
+      </labels>
+    </axis>
+    <axis tag="wght" name="Weight" minimum="400" maximum="700" default="400">
+      <labels>
+        <label uservalue="400" name="Regular" elidable="true" linkeduservalue="700"/>
+        <label uservalue="500" name="Medium"/>
+        <label uservalue="600" name="SemiBold"/>
+        <label uservalue="700" name="Bold"/>
+      </labels>
+    </axis>
+  </axes>
+  <sources>
+    <source filename="TiloSans-CondensedRegular.ufo" name="Condensed Regular" familyname="Tilo Sans" stylename="Condensed Regular">
+      <location>
+        <dimension name="Width" xvalue="75"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </source>
+    <source filename="TiloSans-CondensedBold.ufo" name="Condensed Bold" familyname="Tilo Sans" stylename="Condensed Bold">
+      <location>
+        <dimension name="Width" xvalue="75"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </source>
+    <source filename="TiloSans-Regular.ufo" name="Regular" familyname="Tilo Sans" stylename="Regular">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </source>
+    <source filename="TiloSans-Bold.ufo" name="Bold" familyname="Tilo Sans" stylename="Bold">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </source>
+  </sources>
+  <instances>
+    <instance familyname="Tilo Sans" stylename="Regular">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="Medium">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="500"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="SemiBold">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="600"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="Bold">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </instance>
+  </instances>
+</designspace>

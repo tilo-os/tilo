@@ -1,0 +1,6 @@
+feature ss08 {
+featureNames {
+  name "Alternate J";
+};
+sub J by J.ss08;
+} ss08;
