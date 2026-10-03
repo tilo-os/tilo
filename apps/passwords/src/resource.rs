@@ -1,5 +1,5 @@
-//! Passwords as a [`tilo_resource::Resource`]: shared filter/search/selection
-//! prefs sync in the document; the encrypted vault catalogue stays local.
+//! Passwords as a [`tilo_resource::Resource`]: the shared filter and
+//! selection sync in the document; the encrypted vault catalogue stays local.
 //!
 //! Add / import / export are Effects with no document delta (published via
 //! [`Resource::local_operations`]). Per-item copy / reveal / edit / delete
@@ -18,13 +18,13 @@ use ui::widget::Element;
 
 use crate::actions::{self, VAULT_RESOURCE_ID};
 use crate::doc::ViewDoc;
-use crate::showcase::{PasswordsSurface, VaultFilter};
+use crate::vault::VaultFilter;
+use crate::window::PasswordsSurface;
 
-/// Collaborative vault filter, search, and selection preferences.
+/// Collaborative vault filter and selection preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PasswordsAction {
     SetFilter { filter: String },
-    SetSearch { value: String },
     SelectItem { id: String },
 }
 
@@ -32,7 +32,6 @@ impl Action for PasswordsAction {
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
             Self::SetFilter { filter } => ViewDoc::set_filter(doc, filter),
-            Self::SetSearch { value } => ViewDoc::set_search(doc, value),
             Self::SelectItem { id } => ViewDoc::set_selected_id(doc, Some(id.as_str())),
         }
         Ok(())
@@ -43,7 +42,6 @@ impl Action for PasswordsAction {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VaultState {
     pub(crate) filter: VaultFilter,
-    pub search: String,
     pub selected_id: Option<String>,
 }
 
@@ -65,7 +63,6 @@ impl Resource for Passwords {
     fn read(doc: &Doc) -> Result<VaultState, ModelError> {
         Ok(VaultState {
             filter: VaultFilter::parse(&ViewDoc::filter(doc)),
-            search: ViewDoc::search(doc),
             selected_id: ViewDoc::selected_id(doc),
         })
     }
@@ -89,21 +86,6 @@ impl Resource for Passwords {
                 },
             )
             .describe("Set the shared vault sidebar filter."),
-            ActionDecl::new(
-                "set-search",
-                "Search vault",
-                vec![ActionParam::optional(
-                    "query",
-                    ParamType::Text,
-                    "Text to find in titles, usernames, origins, or tags",
-                )],
-                |args, _| {
-                    Ok(PasswordsAction::SetSearch {
-                        value: args.text("query").unwrap_or("").to_owned(),
-                    })
-                },
-            )
-            .describe("Set the shared vault search string."),
             ActionDecl::new(
                 "select-item",
                 "Select item",
@@ -135,13 +117,6 @@ impl Resource for Passwords {
     }
 }
 
-/// Hosted-only extras that are not document state: live vault item rows (and
-/// editor-session ops when drafting). The vault door stays on
-/// [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &PasswordsSurface) -> Vec<PublishedResource> {
-    app.live_item_extras()
-}
-
 /// Framework app: the passwords surface over [`Passwords`].
 pub struct PasswordsShell;
 
@@ -150,10 +125,14 @@ impl ResourceApp for PasswordsShell {
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
         cx.surface(PasswordsSurface::live())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::window::SCENARIOS
     }
 }
 
@@ -165,6 +144,11 @@ impl ResourceSurface<Passwords> for PasswordsSurface {
 
     fn attach(&mut self, cx: SurfaceCx<Passwords>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// A capture shows the fixture vault, never the person's own.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -262,11 +246,6 @@ mod tests {
         }
         .apply(&mut doc)
         .unwrap();
-        PasswordsAction::SetSearch {
-            value: "bank".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
         PasswordsAction::SelectItem {
             id: "opaque-demo".into(),
         }
@@ -278,14 +257,7 @@ mod tests {
         let published =
             ui::tilo_resource::publish::<Passwords>(VAULT_RESOURCE_ID, "Password vault", &state);
         assert_eq!(published.kind, "passwords.vault");
-        for id in [
-            "set-filter",
-            "set-search",
-            "select-item",
-            "add",
-            "import",
-            "export",
-        ] {
+        for id in ["set-filter", "select-item", "add", "import", "export"] {
             assert!(
                 published.actions.iter().any(|action| action.id == id),
                 "{id} must be on the framework resource"
@@ -296,10 +268,9 @@ mod tests {
             "shared projection must not carry live vault items"
         );
         assert_eq!(state.filter, VaultFilter::Favorites);
-        assert_eq!(state.search, "bank");
         assert_eq!(state.selected_id.as_deref(), Some("opaque-demo"));
 
-        let mut app = PasswordsSurface::demo(crate::ShowcaseMode::Vault);
+        let mut app = PasswordsSurface::demo();
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
         assert!(!app.is_hosted(), "standalone stays on the local host");
@@ -352,18 +323,18 @@ mod tests {
         assert!(door[0].children.is_empty());
 
         let mut local = AutoCommit::new();
-        let mut standalone = PasswordsSurface::demo(crate::ShowcaseMode::Vault);
+        let mut standalone = PasswordsSurface::demo();
         standalone.commit_view(
             &mut local,
-            &PasswordsAction::SetSearch {
-                value: "privacy".into(),
+            &PasswordsAction::SetFilter {
+                filter: "wifi".into(),
             },
         );
         assert!(
             standalone.last_document_action().is_some(),
             "ActionSink must record document actions on the local host"
         );
-        assert_eq!(ViewDoc::search(&local), "privacy");
+        assert_eq!(ViewDoc::filter(&local), "wifi");
 
         // Empty present must not wipe a local vault that has not been published.
         let before = standalone.item_count();

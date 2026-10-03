@@ -11,7 +11,6 @@ use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind,
 use accounts::SecretItem;
 
 use crate::resource::{Passwords, VaultState};
-use crate::showcase::ShowcaseMode;
 
 pub const OPERATION_TYPE: &str = "tilo.passwords.operation";
 pub const VAULT_RESOURCE_ID: &str = "passwords:vault";
@@ -22,6 +21,7 @@ pub enum PasswordOperation {
     SaveDraft,
     CancelDraft,
     GeneratePassword,
+    Open { id: String },
     Edit { id: String },
     Copy { id: String },
     Reveal { id: String },
@@ -130,7 +130,13 @@ pub fn item_resource(item: &SecretItem) -> Resource {
     // vault metadata (including a title, account and origin) is intentionally
     // not copied into this public descriptor; only an opaque item id is used
     // in the client-local action payload, and no action carries a secret.
-    Resource::new(format!("passwords:item:{id}"), resource_type, resource_name)
+    Resource::new(item_resource_id(&item.id), resource_type, resource_name)
+        .with_action(operation(
+            "open",
+            "Open",
+            OperationKind::View,
+            &PasswordOperation::Open { id: id.clone() },
+        ))
         .with_action(operation(
             "edit",
             "Edit",
@@ -157,6 +163,16 @@ pub fn item_resource(item: &SecretItem) -> Resource {
         ))
 }
 
+/// The stable resource id of a vault item.
+pub fn item_resource_id(id: &accounts::SecretId) -> String {
+    format!("passwords:item:{}", id.0)
+}
+
+/// The action a search hit for `id` runs: show the item.
+pub fn open_item_address(id: &accounts::SecretId) -> ui::tilo_actions::ActionAddress {
+    ui::tilo_actions::ActionAddress::new(item_resource_id(id), "open")
+}
+
 /// Live vault item rows (no `passwords.vault` root).
 pub fn live_item_resources(items: &[SecretItem]) -> Vec<Resource> {
     items.iter().map(item_resource).collect()
@@ -166,12 +182,12 @@ pub fn live_item_resources(items: &[SecretItem]) -> Vec<Resource> {
 /// item children, with editor-session ops when drafting.
 pub fn standalone_resources(
     items: &[SecretItem],
-    mode: ShowcaseMode,
+    editing: bool,
     state: &VaultState,
 ) -> Vec<Resource> {
     let mut root =
         ui::tilo_resource::publish::<Passwords>(VAULT_RESOURCE_ID, "Password vault", state);
-    if matches!(mode, ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm) {
+    if editing {
         for spec in editor_session_specs() {
             root = root.with_action(spec);
         }
@@ -222,8 +238,10 @@ mod tests {
             registry
         },
         resources: |doc| {
-            crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor).publish_resources(doc)
+            let mut core = crate::vault::Core::demo();
+            core.begin_edit();
+            core.publish_resources(doc)
         },
-        palette: ["New item", "Import passwords", "Generate strong password", "Copy password", "Search vault"],
+        palette: ["New item", "Import passwords", "Generate strong password", "Copy password", "Filter vault"],
     }
 }
