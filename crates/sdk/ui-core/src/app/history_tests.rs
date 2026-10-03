@@ -4758,6 +4758,7 @@ fn component_control_root(
             queued_controls: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::VecDeque::new(),
             )),
+            search_requests: std::rc::Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             records: records.clone(),

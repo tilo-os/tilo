@@ -97,7 +97,12 @@ where
     let mut inspected = 0;
     let mut cursor = None;
     for page_number in 1.. {
-        let page = provider.search_page(LATE_HIT_NEEDLE, cursor.as_ref(), PAGE_BUDGET, PAGE_BUDGET);
+        let page = provider.search_page(
+            &LATE_HIT_NEEDLE.into(),
+            cursor.as_ref(),
+            PAGE_BUDGET,
+            PAGE_BUDGET,
+        );
         inspected += page.inspected;
         results.extend(page.results);
         assert!(
@@ -178,12 +183,14 @@ mod tests {
             }
             fn search_page(
                 &self,
-                query: &str,
+                query: &crate::search::SearchQuery,
                 cursor: Option<&SearchCursor>,
                 work_budget: usize,
                 result_limit: usize,
             ) -> SearchPage {
-                let mut page = self.0.query_page(query, cursor, work_budget, result_limit);
+                let mut page = self
+                    .0
+                    .query_page(query.text(), cursor, work_budget, result_limit);
                 page.inspected = self.0.stats().records;
                 page
             }
