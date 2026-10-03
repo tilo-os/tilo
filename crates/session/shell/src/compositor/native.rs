@@ -3742,48 +3742,52 @@ fn agent_window(
     agent: &str,
     app_id: &str,
 ) -> Result<WindowTarget, test_control::Response> {
-    let chrome = fb.chrome();
-    let tree = chrome.tree();
-    let Some(ws) = tree.desktop.active_workspace() else {
-        return Err(agent_refusal("no_workspace", "no active workspace"));
-    };
     let own = agents.seat(agent).and_then(|seat| seat.strip);
     let mut open = Vec::new();
     let mut busy = false;
     let mut found: Option<WindowTarget> = None;
-    for strip in &ws.strips {
-        let owner = agents.strip_owner(strip.id).filter(|owner| *owner != agent);
-        for group in &strip.window_groups {
-            for tab in &group.tabs {
-                let crate::shell::state::TileContent::Foreign {
-                    app_id: tab_app,
-                    surface_id,
-                } = &tab.tile
-                else {
-                    continue;
-                };
-                if tab_app != app_id {
-                    open.push(tab_app.clone());
-                    continue;
-                }
-                if owner.is_some() {
-                    busy = true;
-                    continue;
-                }
-                let better = found
-                    .as_ref()
-                    .is_none_or(|current| own == Some(strip.id) && own != Some(current.strip));
-                if better {
-                    found = Some(WindowTarget {
-                        workspace: ws.id,
-                        strip: strip.id,
-                        group: group.id,
-                        tab: tab.id,
-                        surface: *surface_id,
-                    });
+    {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return Err(agent_refusal("no_workspace", "no active workspace"));
+        };
+        for strip in &ws.strips {
+            let owner = agents.strip_owner(strip.id).filter(|owner| *owner != agent);
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let crate::shell::state::TileContent::Foreign {
+                        app_id: tab_app,
+                        surface_id,
+                    } = &tab.tile
+                    else {
+                        continue;
+                    };
+                    if tab_app != app_id {
+                        open.push(tab_app.clone());
+                        continue;
+                    }
+                    if owner.is_some() {
+                        busy = true;
+                        continue;
+                    }
+                    let better = found
+                        .as_ref()
+                        .is_none_or(|current| own == Some(strip.id) && own != Some(current.strip));
+                    if better {
+                        found = Some(WindowTarget {
+                            workspace: ws.id,
+                            strip: strip.id,
+                            group: group.id,
+                            tab: tab.id,
+                            surface: *surface_id,
+                        });
+                    }
                 }
             }
         }
+        drop(tree);
+        drop(chrome);
     }
     found.ok_or_else(|| {
         if busy {
@@ -3974,14 +3978,16 @@ fn seat_agent(
 fn window_focused(chrome: &crate::shell::chrome_state::ChromeState, target: &WindowTarget) -> bool {
     let tree = chrome.tree();
     let desktop = &tree.desktop;
-    desktop.active == target.workspace
+    let focused = desktop.active == target.workspace
         && desktop.active_strip.get(&target.workspace) == Some(&target.strip)
         && desktop.active_group.get(&target.strip) == Some(&target.group)
         && desktop
             .active_workspace()
             .and_then(|ws| ws.strips.iter().find(|s| s.id == target.strip))
             .and_then(|s| s.window_groups.iter().find(|g| g.id == target.group))
-            .is_some_and(|g| g.active_tab == target.tab)
+            .is_some_and(|g| g.active_tab == target.tab);
+    drop(tree);
+    focused
 }
 
 /// Where an agent sees and acts: the whole screen. While agents drive the

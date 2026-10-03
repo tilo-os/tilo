@@ -39,12 +39,12 @@ const MAX_REPEAT: u32 = 100;
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long after a window's last new frame it counts as done answering.
-const SETTLE_QUIET: Duration = Duration::from_millis(200);
+const SETTLE_QUIET: Duration = Duration::from_millis(600);
 /// How long a window may take to start answering input before it counts
 /// as having nothing to show for it.
-const SETTLE_FIRST: Duration = Duration::from_millis(1000);
+const SETTLE_FIRST: Duration = Duration::from_millis(2000);
 /// Longest wait for windows that keep drawing, such as an animation.
-const SETTLE_MAX: Duration = Duration::from_secs(3);
+const SETTLE_MAX: Duration = Duration::from_secs(5);
 const SETTLE_POLL: Duration = Duration::from_millis(25);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -963,7 +963,7 @@ pub fn tool_definitions() -> Vec<Value> {
     });
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
-        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns the screenshot after the window answered it. For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"","inputSchema":action,"annotations":effect}),
+        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window stopped drawing (a slow app may lag: screenshot again). For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"","inputSchema":action,"annotations":effect}),
         // Each step takes the `computer` tool's arguments; restating that
         // schema here would double what every model turn reads.
         json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise. app_id applies to every step naming none. A stroke along a path: left_mouse_down, mouse_move steps, left_mouse_up","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH},"app_id":{"type":"string"}},"required":["actions"],"additionalProperties":false},"annotations":effect}),

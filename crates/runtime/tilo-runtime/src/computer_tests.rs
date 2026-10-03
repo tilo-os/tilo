@@ -39,7 +39,7 @@ impl FakeCompositor {
                 let reply = if command["op"] == "key" && command["key"] == "Unmapped" {
                     json!({"err":{"code":"parse_error","message":"unknown key"}})
                 } else if command["op"] == "foreign_frames" {
-                    asked_frames += 1;
+                    asked_frames = asked_frames.saturating_add(1);
                     json!({"foreign_frames":{"frames":[{"app_id":"so.tilo.canvas","frame_seq":asked_frames.min(3)}]}})
                 } else if command["op"] == "agent_seat" {
                     let (width, height) = size_of(&command);
