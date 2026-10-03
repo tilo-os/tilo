@@ -1,0 +1,6 @@
+# The typography ratchet for apps-logs: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/logs/src/app.rs legacy_size_api 18
+apps/logs/src/app.rs raw_type_step 31
+apps/logs/src/app.rs renderer_scale_helper 1

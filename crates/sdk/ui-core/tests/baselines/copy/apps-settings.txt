@@ -1,0 +1,18 @@
+# The copy ratchet for apps-settings: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/settings/src/accounts.rs middle_dot_join 7
+apps/settings/src/actions/mod.rs middle_dot_join 7
+apps/settings/src/input_sources.rs middle_dot_join 1
+apps/settings/src/panes/device_mesh.rs middle_dot_join 6
+apps/settings/src/panes/display.rs middle_dot_join 14
+apps/settings/src/panes/network.rs all_caps_label 1
+apps/settings/src/panes/network.rs middle_dot_join 1
+apps/settings/src/panes/permissions.rs middle_dot_join 1
+apps/settings/src/panes/printers.rs middle_dot_join 5
+apps/settings/src/panes/speakers.rs middle_dot_join 2
+apps/settings/src/panes/time_date.rs middle_dot_join 1
+apps/settings/src/panes/updates.rs middle_dot_join 2
+apps/settings/src/settings_app.rs middle_dot_join 4
+apps/settings/src/sidebar.rs to_uppercase 1
+apps/settings/src/speaker_setup.rs middle_dot_join 3
