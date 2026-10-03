@@ -42,11 +42,13 @@ pub enum Label {
     CloudHostSecret,
     /// A user root key wrapped in a browser (passkey PRF or recovery key).
     UserRootWrap,
+    /// One app's secret in a machine's file-backed secret store.
+    FileSecretStore,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -62,6 +64,7 @@ impl Label {
         Self::KeyWrap,
         Self::CloudHostSecret,
         Self::UserRootWrap,
+        Self::FileSecretStore,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -83,6 +86,7 @@ impl Label {
             Self::KeyWrap => "tilo-seal/v1/key-wrap",
             Self::CloudHostSecret => "tilo-seal/v1/cloud-host-secret",
             Self::UserRootWrap => "tilo-seal/v1/user-root-wrap",
+            Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
         }
     }
 

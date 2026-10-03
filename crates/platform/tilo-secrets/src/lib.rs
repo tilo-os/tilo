@@ -27,6 +27,11 @@
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
+//! | Linux, macOS with `TILO_SECRETS_DIR` | sealed owner-only files in that directory | [`Protection::LocalFile`] |
+//!
+//! [`SECRETS_DIR_ENV`] is for machines that have no keychain to unlock: a
+//! headless node or server. Every process given it keeps its secrets in that
+//! directory instead of the system store; see the `files` module.
 //!
 //! `BrowserWrapped` protects secrets at rest (a copied profile, a disk
 //! image), not against script running in the page's origin.
@@ -49,6 +54,8 @@ use zeroize::Zeroizing;
 
 mod caps;
 pub mod conformance;
+#[cfg(unix)]
+mod files;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -86,6 +93,9 @@ pub enum Protection {
     OsKeychain,
     /// Encrypted under a key the browser will not export; see the crate docs.
     BrowserWrapped,
+    /// Sealed in owner-only files under a key file beside them: as private
+    /// as the machine's disk and the Unix account that owns them.
+    LocalFile,
     /// In this process only; gone when it exits.
     Memory,
 }
@@ -204,7 +214,7 @@ impl SecretStore {
             backend: THREAD_BACKEND
                 .with(|scoped| scoped.borrow().clone())
                 .or_else(|| PROCESS_BACKEND.get().cloned())
-                .map_or_else(system_backend, Backend::Sync),
+                .map_or_else(machine_backend, Backend::Sync),
         }
     }
 
@@ -498,6 +508,53 @@ async fn off_thread<T: Send + 'static>(
                 "secret store task failed: {error}"
             )))
         })
+}
+
+/// Names the directory of a file-backed store that replaces the system
+/// store for every process given it.
+pub const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
+
+/// The store the machine provides: the file-backed one where
+/// [`SECRETS_DIR_ENV`] names a directory, else the system's.
+fn machine_backend() -> Backend {
+    #[cfg(unix)]
+    if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        static FILES: std::sync::OnceLock<Result<Arc<dyn SecretBackend>, SecretError>> =
+            std::sync::OnceLock::new();
+        let opened = FILES.get_or_init(|| {
+            files::FileStore::open(std::path::Path::new(&dir))
+                .map(|store| Arc::new(store) as Arc<dyn SecretBackend>)
+        });
+        return Backend::Sync(match opened {
+            Ok(store) => store.clone(),
+            Err(error) => Arc::new(Refused(error.clone())),
+        });
+    }
+    system_backend()
+}
+
+/// A configured store that could not be opened: every call says why,
+/// rather than falling back to another store.
+#[cfg(unix)]
+struct Refused(SecretError);
+
+#[cfg(unix)]
+impl SecretBackend for Refused {
+    fn protection(&self) -> Protection {
+        Protection::LocalFile
+    }
+    fn get(&self, _app: &str, _key: &str) -> Result<Option<Secret>, SecretError> {
+        Err(self.0.clone())
+    }
+    fn put(&self, _app: &str, _key: &str, _value: &[u8], _label: &str) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
+    fn delete(&self, _app: &str, _key: &str) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
+    fn probe(&self) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
 }
 
 #[cfg(target_os = "linux")]
