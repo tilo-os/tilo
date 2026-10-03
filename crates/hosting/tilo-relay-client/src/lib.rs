@@ -11,8 +11,6 @@
 //!   session speaking them is `tilo_relay::coedit::RelayCoeditSession`;
 //! - [`certify`] — ask a host for a `DeviceCert`, or approve such requests
 //!   as a root-holding device;
-//! - [`environment`] — a terminal into an environment session on a relay
-//!   ([`open_remote_environment`], [`PtyStream`]);
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate.
 //!
@@ -41,8 +39,6 @@ pub mod client;
 #[cfg(feature = "iroh")]
 mod clock;
 pub mod coedit;
-#[cfg(feature = "iroh")]
-pub mod environment;
 pub mod frame;
 pub mod signer;
 
@@ -51,10 +47,5 @@ pub use certify::{Approver, CertificationOutcome, CertifyError, request_certific
 #[cfg(feature = "iroh")]
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
-#[cfg(feature = "iroh")]
-pub use environment::{
-    EnvironmentClientError, LegacyWindowStream, PtyEvent, PtyStream, RemoteRelay,
-    attach_remote_environment, open_legacy_windows, open_remote_environment,
-};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

@@ -185,7 +185,6 @@ members = [
     "crates/packaging/app-cli",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
-    "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/installed-apps",

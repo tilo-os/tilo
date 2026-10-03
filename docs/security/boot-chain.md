@@ -339,7 +339,8 @@ Only the unsealed development image (`os/Containerfile.dev`) unmasks
 The one caller that merges on purpose is `tilo-extension-activate.service`,
 for the downloaded extensions the owner turned on (the media codecs, say). At
 every boot and after every change it verifies each kept manifest against the
-image's update key (`/usr/share/tilo/cosign.pub`), each kept artifact against
+image's extension-manifest key (`/usr/share/tilo/extensions.pub`, a KMS key
+separate from the OS release key), each kept artifact against
 the manifest's SHA-256, rebuilds every part from those bytes alone, and merges
 nothing if anything else is in the sysext search path. A file written to `/var`
 therefore still never reaches `/usr` across a reboot: it is replaced, or the

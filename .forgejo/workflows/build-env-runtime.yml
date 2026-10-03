@@ -197,6 +197,8 @@ jobs:
 
   seal:
     needs: [fingerprint, builder, tree]
+    # A skipped reusable-workflow job still reports success.
+    if: needs.fingerprint.outputs.build == 'true'
     runs-on: runner
     timeout-minutes: 90
     container:
