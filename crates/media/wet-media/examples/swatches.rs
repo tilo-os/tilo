@@ -30,6 +30,8 @@ fn stroke(preset: &Preset, colour: &str, size: f32, points: &[(f32, f32, f32)], 
         opacity: 1.0,
         wet,
         params: BTreeMap::new(),
+        form: None,
+        clip: Vec::new(),
     })
 }
 

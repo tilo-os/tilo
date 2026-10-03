@@ -951,6 +951,7 @@ impl CanvasSurface {
                         opacity: None,
                         wet: Some(true),
                         params: None,
+                        ..NewStroke::default()
                     }],
                 }));
             }
@@ -1345,10 +1346,7 @@ impl CanvasSurface {
             layer,
             order: String::new(),
             name: String::new(),
-            shape: Shape::Stroke {
-                points: draft.preview(),
-                size: ink.width,
-            },
+            shape: Shape::plain_stroke(draft.preview(), ink.width),
             style: crate::model::Style {
                 stroke: Some(ink.colour.clone()),
                 wet: true,
@@ -1747,10 +1745,7 @@ impl CanvasSurface {
                     layer: String::new(),
                     order: String::new(),
                     name: String::new(),
-                    shape: Shape::Stroke {
-                        points,
-                        size: ink.width,
-                    },
+                    shape: Shape::plain_stroke(points, ink.width),
                     style: crate::model::Style {
                         stroke: Some(hex(colour)),
                         ..crate::model::Style::default()
