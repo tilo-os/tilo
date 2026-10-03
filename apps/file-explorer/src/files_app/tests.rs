@@ -199,21 +199,93 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         // Selection-aware actions are present.
-        for expected in [
-            "Open",
-            "Rename",
-            "Cut",
-            "Copy",
-            "Move to Trash",
-            "New folder",
-        ] {
+        for expected in ["Open", "Rename", "Cut", "Copy", "Move to Trash"] {
             assert!(
                 labels.contains(&expected.to_string()),
                 "menu missing {expected}: {labels:?}"
             );
         }
+        // The menu of a file is about the file: what belongs to the folder
+        // (new items, sorting, hidden files, a terminal) is the folder's menu.
+        for folder_item in [
+            "New folder",
+            "Open terminal here",
+            "Show hidden files",
+            "Sort by name",
+        ] {
+            assert!(
+                !labels.contains(&folder_item.to_string()),
+                "a file's menu carries the folder item {folder_item}: {labels:?}"
+            );
+        }
         // No clipboard yet → no Paste.
         assert!(!labels.contains(&"Paste".to_string()));
+    }
+
+    /// No menu fences a single item off with a hairline, and none starts or
+    /// ends on one: a separator stands only between two groups of at least
+    /// two items.
+    pub(super) fn menus_never_separate_a_lone_item() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        for selected in [false, true] {
+            w.selection.clear();
+            if selected {
+                w.selection.select_only(0);
+            }
+            w.open_context_menu(Point::new(10.0, 10.0));
+            let separators: Vec<bool> = w
+                .context_menu
+                .items()
+                .iter()
+                .map(|item| item.label().is_none())
+                .collect();
+            assert_ne!(separators.first(), Some(&true));
+            assert_ne!(separators.last(), Some(&true));
+            let mut run = 0;
+            let mut groups = Vec::new();
+            for separator in separators {
+                if separator {
+                    groups.push(std::mem::take(&mut run));
+                } else {
+                    run += 1;
+                }
+            }
+            groups.push(run);
+            assert!(
+                groups.len() == 1 || groups.iter().all(|size| *size >= 2),
+                "selected={selected}: group sizes {groups:?}"
+            );
+        }
+    }
+
+    /// The folder's own menu, from empty space: new items, a terminal, and
+    /// how the folder is shown (sorting with a check on the active key).
+    pub(super) fn the_folder_menu_holds_the_folder_actions() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt")];
+        w.open_context_menu(Point::new(10.0, 10.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
+            .collect();
+        for expected in [
+            "New folder",
+            "Open terminal here",
+            "Sort by name",
+            "Sort by size",
+            "Sort by type",
+            "Sort by date",
+            "Show hidden files",
+        ] {
+            assert!(
+                labels.contains(&expected.to_string()),
+                "{expected}: {labels:?}"
+            );
+        }
+        assert!(!labels.contains(&"Rename".to_string()));
     }
 
     pub(super) fn empty_selection_menu_omits_item_actions() {
@@ -1187,6 +1259,47 @@ mod command_path_tests {
         ));
     }
 
+    /// An account that needs signing in is a row in the places list that
+    /// opens one short sheet: said once, with no subtitle and nothing about
+    /// the vault, and one action that looks again.
+    #[test]
+    fn a_cloud_account_needing_sign_in_is_visible_and_says_what_to_do() {
+        let account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+            None,
+        );
+        let mut w = FileExplorerWidget::new();
+        w.debug_show_remote_account(&account, true);
+        let ids: Vec<String> = w
+            .current_places()
+            .sections()
+            .iter()
+            .flat_map(|section| section.items.iter().map(|item| item.id.clone()))
+            .collect();
+        assert!(
+            ids.iter().any(|id| id == "account:cloud"),
+            "the account has a row even though nothing is mounted: {ids:?}"
+        );
+        let panel = w.collab_panel.as_ref().expect("the sheet is open");
+        assert_eq!(panel.title, "Sign in to Cloud");
+        assert!(panel.summary.is_empty(), "no subtitle under the heading");
+        let text = panel.lines.join(" ");
+        assert!(!text.to_lowercase().contains("vault"), "{text}");
+        assert!(!text.contains("Remote account details"), "{text}");
+        assert_eq!(
+            w.collab_panel_action_label().as_deref(),
+            Some("Check again")
+        );
+        assert_eq!(
+            w.collab_panel_action_command(),
+            Some(FileCommand::RecheckRemoteAccount("cloud".into()))
+        );
+        // Choosing the row opens the same sheet.
+        w.close_collab_panel();
+        assert!(w.apply_command(FileCommand::ShowRemoteAccount("cloud".into())));
+        assert!(w.collab_panel.is_some());
+    }
+
     fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
         let first = "/home/alice/Templates/Plan.md";
         let second = "/home/alice/Templates/Notes.md";
@@ -1334,6 +1447,8 @@ mod command_path_tests {
     fn context_menus_follow_selection_clipboard_location_and_templates() {
         super::open_with_tests::context_menu_opens_with_selection_aware_items();
         super::open_with_tests::empty_selection_menu_omits_item_actions();
+        super::open_with_tests::the_folder_menu_holds_the_folder_actions();
+        super::open_with_tests::menus_never_separate_a_lone_item();
         super::open_with_tests::copy_then_paste_menu_includes_paste();
         #[cfg(unix)]
         trash_view_menu_offers_restore_and_empty_not_move_to_trash();
@@ -4373,10 +4488,14 @@ mod responsive_body_tests {
         );
 
         h.lay_out(560.0, 760.0);
+        h.lay_out(560.0, 760.0);
         assert!(
-            h.w.toolbar.is_compact(),
-            "the 560 px tablet width keeps the location readable instead of overlapping it with desktop controls"
+            !h.w.toolbar.is_compact(),
+            "a 560 px content column still fits the direct controls; only a phone width moves them into the overflow"
         );
+        h.lay_out(390.0, 760.0);
+        h.lay_out(390.0, 760.0);
+        assert!(h.w.toolbar.is_compact(), "back to phone width");
 
         // The width is discovered during layout; one follow-up composition is
         // how the live app promotes wide controls after a real resize.
@@ -4613,8 +4732,13 @@ mod responsive_body_tests {
             std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
         }
         let mut h = H::new(Some(dir.path()), 390.0, 720.0);
+        // The grid scrolls under the shared scrollable; the list is a table
+        // that scrolls itself and keeps the lane clear in its own layout (see
+        // `FileView`'s list tests).
+        h.w.set_view_mode(crate::model::ViewMode::Grid);
+        h.lay_out(390.0, 720.0);
         let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
-            .expect("Files content is wrapped in the shared scrollable");
+            .expect("Files grid is wrapped in the shared scrollable");
 
         assert!(
             scrollable.y1 - content_viewport.y1
@@ -4639,10 +4763,17 @@ mod responsive_body_tests {
         assert!(labels.iter().any(|label| label == "Rename"));
 
         // Menu keyboard handling skips separators and maps the selected row
-        // back onto the exact FileCommand. Down selects Open, Down selects
+        // back onto the exact FileCommand. Down moves through the rows to
         // Rename, and Enter executes it without any pointer event.
-        h.press_named(winit::keyboard::NamedKey::ArrowDown);
-        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        let rows: Vec<&String> = labels.iter().collect();
+        let steps = rows
+            .iter()
+            .position(|label| label.as_str() == "Rename")
+            .expect("Rename is offered")
+            + 1;
+        for _ in 0..steps {
+            h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        }
         h.press_named(winit::keyboard::NamedKey::Enter);
         assert!(!h.w.context_menu.is_open());
         assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");

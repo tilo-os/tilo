@@ -573,3 +573,12 @@ files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
 files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
+
+## Cloud-Konten
+files-account-sign-in-title = Bei { $account } anmelden
+files-account-sign-in-needed = { $service } unter { $host } braucht eine neue Anmeldung, bevor dieser Ordner synchronisiert werden kann.
+files-account-sign-in-where = Das geht in den Einstellungen unter „Externe Konten“.
+files-account-service-at-host = { $service } unter { $host }
+files-account-folder = Ordner: { $path }
+files-account-check-again = Erneut prüfen
+files-account-check-again-detail = Liest den Zustand des Kontos neu und öffnet seinen Ordner, sobald er verfügbar ist.

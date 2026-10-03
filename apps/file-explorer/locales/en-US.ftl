@@ -574,3 +574,12 @@ files-empty-recent = Files you open or create appear here
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
 files-recent-not-a-folder = Recent is not a folder; open one to add files
+
+## Cloud accounts
+files-account-sign-in-title = Sign in to { $account }
+files-account-sign-in-needed = { $service } at { $host } needs you to sign in again before this folder can sync.
+files-account-sign-in-where = You can do that in Settings, under External accounts.
+files-account-service-at-host = { $service } at { $host }
+files-account-folder = Folder: { $path }
+files-account-check-again = Check again
+files-account-check-again-detail = Reads the account's state again and opens its folder once it is available.

@@ -450,7 +450,7 @@ impl Widget for FileToolbar {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let sp = &theme.tokens.spacing;
-        self.compact_below = f64::from(theme.tokens.metrics.compact_breakpoint);
+        self.compact_below = f64::from(theme.tokens.metrics.content_min_width);
         self.left = self.build_left();
         self.right = self.build_right();
 

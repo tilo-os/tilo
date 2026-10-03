@@ -51,6 +51,66 @@ const COLLAB_PANEL_MAX_LINES: usize = 20;
 pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
     theme.tokens.spacing.s16
 }
+/// Close up a menu spec: a separator stands only between two groups, and a
+/// group of one is not a group, so it joins its neighbour rather than being
+/// fenced off by a hairline. (A separator is an item with no label and no
+/// command.)
+fn tidy_menu(spec: Vec<(String, Option<FileCommand>)>) -> Vec<(String, Option<FileCommand>)> {
+    tidy_groups(
+        spec,
+        |item| item.0.is_empty() && item.1.is_none(),
+        || (String::new(), None),
+    )
+}
+
+/// [`tidy_menu`] for any item type: `is_separator` says which items divide
+/// groups and `separator` makes one.
+fn tidy_groups<T>(
+    items: Vec<T>,
+    is_separator: impl Fn(&T) -> bool,
+    separator: impl Fn() -> T,
+) -> Vec<T> {
+    let mut groups: Vec<Vec<T>> = Vec::new();
+    let mut current = Vec::new();
+    for item in items {
+        if is_separator(&item) {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(item);
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    let mut merged: Vec<Vec<T>> = Vec::new();
+    let mut carry: Vec<T> = Vec::new();
+    for group in groups {
+        let mut joined = std::mem::take(&mut carry);
+        joined.extend(group);
+        if joined.len() == 1 {
+            carry = joined;
+        } else {
+            merged.push(joined);
+        }
+    }
+    if !carry.is_empty() {
+        match merged.last_mut() {
+            Some(last) => last.extend(carry),
+            None => merged.push(carry),
+        }
+    }
+    let mut out = Vec::new();
+    for (index, group) in merged.into_iter().enumerate() {
+        if index > 0 {
+            out.push(separator());
+        }
+        out.extend(group);
+    }
+    out
+}
+
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
@@ -130,6 +190,8 @@ struct CollabPanel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CollabPanelAction {
+    /// Look at the cloud account with this id again.
+    RecheckAccount(String),
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
     EmptyTrash,
@@ -853,6 +915,10 @@ pub struct FileExplorerWidget {
     /// rebuild the composition — would snap the list back to the top. Reset to
     /// `(0, 0)` whenever the directory changes (a new folder starts at top).
     scroll_offset: Rc<Cell<(f32, f32)>>,
+    /// The file list's table, kept across rebuilds with its scroll position,
+    /// column widths and scroll anchor (the list scrolls itself; only the grid
+    /// scrolls under `scroll_offset`).
+    list_slot: crate::views::file_list::ListSlot,
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
@@ -1044,6 +1110,9 @@ impl FileExplorerWidget {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
+        // The places list shows the account too, as it would from the store.
+        self.startup_accounts = Some(vec![account.clone()]);
+        self.places_shown = None;
         self.show_remote_account_panel(account, reauthenticate);
     }
 
@@ -1052,32 +1121,67 @@ impl FileExplorerWidget {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
-        let title = if reauthenticate {
-            format!("Sign in again: {}", account.label)
+        let service = account.kind.label().to_string();
+        let (title, lines, action) = if reauthenticate {
+            // The one thing to do, said once; Settings is where people sign in.
+            (
+                t_args(
+                    "files-account-sign-in-title",
+                    &[arg("account", account.label.clone())],
+                ),
+                vec![
+                    t_args(
+                        "files-account-sign-in-needed",
+                        &[arg("service", service), arg("host", account.host.clone())],
+                    ),
+                    t("files-account-sign-in-where"),
+                ],
+                Some(CollabPanelAction::RecheckAccount(
+                    account.id.as_str().to_owned(),
+                )),
+            )
         } else {
-            format!("{} files", account.label)
+            let mut lines = vec![
+                t_args(
+                    "files-account-service-at-host",
+                    &[arg("service", service), arg("host", account.host.clone())],
+                ),
+                account.health.unavailable_reason().to_string(),
+            ];
+            if let Some(mount) = &account.mount {
+                lines.push(t_args(
+                    "files-account-folder",
+                    &[arg("path", mount.display().to_string())],
+                ));
+            }
+            (account.label.clone(), lines, None)
         };
-        let mut lines = vec![
-            format!("{} at {}", account.kind.label(), account.host),
-            format!("Status: {}", account.health.label()),
-            account.health.unavailable_reason().to_string(),
-        ];
-        if let Some(mount) = &account.mount {
-            lines.push(format!("Folder: {}", mount.display()));
-        }
-        if reauthenticate {
-            lines.push(
-                "Open Settings, choose External accounts, then Sign in again. Credentials stay in the system vault and are never shown to Files."
-                    .into(),
-            );
-        }
         self.show_collab_panel(CollabPanel {
             history: None,
             title,
-            summary: "Remote account details".into(),
+            summary: String::new(),
             lines,
-            action: None,
+            action,
         });
+    }
+
+    /// Choose the cloud account row `id` in the places list: open its folder
+    /// when it has one now, else say what is wrong with it.
+    fn show_remote_account(&mut self, id: &str) -> bool {
+        self.refresh_external_search_catalogs();
+        let Some(account) = self.remote_account(id) else {
+            return false;
+        };
+        let reauthenticate =
+            account.health == crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication;
+        match (&account.mount, remote_folder_availability(&account)) {
+            (Some(mount), Availability::Available) => {
+                self.close_collab_panel();
+                self.navigate(mount.clone());
+            }
+            _ => self.show_remote_account_panel(&account, reauthenticate),
+        }
+        true
     }
 
     /// Construct with an explicit persistence directory + home, resolving the
@@ -1312,6 +1416,7 @@ impl FileExplorerWidget {
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
+            list_slot: crate::views::file_list::ListSlot::default(),
             thumbs,
             recent: config_dir_recent,
             open_with_cache: RefCell::new(HashMap::new()),
@@ -1513,12 +1618,18 @@ impl FileExplorerWidget {
             .with_remote_accounts(
                 self.remote_account_snapshot()
                     .into_iter()
-                    .filter(|account| {
-                        matches!(remote_folder_availability(account), Availability::Available)
-                    })
-                    .filter_map(|account| {
-                        let badge = account.health.badge().map(str::to_owned);
-                        account.mount.map(|mount| (account.label, mount, badge))
+                    .map(|account| {
+                        let available = matches!(
+                            remote_folder_availability(&account),
+                            Availability::Available
+                        );
+                        places_sidebar::AccountPlace {
+                            id: account.id.as_str().to_owned(),
+                            label: account.label,
+                            // A folder that cannot be opened has no place to go to.
+                            mount: account.mount.filter(|_| available),
+                            status: account.health.badge().map(str::to_owned),
+                        }
                     })
                     .collect(),
             )
@@ -1569,34 +1680,42 @@ impl FileExplorerWidget {
             .with_rename(self.renaming, self.rename_rect.clone())
             .with_cursor(self.last_cursor)
             .with_drop_targets(self.drop_targets.clone())
-            .with_thumbs(self.thumb_ctx());
-        let view_child: Box<dyn Widget> = match self.view_mode {
-            ViewMode::List => {
-                crate::views::list_view::build_list(view, self.sort_by, self.sort_order)
-            }
-            ViewMode::Grid => crate::views::grid_view::build_grid(view),
-        };
+            .with_thumbs(self.thumb_ctx())
+            .with_list(self.list_slot.clone())
+            .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
         // A plain (percent-height) column: this pane is the content column of
-        // the shell, so it must FILL that rect (`percent(1.0)` height). Inside
-        // this bounded column the `Scrollable` grows to take the space left.
+        // the shell, so it must FILL that rect (`percent(1.0)` height).
         let mut view_col = Column::new().with_vertical_padding(sp.s1);
-        // The list/grid scrolls: pin the scroll viewport to the *remaining*
-        // height of the content column (grow-from-zero) rather than letting it
-        // claim `percent(1.0)`. `fill_parent_height` takes exactly the space
-        // left under the optional error row so a long directory overflows the
-        // viewport and the wheel + scrollbar thumb move the list.
-        view_col = view_col.push(Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_persisted_offset(self.scroll_offset.clone())
-                .with_cursor(self.last_cursor)
-                // The status pill is intentionally outside the scrollable's
-                // interactive viewport. Besides making the count easy to
-                // scan, that means it cannot obscure a file name, target, or
-                // keyboard focus ring at the bottom of a compact grid.
-                .with_bottom_content_inset(status_bubble_safe_inset(theme))
-                .with_child(view_child),
-        ));
+        match self.view_mode {
+            // The list is a table that scrolls itself and keeps the status
+            // lane clear below its rows.
+            ViewMode::List => {
+                view_col = view_col.push(crate::views::list_view::build_list(
+                    view,
+                    self.sort_by,
+                    self.sort_order,
+                ));
+            }
+            // The grid scrolls: pin the scroll viewport to the *remaining*
+            // height of the content column (grow-from-zero) rather than
+            // letting it claim `percent(1.0)`, so a long directory overflows
+            // the viewport and the wheel + scrollbar thumb move the grid.
+            ViewMode::Grid => {
+                view_col = view_col.push(Box::new(
+                    Scrollable::new(ScrollAxis::Vertical)
+                        .fill_parent_height()
+                        .with_persisted_offset(self.scroll_offset.clone())
+                        .with_cursor(self.last_cursor)
+                        // The status pill is intentionally outside the
+                        // scrollable's interactive viewport. Besides making the
+                        // count easy to scan, that means it cannot obscure a
+                        // file name, target, or keyboard focus ring at the
+                        // bottom of a compact grid.
+                        .with_bottom_content_inset(status_bubble_safe_inset(theme))
+                        .with_child(crate::views::grid_view::build_grid(view)),
+                ));
+            }
+        }
         Box::new(view_col)
     }
 
@@ -1835,6 +1954,9 @@ impl FileExplorerWidget {
                 })
             }
             CollabPanelAction::EmptyTrash => Some(FileCommand::ConfirmEmptyTrash),
+            CollabPanelAction::RecheckAccount(id) => {
+                Some(FileCommand::RecheckRemoteAccount(id.clone()))
+            }
             CollabPanelAction::ApplySafeMerge {
                 conflict_id,
                 version_id,
@@ -1859,6 +1981,7 @@ impl FileExplorerWidget {
             }
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
+            CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-choose-destination"))
@@ -1873,6 +1996,7 @@ impl FileExplorerWidget {
             CollabPanelAction::PermanentDelete(_) | CollabPanelAction::EmptyTrash => {
                 Some(t("files-permanent-delete-loss"))
             }
+            CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again-detail")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-consent-detail"))
@@ -2097,6 +2221,7 @@ impl FileExplorerWidget {
         // A new directory starts at the top; the persisted scroll offset only
         // survives *structural* rebuilds within the same directory.
         self.scroll_offset.set((0.0, 0.0));
+        self.list_slot.reset_scroll();
         self.invalidate_open_with();
         self.close_app_chooser();
         // Opening the Trash for the first time (nothing deleted yet) should show
@@ -3411,6 +3536,9 @@ impl FileExplorerWidget {
             }
             FileCommand::RevealInFolder(path) => self.apply_reveal_in_folder(&path),
             FileCommand::ForgetRecent(path) => self.apply_forget_recent(&path),
+            FileCommand::ShowRemoteAccount(id) | FileCommand::RecheckRemoteAccount(id) => {
+                self.show_remote_account(&id)
+            }
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -4195,14 +4323,6 @@ impl FileExplorerWidget {
         self.structure_dirty = true;
     }
 
-    /// Ask the owning framework host to open the selected real file history.
-    /// A standalone widget without a managed host cannot render History.
-    #[doc(hidden)]
-    pub fn debug_open_history_demo(&mut self) {
-        self.refresh_framework_history_target();
-        self.framework_history.open(None);
-    }
-
     fn refresh_framework_history_target(&mut self) {
         let entry = self
             .selection
@@ -4686,11 +4806,14 @@ impl FileExplorerWidget {
     ) -> f64 {
         let rhythm = &theme.tokens.spacing.rhythm;
         let style = theme.text(ui::TextRole::Body);
-        let (_, summary) = tr.measure_style(&panel.summary, Some(width), &style);
-        let mut height = f64::from(summary);
+        let mut height = 0.0;
         let mut lines = panel.lines.iter().take(COLLAB_PANEL_MAX_LINES).peekable();
-        if lines.peek().is_some() {
-            height += f64::from(rhythm.group);
+        if !panel.summary.is_empty() {
+            let (_, summary) = tr.measure_style(&panel.summary, Some(width), &style);
+            height += f64::from(summary);
+            if lines.peek().is_some() {
+                height += f64::from(rhythm.group);
+            }
         }
         for (index, line) in lines.enumerate() {
             if index > 0 {
@@ -4724,6 +4847,7 @@ impl FileExplorerWidget {
             Some(
                 CollabPanelAction::ApplySafeMerge { .. }
                     | CollabPanelAction::ChooseNearbyDestination { .. }
+                    | CollabPanelAction::RecheckAccount(_)
                     | CollabPanelAction::RetryNearby { .. }
             )
         );
@@ -4753,16 +4877,19 @@ impl FileExplorerWidget {
         let width = body.width() as f32;
         let text_style = theme.text(ui::TextRole::Body);
         let mut y = body.y0;
-        let (_, summary_h) = text_renderer.measure_style(&panel.summary, Some(width), &text_style);
-        text_renderer.draw_style(
-            scene,
-            &panel.summary,
-            dim,
-            transform * vello::kurbo::Affine::translate((body.x0, y)),
-            Some(width),
-            &text_style,
-        );
-        y += f64::from(summary_h) + f64::from(theme.tokens.spacing.rhythm.group);
+        if !panel.summary.is_empty() {
+            let (_, summary_h) =
+                text_renderer.measure_style(&panel.summary, Some(width), &text_style);
+            text_renderer.draw_style(
+                scene,
+                &panel.summary,
+                dim,
+                transform * vello::kurbo::Affine::translate((body.x0, y)),
+                Some(width),
+                &text_style,
+            );
+            y += f64::from(summary_h) + f64::from(theme.tokens.spacing.rhythm.group);
+        }
         for line in panel.lines.iter().take(COLLAB_PANEL_MAX_LINES) {
             let (_, line_h) = text_renderer.measure_style(line, Some(width), &text_style);
             if y + f64::from(line_h) > body.y1 + 0.5 {
@@ -5186,7 +5313,7 @@ impl FileExplorerWidget {
                 t("files-archive-extract"),
                 Some(FileCommand::ExtractCurrentArchive),
             ));
-            return spec;
+            return tidy_menu(spec);
         }
 
         // The Trash is a restore/purge surface, not an editing one: offer Open
@@ -5207,10 +5334,14 @@ impl FileExplorerWidget {
             }
             spec.push((String::new(), None));
             spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
-            return spec;
+            return tidy_menu(spec);
         }
 
+        // A file's menu is about the file: open it, change it, organise it,
+        // collaborate on it. What belongs to the folder (new items, sorting,
+        // hidden files, a terminal) is the menu of the folder's empty space.
         if has_sel {
+            let single = self.selection.selected().len() == 1;
             spec.push((
                 t("files-menu-open"),
                 self.selection.primary().map(FileCommand::Activate),
@@ -5218,15 +5349,7 @@ impl FileExplorerWidget {
             if self.open_with_available() {
                 spec.push((t("files-menu-open-with"), Some(FileCommand::OpenWithMenu)));
             }
-            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
-            spec.push((String::new(), None));
-            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
-            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
-            if self.selection.selected().len() == 1 {
-                spec.push((
-                    t("files-menu-send-nearby"),
-                    Some(FileCommand::OpenNearbySend),
-                ));
+            if single {
                 if !self
                     .shortcut_menu
                     .offered_on(&self.selected_entry_identities())
@@ -5237,7 +5360,20 @@ impl FileExplorerWidget {
                         Some(FileCommand::OpenShortcutsMenu),
                     ));
                 }
+                spec.push((
+                    t("files-menu-send-nearby"),
+                    Some(FileCommand::OpenNearbySend),
+                ));
             }
+            spec.push((String::new(), None));
+            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
+            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            if can_paste {
+                spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
+            }
+            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
+            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
+            spec.push((String::new(), None));
             let displayed = self.displayed_entries();
             if self.selection.selected().iter().any(|index| {
                 displayed
@@ -5253,6 +5389,13 @@ impl FileExplorerWidget {
                 t("files-archive-compress"),
                 Some(FileCommand::CompressSelection),
             ));
+            // Favourites: add the single selected folder.
+            if let Some(dir) = self.single_selected_dir() {
+                spec.push((
+                    t("files-menu-add-favourite"),
+                    Some(FileCommand::AddFavorite(dir)),
+                ));
+            }
             let collaborative: Vec<_> = self
                 .selection
                 .selected()
@@ -5590,42 +5733,43 @@ impl FileExplorerWidget {
                     }
                 }
             }
+            return tidy_menu(spec);
         }
-        if can_paste {
-            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
-        }
-        spec.push((String::new(), None));
+
+        // The folder's own menu (nothing is selected).
         spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
-        // Only offer "New File ▸" when the Templates dir actually has files.
+        // Only offer "New file…" when the Templates dir actually has files.
         if has_templates {
             spec.push((
                 t("files-menu-new-file"),
                 Some(FileCommand::OpenTemplatesMenu),
             ));
         }
-        if has_sel {
-            spec.push((String::new(), None));
-            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
+        if can_paste {
+            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
         }
-
-        // Favourites: add the single selected folder, or remove the current
-        // directory when it is a (non-home) favourite.
-        if let Some(dir) = self.single_selected_dir() {
-            spec.push((String::new(), None));
-            spec.push((
-                t("files-menu-add-favourite"),
-                Some(FileCommand::AddFavorite(dir)),
-            ));
-        } else if self.current_is_removable_favourite() {
-            spec.push((String::new(), None));
+        spec.push((
+            t("files-menu-open-terminal"),
+            Some(FileCommand::OpenTerminal),
+        ));
+        // Remove the current directory from the favourites when it is one.
+        if self.current_is_removable_favourite() {
             spec.push((
                 t("files-menu-remove-favourite"),
                 Some(FileCommand::RemoveFavorite(self.current_path.clone())),
             ));
         }
-
-        // View section: show/hide hidden files.
+        // How the folder is shown. Sorting lives here too: a grid has no
+        // column header, and "Sort by type" is reached only from this menu.
         spec.push((String::new(), None));
+        for (label, by) in [
+            ("files-menu-sort-name", SortBy::Name),
+            ("files-menu-sort-size", SortBy::Size),
+            ("files-menu-sort-type", SortBy::Type),
+            ("files-menu-sort-date", SortBy::Modified),
+        ] {
+            spec.push((t(label), Some(FileCommand::SetSort(by))));
+        }
         spec.push((
             if self.show_hidden {
                 t("files-menu-hide-hidden")
@@ -5634,33 +5778,7 @@ impl FileExplorerWidget {
             },
             Some(FileCommand::ToggleHidden),
         ));
-
-        // Sort section — the only place the sort *key* can be changed in grid
-        // mode (which has no clickable column header) and the only way to
-        // reach "Sort by type" at all.
-        spec.push((String::new(), None));
-        spec.push((
-            t("files-menu-sort-name"),
-            Some(FileCommand::SetSort(SortBy::Name)),
-        ));
-        spec.push((
-            t("files-menu-sort-size"),
-            Some(FileCommand::SetSort(SortBy::Size)),
-        ));
-        spec.push((
-            t("files-menu-sort-type"),
-            Some(FileCommand::SetSort(SortBy::Type)),
-        ));
-        spec.push((
-            t("files-menu-sort-date"),
-            Some(FileCommand::SetSort(SortBy::Modified)),
-        ));
-        spec.push((String::new(), None));
-        spec.push((
-            t("files-menu-open-terminal"),
-            Some(FileCommand::OpenTerminal),
-        ));
-        spec
+        tidy_menu(spec)
     }
 
     /// Whether the current directory is the Trash, which swaps the delete
@@ -5887,6 +6005,11 @@ impl FileExplorerWidget {
         flip_y: f64,
     ) {
         self.submenu.close();
+        let spec = tidy_groups(
+            spec,
+            |item| item.0.is_empty() && item.1.is_none(),
+            || (String::new(), None, None),
+        );
         let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd, checked) in spec {
@@ -5962,7 +6085,9 @@ impl FileExplorerWidget {
                 Some(self.view_mode == ViewMode::Grid),
             ));
             spec.push((String::new(), None, None));
-            spec.push((t("files-sort-by"), Some(FileCommand::OpenSortMenu), None));
+            // The sort choices sit in this menu itself, each with a check,
+            // rather than behind one row that opens another menu.
+            spec.extend(self.sort_menu_spec(true));
             spec.push((String::new(), None, None));
         }
         if crate::archive::location(&self.current_path).is_some() {
@@ -6029,12 +6154,24 @@ impl FileExplorerWidget {
             .toolbar
             .sort_menu_rect()
             .map_or(anchor.y, |rect| rect.y0 - 2.0);
+        let spec = self.sort_menu_spec(false);
+        self.open_menu_right_aligned(spec, anchor, flip_y);
+    }
+
+    /// The sort key, then the direction, each with a check on the active
+    /// choice. Within another menu (`inline`) each key says what it sorts
+    /// ("Sort by name"); under the "Sort by" button the bare key is enough.
+    fn sort_menu_spec(&self, inline: bool) -> Vec<(String, Option<FileCommand>, Option<bool>)> {
         let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
+        let key = |bare: &str, inline_label: &str| t(if inline { inline_label } else { bare });
         for (label, by) in [
-            (t("files-sort-name"), SortBy::Name),
-            (t("files-sort-size"), SortBy::Size),
-            (t("files-sort-type"), SortBy::Type),
-            (t("files-sort-date"), SortBy::Modified),
+            (key("files-sort-name", "files-menu-sort-name"), SortBy::Name),
+            (key("files-sort-size", "files-menu-sort-size"), SortBy::Size),
+            (key("files-sort-type", "files-menu-sort-type"), SortBy::Type),
+            (
+                key("files-sort-date", "files-menu-sort-date"),
+                SortBy::Modified,
+            ),
         ] {
             spec.push((
                 label,
@@ -6054,7 +6191,7 @@ impl FileExplorerWidget {
             Some(FileCommand::SetSortOrder(SortOrder::Descending)),
             Some(!asc),
         ));
-        self.open_menu_right_aligned(spec, anchor, flip_y);
+        spec
     }
 
     /// If either menu is open, route a left-press to it. Returns true when the
