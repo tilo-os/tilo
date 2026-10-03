@@ -109,10 +109,10 @@ pub mod actions;
 pub mod app;
 pub mod customize;
 pub mod doc;
-mod export_dialog;
 pub mod handoff;
 mod host;
 pub mod model;
+mod page;
 pub mod probe;
 pub mod profile;
 pub mod profile_cli;
@@ -122,8 +122,8 @@ pub mod setup;
 pub mod write;
 pub mod write_setup;
 
-/// The setup pages' spacing rhythm (HIG §7b). Their retained compositions
-/// are declared before a `Theme` is in hand and `Column` / `Row` gaps take
+/// The pages' spacing rhythm (HIG §7b). Their retained compositions are
+/// declared before a `Theme` is in hand and `Column` / `Row` gaps take
 /// logical pixels, so the steps come from the unscaled `Spacing::BASE`
 /// rhythm, named once here by relationship.
 pub(crate) mod rhythm {
@@ -141,56 +141,7 @@ pub(crate) mod rhythm {
     }
 }
 
-/// The painted views' spacing, named by relationship (HIG §7b) and read from
-/// the theme's rhythm, so a density preference or the UI scale moves every
-/// gap together.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Gaps {
-    /// A label and its control; an icon and its label.
-    pub tight: f64,
-    /// A title and its explanation; a section header and its list.
-    pub related: f64,
-    /// Siblings of equal weight.
-    pub sibling: f64,
-    /// A step title and the step's first block; the compact page gutter.
-    pub section: f64,
-    /// Before the next group; the page gutter.
-    pub group: f64,
-    /// Between major regions: the stepper and the step body.
-    pub region: f64,
-}
-
-impl Gaps {
-    pub(crate) fn of(spacing: &ui::tokens::Spacing) -> Self {
-        let rhythm = &spacing.rhythm;
-        Self {
-            tight: f64::from(rhythm.tight),
-            related: f64::from(rhythm.related),
-            sibling: f64::from(rhythm.sibling),
-            section: f64::from(rhythm.section),
-            group: f64::from(rhythm.group),
-            region: f64::from(spacing.s8),
-        }
-    }
-}
-
-impl Default for Gaps {
-    fn default() -> Self {
-        Self::of(&ui::tokens::Spacing::BASE)
-    }
-}
-
-/// Below a 520 px content width — scaled by the text scale, so a 1000 px
-/// column at 2× (the room of a 500 px one) counts as compact too — the
-/// wizard's steps and the customization panel take their compact form. One
-/// decision for the chrome, the heading floor and the form's column split, so
-/// no width exists where one is compact and the other is not.
-pub(crate) fn compact_content(width: f64, text_scale: f64) -> bool {
-    width < 520.0 * text_scale
-}
-
 pub use app::ImagerApp;
-pub use customize::CustomizePanel;
 pub use model::{
     Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
     TargetKind,
@@ -216,8 +167,6 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_local_shot_state(scenario);
     if scenario == "confirm" {
         app.seed_confirmation_for_shot("sdb");
-    } else if scenario == "export" {
-        app.seed_export_for_shot();
     } else if scenario == "customize-timezone-open" {
         app.shot_open_customize_timezone();
     }
@@ -234,7 +183,6 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "drive-internal",
     "customize",
     "customize-timezone-open",
-    "export",
     "confirm",
     "progress",
     "done",
@@ -352,6 +300,12 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
     profile.user.username = "quinten".into();
     profile.timezone = "Europe/Amsterdam".into();
     profile.keyboard = "us".into();
+    if scenario == "confirm" {
+        // The new computer joins the home network and becomes one of theirs.
+        profile.wifi_ssid = "De Vries home".into();
+        profile.device_label = "Studio desktop".into();
+        profile.enroll_local_identity = true;
+    }
     crate::doc::ImagerDoc::set_profile(doc, &profile);
 }
 pub use resource::{Imager, ImagerShell};
