@@ -22,6 +22,14 @@
 //! into different binaries shipping at different times, and a writer that serialised its own
 //! view would silently drop sections it didn't know about.
 //!
+//! # Who holds the truth
+//!
+//! In a session the file is a copy. The shell keeps the person's record and
+//! the device's record ([`SessionSettings`]), reads and writes them through
+//! the installed [`SettingsSource`], and rewrites `settings.json` after every
+//! change for the processes that read it instead. Their section writes keep
+//! working: the session takes them in from the copy.
+//!
 //! # Reading is always forgiving
 //!
 //! A missing file, unreadable file, malformed JSON, a section of the wrong type, or a value
@@ -55,11 +63,13 @@ pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+mod session;
 mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use session::{SessionPaths, SessionSettings};
 pub use source::{HostDocument, SettingsSource, install_source, installed_source, merge_section};
 
 /// The file name under the Tilo config root.
@@ -265,8 +275,35 @@ pub fn update_section_at(
     name: &str,
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
+    update_document_at(path, |doc| merge_section(doc, name, values))
+}
+
+/// Read the document at `path`, let `change` edit it, and replace it, all
+/// under the file's lock. For a writer that owns several sections at once;
+/// one that writes a section uses [`update_section_at`].
+///
+/// A session keeps its records behind the file and takes in what other
+/// writers change in it ([`SessionSettings`]); the lock keeps each read,
+/// change and replace whole. With no directory yet there is no session copy
+/// to share and nothing to lock.
+///
+/// # Errors
+///
+/// The file cannot be locked, or the document can't be serialised or
+/// written.
+pub fn update_document_at(
+    path: &Path,
+    change: impl FnOnce(&mut Map<String, Value>),
+) -> std::io::Result<()> {
+    let _lock = match path.parent() {
+        Some(dir) if dir.is_dir() => Some(advisory_lock::FileLock::open(
+            &session::lock_path(path),
+            advisory_lock::LockMode::Exclusive,
+        )?),
+        _ => None,
+    };
     let mut doc = load_at(path);
-    merge_section(&mut doc, name, values);
+    change(&mut doc);
     write_atomic(path, &Value::Object(doc))
 }
 
