@@ -314,7 +314,7 @@ impl Renderer {
                     transform,
                     &board,
                 );
-                scene.fill(Fill::NonZero, transform, Color::WHITE, None, &board);
+                scene.fill(Fill::NonZero, transform, MASK_SHOWN, None, &board);
                 scene.pop_layer();
             }
             scene.pop_layer();
@@ -639,14 +639,27 @@ impl Renderer {
     }
 }
 
+/// A mask's full lightness, where all of its layer shows: a value of the
+/// artwork's data, the white of a blank ground, not a colour of the theme.
+const MASK_SHOWN: Color = BLANK_GROUND;
+
 /// A selection's outline, `path` already where it is drawn: black dashes
 /// over white, `width` wide, the dashes `phase` along (marching ants). The
 /// selection's colours, not the theme's: it is drawn over the artwork.
+///
+/// Light under dark dashes reads over any artwork, in every theme: the
+/// white of a blank ground and the black of a shadow, made solid.
 pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f64) {
     let under = Stroke::new(width * 1.5);
     let dashes = Stroke::new(width).with_dashes(phase, [4.0 * width, 4.0 * width]);
-    scene.stroke(&under, Affine::IDENTITY, Color::WHITE, None, path);
-    scene.stroke(&dashes, Affine::IDENTITY, Color::BLACK, None, path);
+    scene.stroke(&under, Affine::IDENTITY, BLANK_GROUND, None, path);
+    scene.stroke(
+        &dashes,
+        Affine::IDENTITY,
+        SHADOW_INK.with_alpha(1.0),
+        None,
+        path,
+    );
 }
 
 /// The straight-alpha pixel of `image` at `at` (pixel coordinates).
