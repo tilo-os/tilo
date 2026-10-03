@@ -477,6 +477,22 @@ impl TooltipHost {
         }
     }
 
+    /// What the region under a shown tooltip says now: a new label for the
+    /// same region replaces the shown one without restarting the dwell; the
+    /// region gone or moved hides it.
+    pub fn refresh(&mut self, target: Option<(Rect, String)>) {
+        let Some(current) = &mut self.target else {
+            return;
+        };
+        match target {
+            Some((anchor, label)) if anchor == current.anchor => current.label = label,
+            _ => {
+                self.target = None;
+                self.visible = false;
+            }
+        }
+    }
+
     /// Returns whether anything was showing/pending, so the caller can
     /// request a redraw to clear the chip.
     pub fn dismiss(&mut self) -> bool {
@@ -514,6 +530,18 @@ mod host_tests {
 
     fn tip(label: &str) -> (Rect, String) {
         (Rect::new(0.0, 0.0, 40.0, 40.0), label.to_string())
+    }
+
+    #[test]
+    fn a_shown_tooltip_reads_its_region_again() {
+        let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
+        let now = crate::time::now();
+        host.on_pointer(Some(tip("Hide layer")), now);
+        host.tick(now);
+        host.refresh(Some(tip("Show layer")));
+        assert_eq!(host.visible().map(|(label, _)| label), Some("Show layer"));
+        host.refresh(None);
+        assert!(host.visible().is_none(), "the region is gone");
     }
 
     #[test]

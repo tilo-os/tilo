@@ -39,6 +39,9 @@ pub struct Button {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    /// Focus came from pressing the button: the pointer already shows where
+    /// the person is, so the focus ring is kept for keyboard focus.
+    pressed_into_focus: bool,
     /// Drawn instead of (icon-only) or before (icon + label) the text,
     /// so toolbars render crisp lucide icons without depending on a
     /// Nerd Font being installed.
@@ -122,6 +125,12 @@ struct ButtonLook {
 }
 
 impl Button {
+    /// Focus a person needs to be shown: keyboard focus, not the focus a
+    /// click on the button gave it.
+    fn focus_visible(&self) -> bool {
+        self.is_focused && !self.pressed_into_focus
+    }
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -136,6 +145,7 @@ impl Button {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            pressed_into_focus: false,
             icon: None,
             size: None,
             min_height: None,
@@ -1410,7 +1420,7 @@ impl Widget for Button {
         let current_state = (
             self.is_hovered,
             self.is_pressed,
-            self.is_focused,
+            self.focus_visible(),
             self.effectively_enabled(),
         );
         if current_state != self.last_state {
@@ -1424,7 +1434,7 @@ impl Widget for Button {
                 ButtonInteract {
                     hovered: self.is_hovered,
                     pressed: self.is_pressed,
-                    focused: self.is_focused,
+                    focused: self.focus_visible(),
                     disabled: !current_state.3,
                 },
             ),
@@ -1447,6 +1457,7 @@ impl Widget for Button {
         // frames can translate without re-encoding.
         self.cached.reset();
         let enabled = self.effectively_enabled();
+        let focus_visible = self.focus_visible();
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
         let (bg_color, border_opt, fg_color) = face_colors(
@@ -1455,7 +1466,7 @@ impl Widget for Button {
             ButtonInteract {
                 hovered: self.is_hovered,
                 pressed: self.is_pressed,
-                focused: self.is_focused,
+                focused: focus_visible,
                 disabled: !enabled,
             },
         );
@@ -1483,7 +1494,7 @@ impl Widget for Button {
         // Focus ring wins over the style border; an accent-filled style
         // has no rest border, so it only strokes when focused.
         let outline = crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
-        if self.is_focused && enabled {
+        if focus_visible && enabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 transform,
@@ -1538,7 +1549,7 @@ impl Widget for Button {
             || (
                 self.is_hovered,
                 self.is_pressed,
-                self.is_focused,
+                self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state
     }
@@ -1593,6 +1604,7 @@ impl Widget for Button {
                         *ctx.handled = true;
 
                         if self.is_pressed {
+                            self.pressed_into_focus |= !self.is_focused;
                             *ctx.focus_target = Some(ctx.node_id);
                         }
 
@@ -1639,6 +1651,8 @@ impl Widget for Button {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        // A press that focused it keeps its mark; losing focus clears it.
+        self.pressed_into_focus &= focused;
         self.is_focused = focused;
     }
     fn is_focused(&self) -> bool {
