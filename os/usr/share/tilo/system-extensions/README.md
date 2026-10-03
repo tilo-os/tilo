@@ -127,8 +127,17 @@ image, because the image decides which bytes are acceptable:
    exactly the pinned length and SHA-256. Any mismatch refuses the whole
    transaction and leaves the previous extension in place.
 
+4. Nothing assembled earlier is trusted at boot. The sealed image keeps
+   `systemd-sysext.service` masked, so nothing in `/var` is merged by itself
+   (`docs/security/boot-chain.md`). Activation does it on purpose: it verifies
+   each kept manifest's signature again, each kept artifact against the
+   manifest, rebuilds every part from those bytes alone, refuses to merge at all
+   if anything else is in the sysext search path, and then runs
+   `systemd-sysext refresh`. A file changed in `/var` does not survive the next
+   activation; a changed artifact or manifest is not merged.
+
 `/usr/libexec/tilo-extension` is the only consumer. It takes exactly one
-argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), or `guard`,
+argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
 or `refresh:all`, and accepts only ids that have a catalogue entry.
 
 ### Base package fingerprint
@@ -221,12 +230,14 @@ manifest bytes, as `cosign sign-blob` writes it. Verified by
   library directory a package registers in `/etc/ld.so.conf.d` is moved to the
   base's own library path (an extension cannot change `/etc`).
 * `requires_base` lists exact base package versions (`epochnum:version-release`)
-  the part was built against. The boot guard, offline, sets aside any part
-  whose requirements the booted base does not meet, or that contains a package
-  the booted base now has, and restores a set-aside part that matches again
-  (after a rollback). Each part's extension-release carries `ID`,
-  `VERSION_ID` and `ARCHITECTURE` of the base, so systemd-sysext itself refuses
-  a part built for another OS release.
+  the part was built against. The manifest for exactly the booted base decides
+  which parts are merged. Until the device has it (after an image update, or
+  offline), activation uses a part from a manifest kept for an earlier base
+  only if the booted base meets all of its requirements, has the same OS
+  release and architecture, and ships none of the part's own packages; after a
+  rollback, the manifest kept for that base applies again. Each part's
+  extension-release carries `ID`, `VERSION_ID` and `ARCHITECTURE` of the base,
+  so systemd-sysext itself refuses a part built for another OS release.
 
 ### Device state
 
@@ -235,10 +246,10 @@ manifest bytes, as `cosign sign-blob` writes it. Verified by
 | `/var/lib/tilo/extensions/<id>.json` | Status, world-readable, replaced atomically |
 | `/var/lib/tilo/extensions/<id>/enabled` | The owner's opt-in |
 | `/var/lib/tilo/extensions/<id>/accepted.json` | Highest accepted revision per base |
-| `/var/lib/tilo/extensions/<id>/parked/` | Parts set aside by the boot guard |
-| `/var/cache/tilo-extension/objects/<sha256>` | Verified artifacts, content-addressed |
-| `/var/cache/tilo-extension/partial/<sha256>` | Downloads in progress, resumed by byte offset |
-| `/var/lib/extensions/<part>` | The assembled, read-only parts systemd-sysext merges |
+| `/var/lib/tilo/extensions/<id>/bases/<base>/manifest.json{,.sig}` | The signed manifests of the last three bases (rollback) |
+| `/var/lib/tilo/extensions/<id>/objects/<sha256>` | Verified artifacts those manifests pin |
+| `/var/cache/tilo-extension/<id>/partial/<sha256>` | Downloads in progress, resumed by byte offset |
+| `/var/lib/extensions/<part>` | The parts as last rebuilt by activation |
 | `/etc/tilo/extensions/opt-in/<id>` | The installer's handoff of an opt-in, adopted once |
 
 Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
@@ -249,8 +260,10 @@ Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 (increases after every merge or unmerge) and `updated`.
 
 Units: `tilo-extension@<verb>:<id>.service` (polkit lets a local, active
-administrator start only `install`, `remove` and `refresh` instances),
-`tilo-extension-guard.service` (every boot, offline, before
-`systemd-sysext.service`), `tilo-extension-refresh.timer` (after boot, daily,
-and on every update check), and NetworkManager's `90-tilo-extension`
-(an opt-in made offline installs once the device is online).
+administrator start only `install`, `remove` and `refresh` instances; it
+downloads into the state above and then starts the activation),
+`tilo-extension-activate.service` (every boot, offline, before the graphical
+target, and after every change; it has no mount namespace of its own, so the
+merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
+on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
+made offline installs once the device is online).

@@ -336,6 +336,15 @@ that already requires root, which can change the system in other ways too.
 Only the unsealed development image (`os/Containerfile.dev`) unmasks
 `systemd-sysext.service`, for its development layers.
 
+The one caller that merges on purpose is `tilo-extension-activate.service`,
+for the downloaded extensions the owner turned on (the media codecs, say). At
+every boot and after every change it verifies each kept manifest against the
+image's update key (`/usr/share/tilo/cosign.pub`), each kept artifact against
+the manifest's SHA-256, rebuilds every part from those bytes alone, and merges
+nothing if anything else is in the sysext search path. A file written to `/var`
+therefore still never reaches `/usr` across a reboot: it is replaced, or the
+merge is refused. See `os/usr/share/tilo/system-extensions/README.md`.
+
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
 Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot

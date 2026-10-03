@@ -24,7 +24,7 @@ containerfile="$repo/os/Containerfile"
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs),
 # the xdg-desktop-portal preference that selects the Tilo backend,
-# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule,
+# and the opt-in extension helper overlay (helper, units, polkit rule,
 # and the NetworkManager dispatcher hook that starts a deferred install).
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
@@ -83,7 +83,9 @@ containerfile="$repo/os/Containerfile"
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
-expected_contract=5daebbf50ef1a9303201d305885e8e5c0ca54e088860ecc82a1ab0bb9aee8765
+# The extension overlay replaces the codec-specific resolver: no repository
+# definitions or upstream keys ship, only the generic helper and its units.
+expected_contract=515c2931a7b2e4864cd078d60ba45cce447bd1262b9a57cc851a9bfe8f928f52
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -114,7 +116,7 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
-# The opt-in codec-pack overlay adds one COPY of its scratch stage.
+# The opt-in extension overlay adds one COPY of its scratch stage.
 # The echo-cancel PipeWire config adds one COPY; folding the three
 # /usr/lib/systemd/user units into one COPY removes two.
 # A build-only resolver placeholder and a final COPY restore the runtime
@@ -138,7 +140,7 @@ if containerfile_instructions "$containerfile" |
   exit 1
 fi
 
-for overlay in desktop-binaries remote-capture-files rollback-files recovery-files codec-pack-files; do
+for overlay in desktop-binaries remote-capture-files rollback-files recovery-files extension-files; do
   [ "$(containerfile_copy_contract "$containerfile" rootfs |
        awk -F '\t' -v s="$overlay" '$1==s && $2=="/" && $3=="/"{n++} END{print n+0}')" -eq 1 ] \
     || { echo "$overlay is not applied to rootfs exactly once" >&2; exit 1; }
@@ -165,8 +167,8 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-codec-pack \
-  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack; do
+  os/usr/libexec/tilo-extension \
+  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {
