@@ -302,6 +302,57 @@ enum Command {
     /// is waiting. A newer request replaces the waiting one and must keep its
     /// versions, so it builds on this entry rather than the published one.
     Pending(PendingArgs),
+    /// Seal a directory tree into a signed environment image: an
+    /// `env-runtime` (a minimal userland), or a `tool` holding what some
+    /// packages add on top of the exact env-runtime `--runtime` names.
+    /// Execute bits, symbolic links and empty directories are kept; the
+    /// package id is printed on stdout.
+    SealImage(SealImageArgs),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ImageKind {
+    EnvRuntime,
+    Tool,
+}
+
+#[derive(clap::Args)]
+struct SealImageArgs {
+    /// What the image is.
+    #[arg(long, value_enum)]
+    kind: ImageKind,
+    /// The directory to seal, holding the image's `usr/` and `etc/`.
+    #[arg(long)]
+    tree: PathBuf,
+    /// Reverse-DNS package id, such as `so.tilo.env-runtime`.
+    #[arg(long)]
+    id: String,
+    /// Semver of this build.
+    #[arg(long)]
+    version: String,
+    /// Display name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Architecture of the image's binaries (`x86_64` or `aarch64`);
+    /// defaults to this machine's.
+    #[arg(long)]
+    arch: Option<String>,
+    /// For a tool: the env-runtime package id (`tapp:<hex>`) it was built on.
+    #[arg(long)]
+    runtime: Option<String>,
+    /// A file listing the distribution packages the image holds, one
+    /// `name-epoch:version-release.arch` per line.
+    #[arg(long)]
+    packages: Option<PathBuf>,
+    /// Publisher identity JSON; a fresh key is generated when absent.
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    /// Output .tapp path.
+    #[arg(short = 'o', long)]
+    output: PathBuf,
+    /// Write the thin form (metadata only).
+    #[arg(long)]
+    thin: bool,
 }
 
 #[derive(clap::Args)]
@@ -368,6 +419,7 @@ fn main() -> Result<()> {
             output: &output,
             identity: identity.as_deref(),
         }),
+        Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
@@ -449,6 +501,68 @@ fn cmd_pack(
         if thin { "thin" } else { "full" },
         packed.meta.payload_hashes().len()
     );
+    Ok(())
+}
+
+fn cmd_seal_image(args: &SealImageArgs) -> Result<()> {
+    use tilo_app_package::manifest::Arch;
+    let arch = match args.arch.as_deref().unwrap_or(std::env::consts::ARCH) {
+        "x86_64" => Arch::X86_64,
+        "aarch64" => Arch::AArch64,
+        other => bail!("--arch {other:?}: images are built for x86_64 or aarch64"),
+    };
+    let runtime = args
+        .runtime
+        .as_deref()
+        .map(|raw| {
+            let text = if raw.starts_with("tapp:") {
+                raw.to_owned()
+            } else {
+                format!("tapp:{raw}")
+            };
+            text.parse::<tilo_app_package::PackageId>()
+                .map_err(|error| anyhow!("--runtime {raw:?}: {error}"))
+        })
+        .transpose()?;
+    let packages = match &args.packages {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("read {}", path.display()))?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        None => Vec::new(),
+    };
+    let spec = tilo_app_package::ImageSpec {
+        kind: match args.kind {
+            ImageKind::EnvRuntime => tilo_app_package::Kind::EnvRuntime,
+            ImageKind::Tool => tilo_app_package::Kind::Tool,
+        },
+        id: args.id.clone(),
+        version: args.version.clone(),
+        name: args.name.clone(),
+        arch,
+        runtime,
+        packages,
+    };
+    let identity = match &args.identity {
+        Some(path) => load_identity(path)?,
+        None => SigningIdentity::generate(),
+    };
+    let packed = tilo_app_package::seal_image(&args.tree, &spec, &identity)
+        .map_err(|error| anyhow!("seal {}: {error}", args.tree.display()))?;
+    let payload: Option<&dyn BlobSource> = if args.thin { None } else { Some(&packed) };
+    write_tapp(&args.output, &packed.meta, payload)?;
+    eprintln!(
+        "sealed {} {} {} ({} files, {} distinct blobs)",
+        spec.kind,
+        spec.id,
+        spec.version,
+        packed.meta.collection.entries.len(),
+        packed.meta.payload_hashes().len()
+    );
+    println!("{}", packed.id());
     Ok(())
 }
 
@@ -704,6 +818,14 @@ fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
     }
     if keys.is_empty() {
         keys.push(tapp.meta.publisher());
+    }
+    // An image's manifest carries what it may be stacked on; one that
+    // breaks the schema (a tool naming no runtime) does not verify.
+    if tapp.meta.manifest.package.kind.is_image()
+        && let Err(error) = tilo_app_package::validate_manifest(&tapp.meta.manifest)
+    {
+        println!("FAILED: {id}: {error}");
+        std::process::exit(1);
     }
     let form = if missing.is_empty() {
         "full"

@@ -21,6 +21,7 @@ use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Wi
 use ui_core::{LocalState, Theme};
 
 use super::dispatch::Dispatcher;
+use super::effect::Effects;
 use super::live::Live;
 use super::rows::{find, join, merge, outside_document};
 use super::stage::Stages;
@@ -47,6 +48,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     feeds: super::history::HistoryFeeds,
     /// Edits the views bound to their local state.
     bindings: Bindings<R>,
+    /// The effect handlers and projection drains the view registered.
+    effects: Effects<R>,
     content: Element,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
@@ -155,6 +158,7 @@ impl<R: Resource> ResourceRoot<R> {
             stages: cx.stages,
             feeds: cx.feeds,
             bindings: cx.bindings,
+            effects: cx.effects,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
@@ -279,6 +283,18 @@ impl<R: Resource> ResourceRoot<R> {
                 resource = resource.with_action(spec);
             }
         }
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
+        }
         resource
     }
 
@@ -393,6 +409,8 @@ impl<R: Resource> ResourceRoot<R> {
             self.updaters.run(&self.live.get());
         }
         self.feeds.refresh(doc);
+        self.live
+            .with(|state| self.effects.drain_projections(state, revision));
     }
 }
 
@@ -560,6 +578,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             handlers.insert(RENDER_TYPE.to_owned());
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
+        handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
         for spec in R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
@@ -569,6 +588,21 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             }
         }
         handlers
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.effects
+            .poll(invocation, cancellation_requested)
+            .or_else(|| {
+                self.content
+                    .poll_resource_operation(invocation, cancellation_requested, doc, path)
+            })
     }
 
     fn start_operation(
@@ -593,6 +627,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));
+        }
+        if let Some(started) = self.effects.start(op)? {
+            return Ok(Some(started));
         }
         if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
@@ -735,7 +772,12 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         address: &tilo_actions::ActionAddress,
         result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
-        if result.is_err() && address.resource == self.dispatch.resource_id() {
+        if let Err(error) = result
+            && address.resource == self.dispatch.resource_id()
+        {
+            if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
+                self.dispatch.refuse(&address.action, error.to_string());
+            }
             self.live.represent();
         }
         ui_core::widget::controls::on_control_invocation_result(
