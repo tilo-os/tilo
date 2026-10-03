@@ -29,6 +29,51 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
     );
 }
 
+#[test]
+fn a_resolved_row_says_each_thing_once() {
+    let mut row = action_row(
+        "doc:1",
+        "save-as",
+        vec![tilo_actions::ActionParam::required(
+            "path",
+            tilo_actions::ParamType::Text,
+            "Where",
+        )],
+    );
+    row.parent_resource = "doc:1".into();
+    row.visibility = Some(tilo_actions::remote::RowVisibility {
+        action: "save-as".into(),
+        contract: tilo_actions::ActionContract::default(),
+    });
+    let resolved = resolved_row_json(&row);
+    assert_eq!(resolved["resource"], "doc:1");
+    assert_eq!(resolved["descriptor"]["params"][0]["name"], "path");
+    assert_eq!(
+        resolved["descriptor"]["contract"],
+        row_json(&row)["descriptor"]["contract"]
+    );
+    for key in [
+        "parent_resource",
+        "visibility_action",
+        "visibility_contract",
+    ] {
+        assert!(resolved.get(key).is_none(), "{key}: {resolved}");
+    }
+    for key in ["resource", "resource_kind", "resource_label"] {
+        assert!(
+            resolved["descriptor"].get(key).is_none(),
+            "{key}: {resolved}"
+        );
+    }
+
+    // A visibility other than the action's own contract is kept.
+    row.visibility = Some(tilo_actions::remote::RowVisibility {
+        action: "read".into(),
+        contract: tilo_actions::ActionContract::view(),
+    });
+    assert_eq!(resolved_row_json(&row)["visibility_action"], "read");
+}
+
 mod schema_rows {
     use tilo_resource::{Model, resource};
 

@@ -76,6 +76,34 @@ fn refusal(result: Result<Option<Value>, tilo_actions::DoorError>) -> String {
     result.expect_err("refused").to_string()
 }
 
+/// Versions with what each carries over from the one before filled in.
+fn carried(versions: &[Value]) -> Vec<Value> {
+    let mut before = serde_json::Map::new();
+    versions
+        .iter()
+        .map(|version| {
+            let mut version = version.as_object().unwrap().clone();
+            if !["run_id", "by"]
+                .iter()
+                .any(|key| version.contains_key(*key))
+            {
+                for key in ["run", "run_id", "by"] {
+                    if let Some(value) = before.get(key) {
+                        version.insert(key.into(), value.clone());
+                    }
+                }
+            }
+            if !version.contains_key("time_ms")
+                && let Some(time) = before.get("time_ms")
+            {
+                version.insert("time_ms".into(), time.clone());
+            }
+            before.clone_from(&version);
+            Value::Object(version)
+        })
+        .collect()
+}
+
 fn history(app: &mut TestApp<BoardApp>) -> Value {
     app.call("history", json!({}))
         .unwrap()
@@ -165,9 +193,11 @@ fn history_lists_each_step_with_its_arguments_author_and_checkpoints() {
     assert_eq!(named["checkpoint"], "before sea");
     app.call_in_run("mcp:run-7", "add", json!({"text": "sea"}))
         .unwrap();
+    app.call_in_run("mcp:run-7", "add", json!({"text": "gull"}))
+        .unwrap();
 
     let listed = history(&mut app);
-    let versions = listed["versions"].as_array().unwrap();
+    let versions = carried(listed["versions"].as_array().unwrap());
     let sky = versions
         .iter()
         .find(|version| version["args"] == "{text:\"sky\"}")
@@ -175,8 +205,15 @@ fn history_lists_each_step_with_its_arguments_author_and_checkpoints() {
     assert_eq!(sky["action"], "Add a card", "{listed}");
     assert!(sky["by"].is_string(), "{listed}");
     assert_eq!(sky["checkpoint"], json!(["before sea"]), "{listed}");
-    let sea = versions.last().unwrap();
+    let [.., sea, gull] = versions.as_slice() else {
+        panic!("sea and gull are listed: {listed}");
+    };
     assert_eq!(sea["run_id"], "mcp:run-7", "{listed}");
+    assert_eq!(gull["run_id"], "mcp:run-7", "{listed}");
+    // The run is named once: its second step carries it over.
+    let gull = listed["versions"].as_array().unwrap().last().unwrap();
+    assert!(gull.get("run_id").is_none(), "{listed}");
+    assert!(gull.get("by").is_none(), "{listed}");
     assert_eq!(listed["checkpoints"][0]["name"], "before sea");
     assert_eq!(listed["checkpoints"][0]["version"], named["version"]);
 }
