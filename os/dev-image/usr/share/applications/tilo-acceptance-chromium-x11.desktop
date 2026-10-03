@@ -1,0 +1,10 @@
+# Dev image only: Chromium forced onto X11 through Xwayland, the way Electron
+# apps run with --ozone-platform=x11, opened by the VM acceptance suite.
+[Desktop Entry]
+Type=Application
+Name=Chromium on X11 (acceptance)
+Comment=Chromium with --ozone-platform=x11 on a page with a text field
+Exec=chromium-browser --ozone-platform=x11 --no-first-run --no-default-browser-check --password-store=basic file:///usr/share/tilo-vm/acceptance/text.html
+Icon=chromium-browser
+StartupWMClass=chromium-browser
+Categories=Development;
