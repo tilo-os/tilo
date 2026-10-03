@@ -78,8 +78,10 @@ work on a device too, beside the device's session.
     tilo-vm swap --slot device shell --builder host
   ```
 - **Your worktree on the device** (`--builder vm`, the default when the
-  device's image can build): it works, but a board compiles a release shell
-  for hours. Use it on a fast aarch64 machine, or for small components.
+  device's image can build): only for small components or `--profile dev`.
+  The release shell links with fat LTO and needs more than 16 GB of memory,
+  which a board does not have (an aarch64 VM with 16 GB is killed too);
+  build it with the drop-in above, or take CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`
 for everything built from a worktree), which `slot show --json` and the
