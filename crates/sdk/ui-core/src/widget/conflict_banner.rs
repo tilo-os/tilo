@@ -232,11 +232,14 @@ impl ConflictBanner {
         hovered: bool,
     ) {
         let (label, measured) = label;
-        // A Neutral button face (HIG §9.5): raised at rest, the theme's
-        // hover fill when hovered, edge derived from the face — not a white
+        // A Neutral button face (HIG §9.5): raised at rest, its half lift
+        // when hovered, edge derived from the face — not a white
         // veneer that is invisible on a light palette.
         let body = if hovered {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };

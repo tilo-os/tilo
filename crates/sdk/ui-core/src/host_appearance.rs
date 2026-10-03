@@ -133,9 +133,18 @@ mod tests {
             })
         };
         assert_eq!(theme(Some(Scheme::Light)).name, Theme::light().name);
-        assert_eq!(theme(Some(Scheme::Light)).bg_app, Theme::light().bg_app);
-        assert_eq!(theme(Some(Scheme::Dark)).bg_app, Theme::dark().bg_app);
-        assert_eq!(theme(None).bg_app, Theme::dark().bg_app);
+        assert_eq!(
+            theme(Some(Scheme::Light)).tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
+        assert_eq!(
+            theme(Some(Scheme::Dark)).tokens.colors.surfaces.content,
+            Theme::dark().tokens.colors.surfaces.content
+        );
+        assert_eq!(
+            theme(None).tokens.colors.surfaces.content,
+            Theme::dark().tokens.colors.surfaces.content
+        );
         assert_eq!(
             theme(None).border_focus,
             Theme::dark().border_focus,
@@ -168,8 +177,8 @@ mod tests {
             "at the presence lightness, not the host's"
         );
         assert_eq!(
-            theme.bg_app,
-            Theme::light().bg_app,
+            theme.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content,
             "surfaces are untouched"
         );
     }

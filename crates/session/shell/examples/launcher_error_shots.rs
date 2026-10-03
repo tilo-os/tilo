@@ -79,7 +79,11 @@ fn shot(out: &Path, width: u32, height: u32) {
         &mut TextRenderer::new(),
         &theme,
     );
-    OffscreenRenderer::new(width, height).render_png(&scene, theme.bg_app, out);
+    OffscreenRenderer::new(width, height).render_png(
+        &scene,
+        theme.tokens.colors.surfaces.base,
+        out,
+    );
     println!("wrote {}", out.display());
 }
 

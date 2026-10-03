@@ -643,7 +643,10 @@ mod tests {
             ..ThemeLayerStack::default()
         });
         assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
+        assert_eq!(
+            theme.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
 
         let user_wins = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
@@ -669,8 +672,8 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(
-            pinned.bg_app,
-            Theme::light().bg_app,
+            pinned.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content,
             "colour stays the user's"
         );
         assert!((pinned.tokens.radii.tile - 4.0).abs() < 1e-4);
@@ -709,14 +712,21 @@ mod tests {
         });
         assert_eq!(warm.name, Theme::light().name);
         assert!((warm.document.palette.hue - 40.0).abs() < f32::EPSILON);
-        assert_ne!(warm.bg_app, Theme::light().bg_app);
+        assert_ne!(
+            warm.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
         assert!(audit(&warm.tokens.colors).is_empty());
 
         let neutral = resolve_theme_layers(&ThemeLayerStack {
             workspace_hue: Some(40.0),
             ..ThemeLayerStack::default()
         });
-        assert_eq!(neutral.bg_app, Theme::dark().bg_app, "chroma 0 shows none");
+        assert_eq!(
+            neutral.tokens.colors.surfaces.content,
+            Theme::dark().tokens.colors.surfaces.content,
+            "chroma 0 shows none"
+        );
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
             workspace_hue: Some(40.0),
@@ -728,8 +738,12 @@ mod tests {
         });
         assert_eq!(forced.name, "High contrast light");
         assert_eq!(
-            forced.bg_app,
-            Theme::preset(Preset::HighContrastLight).bg_app
+            forced.tokens.colors.surfaces.content,
+            Theme::preset(Preset::HighContrastLight)
+                .tokens
+                .colors
+                .surfaces
+                .content
         );
     }
 

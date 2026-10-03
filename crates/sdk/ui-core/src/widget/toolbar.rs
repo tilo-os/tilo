@@ -996,7 +996,10 @@ impl Toolbar {
         let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(rect, radius);
         let color = if self.hovered == Some(target) {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };
@@ -1946,7 +1949,7 @@ mod lifecycle_tests {
             assert!(tb.menu.item_rect(last).is_some());
             let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
             let path = format!("{dir}/{name}.png");
-            renderer.render_png(&scene, theme.bg_app, &path);
+            renderer.render_png(&scene, theme.tokens.colors.surfaces.content, &path);
             key(&mut tb, NamedKey::Enter);
             assert_eq!(*fired.borrow(), 1);
             eprintln!(

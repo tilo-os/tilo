@@ -723,8 +723,9 @@ impl Widget for Dropdown {
                 &shape,
             );
         }
+        let raised = theme.tokens.colors.surfaces.raised;
         let bg = if self.open || self.is_focused {
-            theme.bg_active
+            theme.tokens.colors.lift_on(raised, 1.0)
         } else {
             theme.tokens.colors.surfaces.raised
         };

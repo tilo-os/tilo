@@ -797,11 +797,14 @@ impl ConflictPicker {
     ) {
         let keep = self.keep_current_rect();
         let keep_radius = f64::from(theme.tokens.radii.detail);
-        // A Neutral button face (HIG §9.5): the raised tier at rest, the
-        // theme's hover fill when hovered, edge derived from the face — not
+        // A Neutral button face (HIG §9.5): the raised tier at rest, its
+        // half lift when hovered, edge derived from the face — not
         // a white veneer that is invisible on a light palette.
         let keep_body = if self.hover_keep {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };

@@ -943,7 +943,7 @@ impl AppHandler {
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                base_color: self.app.theme.bg_app,
+                base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: true,
             })
@@ -1941,7 +1941,7 @@ impl AppHandler {
                 scene,
                 width,
                 height,
-                base_color: app.theme.bg_app,
+                base_color: app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: full_redraw_required,
                 on_present: self.dev_reload_timing.take().map(|timing| {

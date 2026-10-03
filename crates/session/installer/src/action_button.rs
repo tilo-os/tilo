@@ -281,8 +281,9 @@ impl Widget for ActionButton {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
 
         // Fill + label colour by variant and interaction state.
+        let raised = theme.tokens.colors.surfaces.raised;
         let (bg, label_color) = if self.disabled {
-            (theme.bg_primary, theme.text_dim)
+            (raised, theme.text_dim)
         } else if self.primary {
             let bg = if self.is_pressed || self.is_hovered {
                 theme.tokens.colors.intent.inverted_hover
@@ -292,11 +293,11 @@ impl Widget for ActionButton {
             (bg, theme.tokens.colors.intent.on_inverted)
         } else {
             let bg = if self.is_pressed {
-                theme.bg_active
+                theme.tokens.colors.lift_on(raised, 1.0)
             } else if self.is_hovered {
-                theme.bg_hover
+                theme.tokens.colors.lift_on(raised, 0.5)
             } else {
-                theme.bg_primary
+                raised
             };
             (bg, theme.text_primary)
         };
@@ -342,7 +343,7 @@ impl Widget for ActionButton {
                 if checked {
                     theme.tokens.colors.intent.inverted
                 } else {
-                    theme.bg_primary
+                    raised
                 },
                 None,
                 &box_shape,
