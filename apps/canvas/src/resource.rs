@@ -114,6 +114,25 @@ impl ArtworkResource {
     pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"]);
     /// `restore` a past version as a new change.
     pub const RESTORE: ActionRef<Self, String> = ActionRef::new("restore", &["version"]);
+    /// `use-selection`: what to make of it, on a layer, in a colour.
+    pub const USE_SELECTION: ActionRef<Self, (String, Option<String>, Option<String>)> =
+        ActionRef::new("use-selection", &["do", "layer", "colour"]);
+    /// `select` inverting the selection.
+    pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    /// `select` with a mode alone: `none` selects nothing.
+    pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
+    /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
+    pub const COMBINE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("combine", &["ids", "op"]);
+    /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
+    pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "mask"]);
+    /// `edit-layer` inverting a layer's mask.
+    pub const SET_MASK_INVERT: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "invert"]);
+    /// `edit-layer` clipping a layer to the one below.
+    pub const SET_LAYER_CLIP: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "clip"]);
     /// `checkpoint`: name the current version.
     pub const CHECKPOINT: ActionRef<Self, String> = ActionRef::new("checkpoint", &["name"]);
 }
