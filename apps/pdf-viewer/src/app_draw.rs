@@ -2045,7 +2045,15 @@ impl PdfApp {
         let mut views = self.comment_views.borrow_mut();
         let view = views.entry(key).or_default();
         view.show(blocks);
-        view.layout(Rect::new(0.0, 0.0, width, 0.0), &theme, tr)
+        view.layout(Self::rich_text_rect(&theme, 0.0, 0.0, width), &theme, tr)
+    }
+
+    /// The rect a comment's rich text is laid out in so its glyphs start at
+    /// `x` and wrap at `width`: the editor sets each line one field padding
+    /// in from its rect.
+    fn rich_text_rect(theme: &Theme, x: f64, y: f64, width: f64) -> Rect {
+        let pad = f64::from(theme.padding_standard);
+        Rect::new(x - pad, y, x + width + pad, y)
     }
 
     /// The width of a card in the comments list.
@@ -2318,7 +2326,7 @@ impl PdfApp {
             }) = self.editing.as_mut()
             {
                 field.layout(
-                    Rect::new(body_x, body_top, body_x + text_w, body_top),
+                    Self::rich_text_rect(theme, body_x, body_top, text_w),
                     theme,
                     tr,
                 );
@@ -2339,7 +2347,7 @@ impl PdfApp {
             view.show(&cm.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
             view.layout(
-                Rect::new(body_x, body_top, body_x + text_w, body_top),
+                Self::rich_text_rect(theme, body_x, body_top, text_w),
                 theme,
                 tr,
             );
@@ -2387,7 +2395,7 @@ impl PdfApp {
                 .or_default();
             view.show(&r.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
-            view.layout(Rect::new(x0, yy, x0 + text_w, yy), theme, tr);
+            view.layout(Self::rich_text_rect(theme, x0, yy, text_w), theme, tr);
             view.draw(scene, base, tr, theme);
             yy += reply_h;
         }
@@ -2443,7 +2451,7 @@ impl PdfApp {
             {
                 let tx = hdr.text_x;
                 let ty = field.y0 + pad;
-                reply.layout(Rect::new(tx, ty, tx + text_w - pad, ty), theme, tr);
+                reply.layout(Self::rich_text_rect(theme, tx, ty, text_w - pad), theme, tr);
                 reply.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
             out.hits
@@ -2634,10 +2642,10 @@ impl PdfApp {
         self.sig_pad_rect = Rect::ZERO;
         match self.sig_mode {
             SigMode::Type => {
-                self.draw_signature_compose_type(scene, base, tr, theme, geo.compose, out)
+                self.draw_signature_compose_type(scene, base, tr, theme, geo.compose, out);
             }
             SigMode::Draw => {
-                self.draw_signature_compose_draw(scene, base, tr, theme, geo.compose, out)
+                self.draw_signature_compose_draw(scene, base, tr, theme, geo.compose, out);
             }
         }
 
