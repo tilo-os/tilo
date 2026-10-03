@@ -953,11 +953,12 @@ impl Widget for RichTextEditor {
         let radius = f64::from(theme.tokens.radii.control);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
-            scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &body);
+            let well = theme.tokens.colors.surfaces.raised;
+            scene.fill(Fill::NonZero, transform, well, None, &body);
             let border = if self.focused {
                 theme.border_focus
             } else {
-                crate::surface::edge_on(theme.bg_primary)
+                crate::surface::edge_on(well)
             };
             scene.stroke(&Stroke::new(1.0), transform, border, None, &body);
         }

@@ -160,7 +160,7 @@ fn render(theme: &Theme, paint: impl FnOnce(&mut Scene, &mut TextRenderer)) -> R
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     paint(&mut scene, &mut tr);
-    let rgba = renderer.render(&scene, theme.bg_app);
+    let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
     Rendered { rgba }
 }
 
@@ -518,15 +518,15 @@ fn dispatch_key_to_palette(palette: &mut PagePalette, key: NamedKey) {
 
 #[test]
 fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
-    // Case `bg_app_ground_is_opaque_so_samples_are_meaningful`.
+    // Case `window_ground_is_opaque_so_samples_are_meaningful`.
     {
         // Guards the sampling method itself: every case composites over the
         // theme's window ground, so a transparent ground would make each ΔL*
         // above meaningless rather than merely wrong.
         for name in Theme::ALL {
             let theme = Theme::named(name).expect("shipped preset resolves");
-            let px = theme.bg_app.to_rgba8();
-            assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
+            let px = theme.tokens.colors.surfaces.content.to_rgba8();
+            assert_eq!(px.a, 0xff, "{name}: the window ground must be opaque");
         }
     }
 

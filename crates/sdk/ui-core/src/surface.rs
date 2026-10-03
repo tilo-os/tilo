@@ -499,6 +499,62 @@ pub fn pill(
     }
 }
 
+/// The regions a window is made of (HIG §9.2). Each has one ground, and
+/// the framework paints it: an app declares which region an area is (a
+/// `NavShell` slot, or [`region`] in a painted app) and never fills it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Region {
+    /// The window ground, `surfaces.content`: every app's background.
+    Content,
+    /// The navigation column at the leading edge, `surfaces.sidebar`.
+    Sidebar,
+    /// The detail column at the trailing edge, `surfaces.inspector`.
+    Inspector,
+}
+
+/// Paint `region`'s ground over `rect` and return it, for the region's
+/// contents to measure against ([`Theme::on_ground`],
+/// [`Colors::lift_on`], [`edge_on`]).
+///
+/// A region is told apart from the content beside it by its tone. Where a
+/// material gives the two the same ground (high contrast), the region draws
+/// the hairline instead, on the edge it shares with content: the trailing
+/// edge of a sidebar, the leading edge of an inspector.
+pub fn region(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    region: Region,
+    theme: &Theme,
+) -> Color {
+    let ground = theme.region(region);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return ground;
+    }
+    scene.fill(Fill::NonZero, transform, ground, None, &rect);
+    let content = theme.tokens.colors.surfaces.content;
+    let shared_edge = match region {
+        Region::Content => None,
+        Region::Sidebar => Some(rect.x1.round() - 1.0),
+        Region::Inspector => Some(rect.x0.round()),
+    };
+    if let Some(x) = shared_edge
+        && region_needs_edge(ground, content)
+    {
+        let rule = Rect::new(x, rect.y0, x + 1.0, rect.y1);
+        scene.fill(Fill::NonZero, transform, edge_on(ground), None, &rule);
+    }
+    ground
+}
+
+/// Whether a region tier is too close to the content ground to separate
+/// from it by tone alone.
+#[must_use]
+pub fn region_needs_edge(ground: Color, content: Color) -> bool {
+    let l = |c: Color| f64::from(crate::color::Oklch::from_color(c).l);
+    (l(ground) - l(content)).abs() < crate::tokens::colors::REGION_MIN_STEP
+}
+
 /// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
 /// surface it is drawn on (HIG §9.5). Step 0 is the control hairline
 /// (`chrome::shell::HAIRLINE_ALPHA`); the ladder only climbs on grounds so

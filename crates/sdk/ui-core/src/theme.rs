@@ -88,11 +88,11 @@ pub struct Theme {
     /// workspace temperature and high contrast.
     pub document: ThemeDocument,
     pub tokens: Tokens,
-    // Shortcuts — derived from tokens on construction.
-    pub bg_app: Color,
-    pub bg_primary: Color,
-    pub bg_hover: Color,
-    pub bg_active: Color,
+    // Shortcuts — derived from tokens on construction. Grounds are not
+    // among them: the framework paints `surfaces.content` and each region's
+    // tier ([`Theme::region`]); a hover or pressed fill is the lift of the
+    // ground the control sits on (`intent.selection_hover`/`selection`, or
+    // `Colors::lift_on`).
     pub border_standard: Color,
     /// The focus ring: the person's own colour ([`crate::tokens::Intents::you`]).
     pub border_focus: Color,
@@ -209,10 +209,6 @@ impl Theme {
         let c = &tokens.colors;
         Self {
             name: document.name.clone(),
-            bg_app: c.surfaces.base,
-            bg_primary: c.surfaces.raised,
-            bg_hover: c.neutral[4],
-            bg_active: c.neutral[2],
             border_standard: c.border_standard,
             border_focus: c.border_focus,
             text_primary: c.text_primary,
@@ -270,6 +266,49 @@ impl Theme {
     /// paints on.
     pub fn on_content(&self) -> crate::tokens::OnSurface {
         self.tokens.colors.on_content()
+    }
+
+    /// The ground of `region` (HIG §9.2): `surfaces.content`,
+    /// `surfaces.sidebar` or `surfaces.inspector`. The framework paints it
+    /// ([`crate::surface::region`]); a caller reads it to measure against.
+    #[must_use]
+    pub fn region(&self, region: crate::surface::Region) -> Color {
+        let s = &self.tokens.colors.surfaces;
+        match region {
+            crate::surface::Region::Content => s.content,
+            crate::surface::Region::Sidebar => s.sidebar,
+            crate::surface::Region::Inspector => s.inspector,
+        }
+    }
+
+    /// This theme as seen by a widget standing on `ground`: a region tier, a
+    /// raised well, a document's paper. `surfaces.content` becomes `ground`,
+    /// the text tiers are re-measured against it ([`Self::on_surface`]) and
+    /// the selection lift steps from it, so a widget that paints "ink on
+    /// the window ground" or "the selected row" is right on whatever ground
+    /// its container handed it. Every other token is unchanged.
+    #[must_use]
+    pub fn on_ground(&self, ground: Color) -> Self {
+        let mut theme = self.clone();
+        if ground == self.tokens.colors.surfaces.content {
+            return theme;
+        }
+        let on = self.tokens.colors.on_surface(ground);
+        let c = &mut theme.tokens.colors;
+        c.surfaces.content = ground;
+        c.text_primary = on.ink;
+        c.text_dim = on.ink_dim;
+        c.text_tertiary = on.ink_tertiary;
+        c.intent.selection = c.lift_on(ground, 1.0);
+        c.intent.selection_hover = c.lift_on(ground, 0.5);
+        theme.refresh_colour_shortcuts();
+        theme
+    }
+
+    /// [`Self::on_ground`] for one of the window's regions.
+    #[must_use]
+    pub fn in_region(&self, region: crate::surface::Region) -> Self {
+        self.on_ground(self.region(region))
     }
 
     /// [`Self::on_content`] for any surface a widget actually paints on — a
@@ -348,10 +387,6 @@ impl Theme {
     fn refresh_colour_shortcuts(&mut self) {
         Self::derive_palettes(&mut self.tokens);
         let c = &self.tokens.colors;
-        self.bg_app = c.surfaces.base;
-        self.bg_primary = c.surfaces.raised;
-        self.bg_hover = c.neutral[4];
-        self.bg_active = c.neutral[2];
         self.border_standard = c.border_standard;
         self.border_focus = c.border_focus;
         self.text_primary = c.text_primary;
@@ -652,8 +687,6 @@ mod tests {
         {
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let c = &t.tokens.colors;
-                assert_eq!(t.bg_app, c.surfaces.base, "{}", t.name);
-                assert_eq!(t.bg_primary, c.surfaces.raised, "{}", t.name);
                 assert_eq!(t.text_primary, c.text_primary, "{}", t.name);
                 assert_eq!(t.border_focus, c.intent.you, "{}", t.name);
                 assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
@@ -695,6 +728,37 @@ mod tests {
                 assert!(r < 1.6, "{}: the tint reads as a panel ({r:.2}:1)", t.name);
             }
         }
+        // phase: a_region_theme_measures_ink_and_selection_against_its_ground
+        {
+            use crate::surface::Region;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                for region in [Region::Content, Region::Sidebar, Region::Inspector] {
+                    let ground = t.region(region);
+                    let r = t.in_region(region);
+                    let c = &r.tokens.colors;
+                    assert_eq!(c.surfaces.content, ground, "{} {region:?}", t.name);
+                    assert_eq!(r.text_primary, c.text_primary, "{} {region:?}", t.name);
+                    for (tier, ink) in [("primary", r.text_primary), ("secondary", r.text_dim)] {
+                        let ratio = contrast_ratio(ink, ground);
+                        assert!(
+                            ratio >= 4.5,
+                            "{} {region:?}: {tier} ink {ratio:.2}:1",
+                            t.name
+                        );
+                    }
+                    let step = contrast_ratio(c.intent.selection, ground);
+                    assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
+                    assert_eq!(c.surfaces.raised, t.tokens.colors.surfaces.raised);
+                    assert_eq!(c.intent.inverted, t.tokens.colors.intent.inverted);
+                }
+                assert_eq!(
+                    t.in_region(Region::Content).tokens.colors.intent.selection,
+                    t.tokens.colors.intent.selection,
+                    "{}: the content region is the theme itself",
+                    t.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -704,17 +768,27 @@ mod tests {
             let warm = Theme::light().with_neutral_hue(60.0);
             let h = Oklch::from_color(warm.tokens.colors.surfaces.sidebar).h;
             assert!((h - 60.0).abs() <= 25.0, "sidebar hue {h:.0}");
-            assert_eq!(warm.bg_app, warm.tokens.colors.surfaces.base);
+            assert_eq!(
+                warm.region(crate::surface::Region::Content),
+                warm.tokens.colors.surfaces.content
+            );
             assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
             assert_eq!(warm.name, "Light");
             assert!((warm.document.palette.hue - 60.0).abs() < f32::EPSILON);
             let same = Theme::light().with_neutral_hue(f32::NAN);
-            assert_eq!(same.bg_app, Theme::light().bg_app, "a NaN hue is ignored");
+            assert_eq!(
+                same.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content,
+                "a NaN hue is ignored"
+            );
         }
         // phase: the_neutral_default_shows_no_temperature
         {
             let dark = Theme::dark().with_neutral_hue(60.0);
-            assert_eq!(dark.bg_app, Theme::dark().bg_app);
+            assert_eq!(
+                dark.tokens.colors.surfaces.base,
+                Theme::dark().tokens.colors.surfaces.base
+            );
             assert_eq!(
                 dark.tokens.colors.surfaces.content,
                 Theme::dark().tokens.colors.surfaces.content
@@ -850,7 +924,9 @@ mod tests {
             };
             let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
             assert_eq!(theme.name, "High contrast");
-            assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
+            assert!(
+                contrast_ratio(theme.text_primary, theme.tokens.colors.surfaces.content) >= 7.0
+            );
             assert!(theme.reduce_motion);
             assert_eq!(theme.text_scale, 2.0);
             let light = Theme::light().with_a11y(&settings, 1.0, 1.0);

@@ -242,7 +242,7 @@ impl<R: Resource> ResourceRoot<R> {
             scene.fill(
                 ui_core::vello::peniko::Fill::NonZero,
                 transform,
-                theme.bg_app,
+                theme.tokens.colors.surfaces.content,
                 None,
                 &bounds,
             );
@@ -253,7 +253,7 @@ impl<R: Resource> ResourceRoot<R> {
             scene.fill(
                 ui_core::vello::peniko::Fill::NonZero,
                 transform,
-                theme.bg_app,
+                theme.tokens.colors.surfaces.content,
                 None,
                 &rect,
             );
@@ -263,7 +263,7 @@ impl<R: Resource> ResourceRoot<R> {
         };
         let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        let rgba = offscreen.render(&scene, theme.bg_app);
+        let rgba = offscreen.render(&scene, theme.tokens.colors.surfaces.content);
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = tilo_content::ContentStore::for_app()
@@ -390,17 +390,18 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self
-            .drawn_theme
-            .as_ref()
-            .is_none_or(|drawn| drawn.name != theme.name)
-        {
+        let ground = theme.tokens.colors.surfaces.content;
+        if self.drawn_theme.as_ref().is_none_or(|drawn| {
+            drawn.name != theme.name || drawn.tokens.colors.surfaces.content != ground
+        }) {
             self.drawn_theme = Some(theme.clone());
         }
+        // The window ground is the framework's: an app never fills it, and
+        // one that paints nothing still stands on it.
         scene.fill(
             ui_core::vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_app,
+            ground,
             None,
             &self.content.get_rect(),
         );

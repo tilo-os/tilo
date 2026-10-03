@@ -50,7 +50,11 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
         theme,
         &PresenceCtx::default(),
     );
-    OffscreenRenderer::new(width, height).render_png(&scene, theme.bg_app, out);
+    OffscreenRenderer::new(width, height).render_png(
+        &scene,
+        theme.tokens.colors.surfaces.content,
+        out,
+    );
     println!("wrote {}", out.display());
 }
 

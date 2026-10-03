@@ -149,7 +149,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), automerge::AutomergeError> {
     scene.fill(
         vello::peniko::Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_app,
+        theme.tokens.colors.surfaces.content,
         None,
         &vello::kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
     );
@@ -178,7 +178,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), automerge::AutomergeError> {
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     Ok(())
 }

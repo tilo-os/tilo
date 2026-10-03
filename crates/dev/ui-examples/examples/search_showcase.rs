@@ -187,7 +187,7 @@ fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, height);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 

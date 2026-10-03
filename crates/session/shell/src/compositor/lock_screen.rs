@@ -694,7 +694,7 @@ pub fn draw_lock_scene_at_time(
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            theme.bg_app.with_alpha(1.0),
+            theme.tokens.colors.surfaces.base.with_alpha(1.0),
             None,
             &backdrop,
         );
@@ -1140,7 +1140,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_app,
+        theme.tokens.colors.surfaces.base,
         None,
         &keyhole,
     );
@@ -1157,7 +1157,13 @@ fn draw_password_field(
         layout.password,
         f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &field);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &field,
+    );
     // A subtle border — focused colour, since the field always holds focus
     // while locked.
     scene.stroke(

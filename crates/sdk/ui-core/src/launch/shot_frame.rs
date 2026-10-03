@@ -64,12 +64,13 @@ pub struct ShotFrame {
 
 impl ShotFrame {
     /// A frame at `viewport` with a fresh document, the theme's text scale
-    /// applied to the text renderer, settled layout, and a transparent
-    /// background.
+    /// applied to the text renderer, settled layout, and the window ground
+    /// (`surfaces.content`) as its background, as a live window clears.
     #[must_use]
     pub fn new(viewport: (u32, u32), theme: Theme) -> Self {
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
+        let background = theme.tokens.colors.surfaces.content;
         Self {
             state: State::new(),
             theme,
@@ -79,7 +80,7 @@ impl ShotFrame {
             viewport,
             layout_mode: ShotLayout::Settled,
             resync_after_build: false,
-            background: Color::TRANSPARENT,
+            background,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: None,
@@ -112,7 +113,8 @@ impl ShotFrame {
         self
     }
 
-    /// Clear to `background` rather than transparency when writing the PNG.
+    /// Clear to `background` rather than the window ground when writing the
+    /// PNG.
     #[must_use]
     pub fn with_background(mut self, background: Color) -> Self {
         self.background = background;

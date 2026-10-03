@@ -1921,7 +1921,8 @@ impl App {
         let base = &self.accessibility.base_theme;
         // Same name, other temperature or other person: still a new theme.
         if intent.base_theme.name != base.name
-            || intent.base_theme.bg_app != base.bg_app
+            || intent.base_theme.tokens.colors.surfaces.content
+                != base.tokens.colors.surfaces.content
             || intent.base_theme.border_focus != base.border_focus
         {
             self.accessibility.base_theme = intent.base_theme;
