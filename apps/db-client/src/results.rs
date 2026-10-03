@@ -223,3 +223,78 @@ impl ui::widget::Decorator for ResultsTable {
         "ResultsTable"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result() -> Arc<QueryResult> {
+        Arc::new(QueryResult {
+            columns: vec!["n".into(), "name".into(), "mixed".into()],
+            rows: vec![
+                vec![Cell::Integer(3), Cell::Text("c".into()), Cell::Integer(1)],
+                vec![
+                    Cell::Integer(1),
+                    Cell::Text("a".into()),
+                    Cell::Text("x".into()),
+                ],
+                vec![Cell::Null, Cell::Text("B".into()), Cell::Null],
+            ],
+            is_select: true,
+            ..Default::default()
+        })
+    }
+
+    /// A column is numeric when every value that is there is a number, and nulls are not values.
+    #[test]
+    fn numeric_columns_are_the_ones_holding_only_numbers() {
+        let result = result();
+        assert!(is_numeric_column(&result, 0), "nulls do not make it text");
+        assert!(!is_numeric_column(&result, 1));
+        assert!(!is_numeric_column(&result, 2), "one text value does");
+        assert!(!is_numeric_column(&result, 9), "no such column");
+    }
+
+    /// Ascending puts nulls first, then numbers by value; a second click on the same column flips it; another column starts ascending.
+    #[test]
+    fn a_header_click_sorts_and_the_next_one_flips() {
+        let mut table = ResultsTable::new("results");
+        table.bind(Some(result()));
+        assert_eq!(table.sorted(), None);
+        assert_eq!(table.display_order(), [0, 1, 2], "rows start as returned");
+
+        table.sort_by(0);
+        assert_eq!(table.sorted(), Some((0, true)));
+        assert_eq!(table.display_order(), [2, 1, 0], "null, 1, 3");
+
+        table.sort_by(0);
+        assert_eq!(table.sorted(), Some((0, false)));
+        assert_eq!(table.display_order(), [0, 1, 2], "3, 1, null");
+
+        table.sort_by(1);
+        assert_eq!(table.sorted(), Some((1, true)));
+        assert_eq!(
+            table.display_order(),
+            [1, 2, 0],
+            "text compares without regard to case: a, B, c"
+        );
+
+        // A new result starts unsorted.
+        table.bind(Some(result()));
+        assert_eq!(table.sorted(), None);
+    }
+
+    /// Text sorts without regard to case and numbers sort by value, not by their digits.
+    #[test]
+    fn cells_compare_by_value() {
+        let ten = Cell::Integer(10);
+        let two = Cell::Integer(2);
+        assert_eq!(compare_cells(Some(&two), Some(&ten)), Ordering::Less);
+        assert_eq!(
+            compare_cells(Some(&Cell::Text("b".into())), Some(&Cell::Text("A".into()))),
+            Ordering::Greater
+        );
+        assert_eq!(compare_cells(None, Some(&Cell::Null)), Ordering::Equal);
+        assert_eq!(compare_cells(Some(&Cell::Null), Some(&two)), Ordering::Less);
+    }
+}

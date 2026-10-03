@@ -251,6 +251,13 @@ impl DbClientApp {
         self.session.drain();
     }
 
+    /// Run `sql` on the open connection and wait for its result.
+    pub fn show_query_result(&mut self, sql: &str) {
+        self.session.run_query(sql);
+        self.session.block_until_idle();
+        self.session.drain();
+    }
+
     /// Open the new-connection dialog.
     pub fn open_connect_dialog(&mut self) {
         self.dialog = Some(Dialog::Connect);
@@ -1094,8 +1101,9 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // The window's own shortcuts come before the focused widget sees the key.
-        if is_command(event, *ctx.modifiers, "Enter") {
+        // The window's own shortcuts come before the focused widget sees the
+        // key, unless a dialog is asking for something else.
+        if self.dialog != Some(Dialog::Connect) && is_command(event, *ctx.modifiers, "Enter") {
             let intent = if self.dialog == Some(Dialog::ConfirmRun) {
                 Intent::ConfirmRun
             } else {
@@ -1105,7 +1113,7 @@ impl ui::widget::Decorator for DbClientApp {
             *ctx.handled = true;
             return;
         }
-        if is_command(event, *ctx.modifiers, "n") {
+        if self.dialog.is_none() && is_command(event, *ctx.modifiers, "n") {
             self.link.ask(Intent::NewConnection);
             *ctx.handled = true;
             return;
@@ -1359,6 +1367,14 @@ mod tests {
             harness.click_at(rect.x0 + rect.width() / 2.0, rect.center().y);
             harness.relayout();
             assert_eq!(app(&harness).session.tab, MainTab::Data);
+            let targets = harness.targets();
+            assert!(
+                targets.contains_key("db.data.table") || targets.contains_key("db.data.previous")
+            );
+            assert!(
+                !targets.contains_key("sql-editor"),
+                "the Query tab's editor leaves the tree"
+            );
         }
 
         // --- phase: opening_a_table_loads_its_rows_and_structure ---
@@ -1821,6 +1837,133 @@ mod tests {
             assert_eq!(csv_field("NULL"), "\"NULL\"");
             assert_eq!(csv_field("Binary, 4 bytes"), "\"Binary, 4 bytes\"");
         }
+    }
+
+    /// A starter query replaces the editor's text, an error stays until it is dismissed, and the data pages follow the page controls.
+    #[test]
+    fn starter_queries_errors_and_pages() {
+        // --- phase: a_starter_query_replaces_the_editors_text ---
+        {
+            let mut harness = mounted(DbClientApp::new_demo());
+            harness.relayout();
+            harness
+                .root_mut::<DbClientApp>()
+                .link
+                .ask(Intent::LoadSnippet(1));
+            harness.relayout();
+            let (_, expected) = crate::sample::starter_queries()[1];
+            assert_eq!(
+                crate::doc::EditorDoc::read_sql(&harness.state().doc),
+                expected
+            );
+            assert_eq!(app(&harness).link.sql(), expected);
+        }
+
+        // --- phase: choosing_from_the_starter_menu_loads_that_query ---
+        {
+            let mut harness = mounted(DbClientApp::new_demo());
+            harness.relayout();
+            harness
+                .click_named("db.query.snippets")
+                .expect("the starter menu is on the toolbar");
+            harness.key("ArrowDown");
+            harness.key("Enter");
+            harness.relayout();
+            harness.relayout();
+            let queries = crate::sample::starter_queries();
+            let loaded = crate::doc::EditorDoc::read_sql(&harness.state().doc);
+            assert!(
+                queries.iter().any(|(_, sql)| *sql == loaded),
+                "the menu's choice replaced the query: {loaded}"
+            );
+            assert_ne!(loaded, crate::sample::DEFAULT_QUERY);
+        }
+
+        // --- phase: an_error_stays_until_it_is_dismissed ---
+        {
+            let mut harness = mounted(DbClientApp::new_demo());
+            harness.relayout();
+            harness
+                .root_mut::<DbClientApp>()
+                .fail_with("Connection refused");
+            harness.relayout();
+            let failed = |harness: &FrameHarness| {
+                app(harness)
+                    .link
+                    .read(|model| matches!(model.status, RunStatus::Error(_)))
+            };
+            assert!(failed(&harness));
+            harness
+                .root_mut::<DbClientApp>()
+                .link
+                .ask(Intent::DismissStatus);
+            harness.relayout();
+            assert!(!failed(&harness), "dismissing clears the error");
+        }
+
+        // --- phase: the_page_intents_move_through_the_table ---
+        {
+            let mut harness = mounted(DbClientApp::new_demo());
+            harness.relayout();
+            let root = harness.root_mut::<DbClientApp>();
+            root.session.data_page_size = 5;
+            root.link
+                .ask(Intent::OpenRelation(crate::model::RelationRef {
+                    schema: "main".into(),
+                    name: "tracks".into(),
+                }));
+            let page = |harness: &mut FrameHarness| {
+                harness.root_mut::<DbClientApp>().session.block_until_idle();
+                harness.relayout();
+                let model = &app(harness).link;
+                model.read(|m| (m.data_offset, m.data.as_ref().map_or(0, |d| d.rows.len())))
+            };
+            harness.relayout();
+            assert_eq!(page(&mut harness), (0, 5));
+            harness.root_mut::<DbClientApp>().link.ask(Intent::NextPage);
+            harness.relayout();
+            assert_eq!(page(&mut harness), (5, 5));
+            harness
+                .root_mut::<DbClientApp>()
+                .link
+                .ask(Intent::PreviousPage);
+            harness.relayout();
+            assert_eq!(page(&mut harness), (0, 5));
+        }
+    }
+
+    /// Every view of the window passes the accessibility audit: the query, the data, the structure, the first-run state and the dialogs.
+    #[test]
+    fn every_view_passes_the_accessibility_audit() {
+        let audit = |harness: &FrameHarness, what: &str| {
+            let issues = harness.accessibility_audit().issues;
+            assert!(issues.is_empty(), "{what}: {issues:?}");
+        };
+
+        let mut harness = mounted(DbClientApp::new_demo());
+        harness.relayout();
+        audit(&harness, "query");
+        for (tab, what) in [(MainTab::Data, "data"), (MainTab::Structure, "structure")] {
+            harness.root_mut::<DbClientApp>().show_tab(tab);
+            harness.relayout();
+            audit(&harness, what);
+        }
+        harness.root_mut::<DbClientApp>().open_connect_dialog();
+        harness.relayout();
+        audit(&harness, "new connection");
+        harness
+            .root_mut::<DbClientApp>()
+            .link
+            .ask(Intent::CloseDialog);
+        harness
+            .root_mut::<DbClientApp>()
+            .confirm_statement("DROP TABLE albums;");
+        harness.relayout();
+        audit(&harness, "confirmation");
+
+        let mut harness = mounted(DbClientApp::new());
+        harness.relayout();
+        audit(&harness, "first run");
     }
 
     /// A standalone SQL edit is submitted through the action host.

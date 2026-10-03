@@ -236,3 +236,199 @@ impl Widget for Navigator {
         "Navigator"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::link::ViewModel;
+    use crate::model::{ColumnInfo, SchemaInfo, TableInfo, TypeClass};
+    use ui::headless::FrameHarness;
+    use ui::theme::Theme;
+
+    fn table(name: &str, kind: RelationKind, rows: Option<i64>) -> TableInfo {
+        TableInfo {
+            name: name.into(),
+            kind,
+            columns: vec![ColumnInfo {
+                name: "id".into(),
+                decl_type: "INTEGER".into(),
+                class: TypeClass::Integer,
+                not_null: true,
+                primary_key: true,
+                default: None,
+            }],
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            row_count: rows,
+        }
+    }
+
+    fn catalog(schemas: &[(&str, Vec<TableInfo>)]) -> DatabaseSchema {
+        DatabaseSchema {
+            schemas: schemas
+                .iter()
+                .map(|(name, tables)| SchemaInfo {
+                    name: (*name).into(),
+                    tables: tables.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn row(name: &str, engine: Engine, removable: bool) -> ConnectionRow {
+        ConnectionRow {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            engine,
+            removable,
+        }
+    }
+
+    /// One schema lists its tables under "Tables" with row counts; several schemas get a collapsible section each.
+    #[test]
+    fn the_catalog_becomes_sections_of_tables_and_views() {
+        // --- phase: one_schema_is_just_tables ---
+        {
+            let sections = schema_sections(&catalog(&[(
+                "main",
+                vec![
+                    table("albums", RelationKind::Table, Some(8)),
+                    table("recent", RelationKind::View, None),
+                ],
+            )]));
+            assert_eq!(sections.len(), 1);
+            assert_eq!(sections[0].title, "Tables");
+            assert!(!sections[0].collapsible);
+            let labels: Vec<_> = sections[0].items.iter().map(|i| i.label.as_str()).collect();
+            assert_eq!(labels, ["albums", "recent"]);
+            assert!(
+                sections[0].items[0].count.is_some(),
+                "a table shows its rows"
+            );
+            assert!(sections[0].items[1].count.is_none(), "a view has no count");
+        }
+
+        // --- phase: several_schemas_are_one_section_each ---
+        {
+            let sections = schema_sections(&catalog(&[
+                (
+                    "public",
+                    vec![table("orders", RelationKind::Table, Some(3))],
+                ),
+                (
+                    "archive",
+                    vec![table("orders", RelationKind::Table, Some(9))],
+                ),
+            ]));
+            assert_eq!(
+                sections
+                    .iter()
+                    .map(|s| s.title.as_str())
+                    .collect::<Vec<_>>(),
+                ["public", "archive"]
+            );
+            assert!(sections.iter().all(|s| s.collapsible));
+            assert_ne!(
+                sections[0].items[0].id, sections[1].items[0].id,
+                "the same table name in two schemas is two rows"
+            );
+        }
+
+        // --- phase: a_row_id_names_its_relation ---
+        {
+            let relation = RelationRef {
+                schema: "other:schema".into(),
+                name: "a b".into(),
+            };
+            assert_eq!(parse_relation(&relation_key(&relation)), Some(relation));
+            assert_eq!(parse_relation("no separator"), None);
+        }
+    }
+
+    /// Choosing a connection, removing one and adding one reach the controller as intents; the sample cannot be removed.
+    #[test]
+    fn the_sidebar_asks_for_connections_to_open_and_to_change() {
+        let link = Link::new();
+        let sample = row("Chinook sample", Engine::Sqlite, false);
+        let analytics = row("Analytics", Engine::Postgres, true);
+        link.publish(ViewModel {
+            connections: vec![sample.clone(), analytics.clone()],
+            active: Some(sample.id),
+            connected: true,
+            schema: std::rc::Rc::new(catalog(&[(
+                "main",
+                vec![table("albums", RelationKind::Table, Some(8))],
+            )])),
+            schema_revision: 1,
+            ..ViewModel::default()
+        });
+        let mut harness = FrameHarness::for_root(
+            ui::State::new(),
+            Navigator::new(&link),
+            (320, 700),
+            Theme::dark(),
+        );
+        harness.relayout();
+
+        // --- phase: the_active_connection_is_selected ---
+        {
+            let navigator = harness.root::<Navigator>();
+            assert_eq!(
+                navigator.connections.selected_id(),
+                Some(sample.id.to_string())
+            );
+            assert!(
+                navigator.schema_visible,
+                "an open connection lists its tables"
+            );
+        }
+
+        // --- phase: choosing_a_row_opens_that_connection ---
+        {
+            let rect = harness
+                .root::<Navigator>()
+                .connections
+                .row_rect(&analytics.id.to_string())
+                .expect("the row is on screen");
+            harness.click_at(rect.center().x, rect.center().y);
+            let intents = link.take_intents();
+            assert!(
+                intents
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::Connect(id) if *id == analytics.id)),
+                "{intents:?}"
+            );
+        }
+
+        // --- phase: choosing_a_table_opens_it ---
+        {
+            let key = relation_key(&RelationRef {
+                schema: "main".into(),
+                name: "albums".into(),
+            });
+            let rect = harness
+                .root::<Navigator>()
+                .schema
+                .row_rect(&key)
+                .expect("the table is listed");
+            harness.click_at(rect.center().x, rect.center().y);
+            assert!(
+                link.take_intents()
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::OpenRelation(r) if r.name == "albums"))
+            );
+        }
+
+        // --- phase: the_sample_has_no_remove_action_and_others_do ---
+        {
+            let sections = [connection_section(&[sample, analytics])];
+            let items = &sections[0].items;
+            assert!(!items[0].actions, "the bundled sample cannot be removed");
+            assert!(items[1].actions);
+            assert!(
+                sections[0].trailing_action.is_some(),
+                "the section adds connections"
+            );
+        }
+    }
+}

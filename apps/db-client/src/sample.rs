@@ -1,6 +1,6 @@
 //! The bundled sample database — a compact music-catalog schema in the
 //! spirit of the well-known "chinook" example. It ships with the app so the
-//! schema browser, SQL editor and results grid all work with zero external
+//! sidebar, SQL editor and results table all work with zero external
 //! setup, both in the live window and in headless `--shots` rendering.
 //!
 //! The schema deliberately exercises every feature of the UI: primary keys,

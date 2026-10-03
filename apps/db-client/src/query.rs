@@ -33,6 +33,7 @@ impl EditorPane {
         let mut editor = CodeEditor::local()
             .with_language(Language::Sql)
             .with_tab_width(2)
+            .with_placeholder("Write a SQL query")
             .with_id("sql-editor");
         // The client opens ready to type a query.
         editor.set_focused(true);
