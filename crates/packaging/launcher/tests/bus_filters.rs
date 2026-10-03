@@ -244,7 +244,13 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         ATSPI_FILTER_ARGS,
     );
     let app_session = session_proxy.connect();
-    let app_atspi = atspi_proxy.connect();
+    // The app publishes its accessible tree on its own connection, through
+    // the proxy.
+    let app_atspi = connect(&format!("unix:path={}", atspi_proxy.socket.display()))
+        .serve_at("/org/a11y/atspi/accessible/root", Accessible)
+        .unwrap()
+        .build()
+        .expect("the proxy accepts the sandboxed client");
 
     // Session bus: where the AT-SPI bus is, and whether AT is on.
     let reply = call(
@@ -319,6 +325,21 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         "GetKeystrokeListeners",
     )
     .expect("GetKeystrokeListeners is allowed");
+
+    // Assistive technology on the AT-SPI bus reads the app's tree: calls
+    // into the sandboxed app pass the proxy.
+    let reader = connect(&atspi.address).build().unwrap();
+    let app_name = app_atspi.unique_name().unwrap().to_string();
+    let reply = call(
+        &reader,
+        &app_name,
+        "/org/a11y/atspi/accessible/root",
+        "org.a11y.atspi.Accessible",
+        "GetChildCount",
+    )
+    .expect("a screen reader reaches the sandboxed app's accessible tree");
+    let count: i32 = reply.body().deserialize().unwrap();
+    assert_eq!(count, 1);
 
     // Nothing else on the AT-SPI bus: not the registry's tree, not input
     // injection, and never another app.
