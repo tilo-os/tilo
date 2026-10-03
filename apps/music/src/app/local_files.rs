@@ -1,6 +1,7 @@
 use super::{MusicApp, Track};
 #[cfg(all(test, feature = "audio"))]
 use ui::widget::Continuable as _;
+use ui::widget::toast::ToastKind;
 
 impl MusicApp {
     pub(super) fn make_open_file_button() -> ui::widget::Button {
@@ -142,7 +143,7 @@ impl MusicApp {
             }
             ui::portal::PortalOutcome::Failed(error) => error,
         };
-        self.toast = Some((error.clone(), ui::time::now()));
+        self.notify(ToastKind::Error, error.clone());
         self.resource_stream_results
             .push(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -238,6 +239,7 @@ impl MusicApp {
         Some(crate::actions::CatalogTrackResource {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
+            artist: String::new(),
             album_id: String::new(),
             artist_id: String::new(),
             offline: false,

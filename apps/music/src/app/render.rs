@@ -377,6 +377,8 @@ struct TrackTable<'a> {
     show_album: bool,
     number_col: bool,
     playlist: Option<&'a str>,
+    /// Whether a header names the columns (when there is more than one).
+    header: bool,
     /// Rows stand for queue entries from this index on (the queue view):
     /// a click plays that entry and hover offers reorder/remove in the queue.
     queue_offset: Option<usize>,
@@ -391,7 +393,16 @@ impl<'a> TrackTable<'a> {
             show_album: true,
             number_col: true,
             playlist: None,
+            header: true,
             queue_offset: None,
+        }
+    }
+
+    /// No column header: the table continues one already headed above it.
+    fn without_header(self) -> Self {
+        Self {
+            header: false,
+            ..self
         }
     }
 
@@ -430,9 +441,10 @@ impl<'a> TrackTable<'a> {
 }
 
 /// Column edges of a track table inside its `[left, right]` span: an index
-/// column, the title block, an optional album column that shares the free
-/// width with the title (so no dead gap opens between them), the row's
-/// actions and the right-aligned duration.
+/// column, the title block sized to its widest title, an optional album
+/// column that starts right after it and takes the rest of the free width
+/// (so no dead gap opens between them), the row's actions and the
+/// right-aligned duration.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TrackColumns {
     pub index: Option<Rect>,
@@ -455,6 +467,8 @@ pub(super) struct ColumnWidths {
     /// One action button, and how many the row holds.
     pub action: f64,
     pub actions: usize,
+    /// The widest title or artist line of the rows.
+    pub title: f64,
     /// Between two columns.
     pub gap: f64,
     /// The narrowest a title or album column may get; the album column only
@@ -470,6 +484,7 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         duration: duration_w,
         action: action_w,
         actions,
+        title: title_need,
         gap,
         min_text,
     } = w;
@@ -483,7 +498,9 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
     let actions_x = right - duration_w - gap - action_w * actions as f64;
     let free = (actions_x - gap - title_x).max(0.0);
     let (title_x1, album) = if album && free >= 2.0 * min_text + gap {
-        let title_w = ((free - gap) * 0.55).max(min_text);
+        // The title column is as wide as its widest line, never narrower
+        // than a readable column and never more than half the free width.
+        let title_w = title_need.clamp(min_text, ((free - gap) / 2.0).max(min_text));
         let album_x = title_x + title_w + gap;
         (title_x + title_w, Some((album_x, actions_x - gap)))
     } else {
@@ -567,13 +584,11 @@ enum DetailKind {
 }
 
 /// What a detail page's header shows: the entity `id` (which also keys its
-/// art and its toggle), its kind, title, a secondary line and a caption,
-/// and the queue its Play and Shuffle buttons start.
+/// art and its toggle), its kind, title, one secondary line and one
+/// caption, and the queue its Play and Shuffle buttons start.
 struct DetailHeader<'a> {
     id: &'a str,
     kind: DetailKind,
-    /// The kind of page, as the overline above the title ("Album").
-    label: &'a str,
     title: &'a str,
     secondary: &'a str,
     caption: &'a str,
@@ -590,42 +605,25 @@ struct TrackRow<'a> {
     hovered: bool,
 }
 
-/// Two-column geometry for the lyrics view. On wide bodies a now-playing card
-/// (cover art + track info) fills the left column and the lyric lines centre
-/// within the remaining right column — so the view reads as a balanced pair
-/// instead of a centred column with a large empty left half. Narrow bodies
-/// keep a single full-width centred column (no art).
-pub(super) struct LyricsLayout {
-    /// Cover-art square for the left card, or `None` on narrow layouts.
-    pub art: Option<Rect>,
-    /// Horizontal band the lyric lines are centred within.
-    pub lyrics: Rect,
+/// The lyrics view's one column: on the content gutter like every other
+/// page, bounded to a readable width, inside the gutter top and bottom. The
+/// song itself is named by the transport bar, so the column is lyrics only.
+pub(super) fn lyrics_column(body: Rect, readable: f64, gutter: f64) -> Rect {
+    let x0 = body.x0 + gutter;
+    let x1 = (x0 + readable).min(body.x1 - gutter).max(x0);
+    Rect::new(
+        x0,
+        body.y0 + gutter,
+        x1,
+        (body.y1 - gutter).max(body.y0 + gutter),
+    )
 }
 
-/// Lay the lyrics view out in `body`: two columns once the body holds a
-/// cover of `art_max` beside a readable lyrics column (`2 × art_max`),
-/// separated and inset by `gutter`.
-pub(super) fn lyrics_layout(
-    body: Rect,
-    band_top: f64,
-    band_bottom: f64,
-    art_max: f64,
-    gutter: f64,
-) -> LyricsLayout {
-    if body.width() >= 3.0 * art_max + 3.0 * gutter {
-        let side = art_max.min(band_bottom - band_top).max(0.0);
-        let x0 = body.x0 + gutter;
-        let art = Rect::new(x0, band_top, x0 + side, band_top + side);
-        LyricsLayout {
-            art: Some(art),
-            lyrics: Rect::new(art.x1 + gutter, body.y0, body.x1 - gutter, body.y1),
-        }
-    } else {
-        LyricsLayout {
-            art: None,
-            lyrics: Rect::new(body.x0 + gutter, body.y0, body.x1 - gutter, body.y1),
-        }
-    }
+/// How far the lyric lines are scrolled up in a column `column_h` high:
+/// synced lyrics keep the current line a third of the way down, so the
+/// eye finds it in one place; plain lyrics read from the top.
+pub(super) fn lyrics_scroll(current: Option<usize>, line_h: f64, column_h: f64) -> f64 {
+    current.map_or(0.0, |line| line as f64 * line_h - column_h / 3.0)
 }
 
 /// Monotonic seconds since first use — the shared animation clock.
@@ -652,8 +650,10 @@ fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
     out
 }
 
-/// A responsive grid of media cards: as many columns of at least the small
-/// media extent as fit, the media grid's own column and row gaps.
+/// A responsive grid of media cards: the column count that keeps each card
+/// closest to the small media extent (so a narrow column holds three
+/// covers rather than two oversized ones), with the media grid's own column
+/// and row gaps.
 #[derive(Clone, Copy, Debug)]
 struct Grid {
     x0: f64,
@@ -669,7 +669,8 @@ impl Grid {
         let col_gap = f64::from(rhythm.section);
         let row_gap = f64::from(rhythm.group);
         let avail = (body.width() - 2.0 * look.gutter).max(0.0);
-        let cols = ui::widget::card_columns(avail, MediaSize::Small.extent(theme), col_gap);
+        let target = MediaSize::Small.extent(theme);
+        let cols = ((avail + col_gap) / (target + col_gap)).round().max(1.0) as usize;
         Self {
             x0: body.x0 + look.gutter,
             cols,
@@ -693,6 +694,9 @@ struct GridCard<'a> {
     action: Action,
     /// A Play action over the art while hovered.
     play: Option<Action>,
+    /// A person (an artist): a round portrait with the name centred under
+    /// it, instead of a square cover.
+    portrait: bool,
 }
 
 impl Continuable for MusicApp {
@@ -1840,7 +1844,7 @@ impl MusicApp {
                     for id in tracks {
                         self.request_offline_download(&id)?;
                     }
-                    self.toast = Some(("Preparing offline download".into(), ui::time::now()));
+                    self.notify(ToastKind::Info, "Preparing the download");
                     self.dirty = true;
                     return Ok(true);
                 }
@@ -1909,16 +1913,8 @@ impl MusicApp {
                 if !current_playlist.track_ids.iter().any(|id| id == &track) {
                     return Err("playlist membership is no longer present".into());
                 }
-                let playlist_name = current_playlist.name.clone();
-                let track_title = self
-                    .playback_track(&track)
-                    .map_or_else(|| track.clone(), |t| t.title.clone());
                 self.on_nav(View::Playlist(playlist.clone()));
                 self.revealed_membership = Some((playlist, track));
-                self.toast = Some((
-                    format!("Opened “{track_title}” in “{playlist_name}”"),
-                    ui::time::now(),
-                ));
             }
             _ => return Ok(false),
         }
@@ -2046,6 +2042,7 @@ impl MusicApp {
                     "Mute"
                 }),
                 Action::ToggleVolumePopover => Some("Volume"),
+                Action::OpenPlayerMenu(_) => Some("More controls"),
                 Action::ToggleLike(track) => Some(if self.lib.is_liked(track) {
                     "Unlike"
                 } else {
@@ -2388,6 +2385,67 @@ impl MusicApp {
         ctx.scene.pop_layer();
     }
 
+    /// A person's picture, round as people are: the artist's photo, else
+    /// the neutral placeholder art with their initials, in the disc that
+    /// fills the shorter side of `rect`. The media card has no round form
+    /// (and the avatar's fallback would paint an artist in a presence
+    /// colour), so the cover is shown through a circular clip.
+    fn draw_portrait(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, name: &str) {
+        let side = rect.width().min(rect.height());
+        let disc = vello::kurbo::Circle::new(rect.center(), side / 2.0);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &disc,
+        );
+        self.draw_cover(ctx, square_around(rect.center(), side), id, name);
+        ctx.scene.pop_layer();
+    }
+
+    /// A person in a media grid: their round portrait over their name and
+    /// one fact, centred under it, on the grid cell's hover lift.
+    fn draw_portrait_card(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        rect: Rect,
+        card: &GridCard<'_>,
+        hovered: bool,
+    ) {
+        let theme = ctx.theme;
+        chrome::paint_row_selection(
+            ctx.scene,
+            ctx.transform,
+            rect.inflate(look.related, look.related),
+            SelectionState::new(false, hovered, false),
+            theme.tokens.colors.surfaces.content,
+            theme,
+        );
+        let art = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rect.width());
+        self.draw_portrait(ctx, art, card.art_id, card.title);
+        let lines = std::iter::once((card.title, theme.text(TextRole::Body), look.text)).chain(
+            card.meta
+                .iter()
+                .flatten()
+                .map(|meta| (*meta, theme.text(TextRole::Caption), look.dim)),
+        );
+        let mut y = art.y1 + look.related;
+        for (text, style, ink) in lines {
+            let shown = elide(ctx.text, text, &style, rect.width());
+            let w = f64::from(ctx.text.measure_style(&shown, None, &style).0);
+            ctx.text(
+                &shown,
+                &style,
+                ink,
+                Point::new(rect.center().x - w / 2.0, y),
+                None,
+            );
+            y += line_of(ctx, &style);
+        }
+    }
+
     // ---- controls ---------------------------------------------------------
 
     /// Paint a labelled button at `rect` and register its hit. Returns
@@ -2412,8 +2470,8 @@ impl MusicApp {
         hovered
     }
 
-    /// Paint an icon button `face` and register its hit. `on` shows a toggle
-    /// that is on as the toolbar does: a full lift of the ground.
+    /// Paint an icon button `face` and register its hit. `on` marks a toggle
+    /// that is on (the toolkit's toggled face).
     fn icon_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2422,7 +2480,7 @@ impl MusicApp {
         action: Action,
     ) -> bool {
         let hovered = self.push_hit(face.hit_rect(ctx.theme), action);
-        let face = face.hovered(hovered && !on).pressed(on);
+        let face = face.hovered(hovered).toggled(on);
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         hovered
     }
@@ -2444,7 +2502,7 @@ impl MusicApp {
             .role(ButtonRole::Plain)
             .disabled(!enabled);
         let hovered = self.push_hit(face.hit_rect(ctx.theme), action.unwrap_or(Action::None));
-        let face = face.hovered(hovered && !on).pressed(on && enabled);
+        let face = face.hovered(hovered && enabled).toggled(on && enabled);
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         let (_, _, ink) = face.colors(ctx.theme);
         let side = f64::from(ctx.theme.tokens.metrics.icon_md);
@@ -2539,8 +2597,8 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        if let Some((_, at)) = &self.toast
-            && at.elapsed().as_secs_f32() > 2.6
+        if let Some(notice) = &self.toast
+            && notice.at.elapsed().as_secs_f32() > 2.6
         {
             self.toast = None;
         }
@@ -2586,6 +2644,7 @@ impl MusicApp {
 
         self.draw_header(ctx, &look, header);
         self.draw_nowplaying(ctx, &look, bar);
+        self.open_staged_player_menu();
 
         // A floating drawer dims what is behind it, and a tap on that scrim
         // dismisses it.
@@ -2635,6 +2694,21 @@ impl MusicApp {
             self.mouse = Point::new(row.x0 + row.width() * 0.3, row.center().y);
             self.menu_anchor_row = Some(row);
             self.open_track_menu(track, None, None);
+        }
+    }
+
+    /// Open a `--shots`-staged More menu over the compact transport, once
+    /// the bar has been laid out this frame.
+    fn open_staged_player_menu(&mut self) {
+        if !std::mem::take(&mut self.staged_player_menu) {
+            return;
+        }
+        let more = self.hits.iter().find_map(|hit| match hit.action {
+            Action::OpenPlayerMenu(rect) => Some(rect),
+            _ => None,
+        });
+        if let Some(more) = more {
+            self.open_player_menu(more);
         }
     }
 
@@ -3056,6 +3130,7 @@ impl MusicApp {
                     title: &item.title,
                     meta: [Some(item.subtitle.as_str()).filter(|s| !s.is_empty()), None],
                     badges: &[],
+                    portrait: matches!(item.kind, HomeItemKind::Artist),
                     action,
                     play,
                 })
@@ -3144,6 +3219,10 @@ impl MusicApp {
                     continue;
                 }
                 let hovered = self.body_hit(rect, card.action.clone());
+                if card.portrait {
+                    self.draw_portrait_card(ctx, look, rect, card, hovered);
+                    continue;
+                }
                 if hovered
                     && let Some(play) = &card.play
                     && let Some(target) = face.hover_action_rect(rect, theme)
@@ -3190,6 +3269,7 @@ impl MusicApp {
                     Some(year.as_str()).filter(|s| !s.is_empty()),
                 ],
                 badges: &[],
+                portrait: false,
                 action: Action::Nav(View::Album(a.id.clone())),
                 play: (!a.queue.is_empty()).then(|| Action::Play {
                     queue: a.queue.clone().into(),
@@ -3215,6 +3295,7 @@ impl MusicApp {
                 title: &a.name,
                 meta: [Some(a.genre.as_str()).filter(|s| !s.is_empty()), None],
                 badges: &[],
+                portrait: true,
                 action: Action::Nav(View::Artist(a.id.clone())),
                 play: None,
             })
@@ -3240,6 +3321,7 @@ impl MusicApp {
                 title: &p.name,
                 meta: [Some(count.as_str()), None],
                 badges: &[],
+                portrait: false,
                 action: Action::Nav(View::Playlist(p.id.clone())),
                 play: None,
             })
@@ -3314,6 +3396,18 @@ impl MusicApp {
         } else {
             2 + if reorder { 3 } else { 0 }
         };
+        let title_style = theme.text(TextRole::Body).strong();
+        let caption = theme.text(TextRole::Caption);
+        let title_need = table
+            .rows
+            .iter()
+            .map(|tk| {
+                let title = ctx.text.measure_style(&tk.title, None, &title_style).0;
+                let artist = ctx.text.measure_style(&tk.artist, None, &caption).0;
+                f64::from(title.max(artist))
+            })
+            .fold(0.0, f64::max);
+        let second_column = table.show_album || downloads;
         let cols = track_columns(
             left,
             right,
@@ -3322,14 +3416,18 @@ impl MusicApp {
                 duration: duration_w,
                 action: action_w,
                 actions,
-                gap: look.sibling,
+                title: title_need,
+                gap: look.gutter,
                 min_text: MediaSize::Small.extent(theme),
             },
-            table.show_album || downloads,
+            second_column,
         );
         let shared_queue = Arc::new(table.queue.to_vec());
         let offset = table.queue_offset.unwrap_or(0);
         let ground = theme.tokens.colors.surfaces.content;
+        if second_column && table.header {
+            y = Self::draw_track_header(ctx, look, &cols, left, right, y, downloads);
+        }
 
         for (i, tk) in table.rows.iter().enumerate() {
             let band = Rect::new(left, y, right, y + row_h);
@@ -3383,6 +3481,54 @@ impl MusicApp {
             self.draw_track_row(ctx, look, &cols, table, &row);
         }
         y
+    }
+
+    /// The header of a table with more than one text column: what each
+    /// column holds, in the table header's quiet strong caption, closed by
+    /// one rule. Returns the y below it.
+    fn draw_track_header(
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        cols: &TrackColumns,
+        left: f64,
+        right: f64,
+        y: f64,
+        downloads: bool,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let style = theme.text(TextRole::Caption).strong();
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let band = Rect::new(
+            left,
+            y,
+            right,
+            y + look.target.max(line_of(ctx, &style) + 2.0 * pad),
+        );
+        let width = |x0: f64, x1: f64| (x1 - x0).max(0.0);
+        text_in_band(
+            ctx,
+            "Title",
+            &style,
+            look.dim,
+            cols.title_x,
+            band,
+            width(cols.title_x, cols.title_x1),
+        );
+        if let Some((x0, x1)) = cols.album {
+            let label = if downloads { "Status" } else { "Album" };
+            text_in_band(ctx, label, &style, look.dim, x0, band, width(x0, x1));
+        }
+        text_right_in_band(ctx, "Time", &style, look.dim, cols.duration_x1, band);
+        surface::separator(
+            ctx.scene,
+            ctx.transform,
+            left - look.related,
+            right + look.related,
+            band.y1 - 0.5,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
+        band.y1
     }
 
     /// One row's content inside its band.
@@ -3686,10 +3832,11 @@ impl MusicApp {
         }
     }
 
-    /// A song's offline status in words, and whether it failed.
+    /// A song's offline status in words, and whether it failed. A failure
+    /// says only that; its Retry button names the cause.
     fn download_status(&self, track: &str) -> (String, bool) {
-        if let Some(error) = self.offline_errors.get(track) {
-            return (format!("Download failed: {error}"), true);
+        if self.offline_errors.contains_key(track) {
+            return ("Download failed".into(), true);
         }
         match self.lib.cache_state(track) {
             CacheState::Downloading(progress) => {
@@ -3702,9 +3849,9 @@ impl MusicApp {
 
     // ---- detail pages -----------------------------------------------------
 
-    /// The hero of an album, artist or playlist page: the cover, the kind of
-    /// page, the title, one secondary line and one caption, and the page's
-    /// actions. The cover sits beside the text on a wide body and above it
+    /// The hero of an album, artist or playlist page: the cover (a round
+    /// portrait for an artist), the title, one secondary line and one
+    /// caption, and the page's actions. The cover sits beside the text on a wide body and above it
     /// on a narrow one. Returns the y below the hero.
     #[allow(
         clippy::too_many_lines,
@@ -3730,7 +3877,11 @@ impl MusicApp {
         }
         .min(right - left);
         let art = Rect::new(left, y, left + side, y + side);
-        self.draw_cover(ctx, art, header.id, header.title);
+        if matches!(header.kind, DetailKind::Artist { .. }) {
+            self.draw_portrait(ctx, art, header.id, header.title);
+        } else {
+            self.draw_cover(ctx, art, header.id, header.title);
+        }
 
         let tx = if wide { art.x1 + look.gutter } else { left };
         let text_w = (right - tx).max(0.0);
@@ -3747,8 +3898,7 @@ impl MusicApp {
         let body_h = line_of(ctx, &body_style);
         let title_h = line_of(ctx, &title);
         let button_h = ButtonFace::height(ControlSize::Regular, theme);
-        let block_h = caption_h
-            + 2.0 * look.tight
+        let block_h = look.tight
             + title_lines.len() as f64 * title_h
             + if header.secondary.is_empty() {
                 0.0
@@ -3769,15 +3919,6 @@ impl MusicApp {
         } else {
             art.y1 + look.section
         };
-        ty += text_line(
-            ctx,
-            header.label,
-            &caption,
-            look.dim,
-            Point::new(tx, ty),
-            text_w,
-        );
-        ty += look.tight;
         for line in title_lines {
             ctx.text(&line, &title, look.text, Point::new(tx, ty), None);
             ty += title_h;
@@ -3805,13 +3946,13 @@ impl MusicApp {
         }
         ty += look.section;
 
-        // The page's actions: Play first (the one primary action), then
+        // The page's actions, all labelled the same way (a label that names
+        // what happens, no icons): Play first (the one primary action), then
         // Shuffle, then the page's own.
         let queue = header.queue;
-        let mut buttons: Vec<(String, Option<Icon>, ButtonRole, Action)> = vec![
+        let mut buttons: Vec<(&str, ButtonRole, Action)> = vec![
             (
-                "Play".into(),
-                Some(Icon::Play),
+                "Play",
                 ButtonRole::Primary,
                 Action::Play {
                     queue: queue.clone().into(),
@@ -3819,60 +3960,40 @@ impl MusicApp {
                 },
             ),
             (
-                "Shuffle".into(),
-                None,
+                "Shuffle",
                 ButtonRole::Secondary,
                 Action::ShufflePlay(queue.into()),
             ),
         ];
         let id = header.id.to_string();
         match header.kind {
-            DetailKind::Album { saved } => buttons.push(if saved {
-                (
-                    "Saved".into(),
-                    Some(Icon::Check),
-                    ButtonRole::Secondary,
-                    Action::ToggleSaveAlbum(id),
-                )
-            } else {
-                (
-                    "Save to library".into(),
-                    Some(Icon::Plus),
-                    ButtonRole::Secondary,
-                    Action::ToggleSaveAlbum(id),
-                )
-            }),
-            DetailKind::Artist { following } => buttons.push(if following {
-                (
-                    "Following".into(),
-                    Some(Icon::Check),
-                    ButtonRole::Secondary,
-                    Action::ToggleFollow(id),
-                )
-            } else {
-                (
-                    "Follow".into(),
-                    Some(Icon::Plus),
-                    ButtonRole::Secondary,
-                    Action::ToggleFollow(id),
-                )
-            }),
+            DetailKind::Album { saved } => buttons.push((
+                if saved {
+                    "Remove from library"
+                } else {
+                    "Save to library"
+                },
+                ButtonRole::Secondary,
+                Action::ToggleSaveAlbum(id),
+            )),
+            DetailKind::Artist { following } => buttons.push((
+                if following { "Unfollow" } else { "Follow" },
+                ButtonRole::Secondary,
+                Action::ToggleFollow(id),
+            )),
             DetailKind::Playlist { own: true } => {
                 buttons.push((
-                    "Rename".into(),
-                    Some(Icon::Pencil),
+                    "Rename",
                     ButtonRole::Secondary,
                     Action::BeginRenamePlaylist(id.clone()),
                 ));
                 buttons.push((
-                    "Set cover".into(),
-                    Some(Icon::Image),
+                    "Set cover",
                     ButtonRole::Secondary,
                     Action::PickPlaylistCover(id.clone()),
                 ));
                 buttons.push((
-                    "Delete playlist".into(),
-                    Some(Icon::Trash2),
+                    "Delete playlist",
                     ButtonRole::Destructive,
                     Action::DeletePlaylist(id),
                 ));
@@ -3881,8 +4002,8 @@ impl MusicApp {
         }
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let mut bx = tx;
-        for (label, icon, role, action) in buttons {
-            let w = Self::button_width(ctx, &label, icon, ControlSize::Regular);
+        for (label, role, action) in buttons {
+            let w = Self::button_width(ctx, label, None, ControlSize::Regular);
             if bx > tx && bx + w > right {
                 bx = tx;
                 ty += h + look.related;
@@ -3890,8 +4011,8 @@ impl MusicApp {
             self.button(
                 ctx,
                 Rect::new(bx, ty, bx + w, ty + h),
-                &label,
-                icon,
+                label,
+                None,
                 role,
                 action,
             );
@@ -3957,8 +4078,7 @@ impl MusicApp {
         };
         let ids = self.unique_recordings(&ids);
         let rows = self.gather_tracks(&ids);
-        let label = album_label(year);
-        let caption = length_caption(&rows);
+        let caption = album_caption(year, &rows);
         let saved = self.lib.is_album_saved(id);
         let y = self.draw_detail_header(
             ctx,
@@ -3968,7 +4088,6 @@ impl MusicApp {
             DetailHeader {
                 id,
                 kind: DetailKind::Album { saved },
-                label: &label,
                 title: &title,
                 secondary: &artist,
                 caption: &caption,
@@ -4000,8 +4119,7 @@ impl MusicApp {
             .collect();
         let ids = self.unique_recordings(&ids);
         let rows = self.gather_tracks(&ids);
-        let label = album_label(page.year);
-        let caption = length_caption(&rows);
+        let caption = album_caption(page.year, &rows);
         let saved = self.lib.is_album_saved(&page.id);
         let y = self.draw_detail_header(
             ctx,
@@ -4011,7 +4129,6 @@ impl MusicApp {
             DetailHeader {
                 id: &page.id,
                 kind: DetailKind::Album { saved },
-                label: &label,
                 title: &page.title,
                 secondary: &page.artist_name,
                 caption: &caption,
@@ -4112,7 +4229,6 @@ impl MusicApp {
                 kind: DetailKind::Artist {
                     following: followed,
                 },
-                label: "Artist",
                 title: &name,
                 secondary: &genre,
                 caption: &caption,
@@ -4171,7 +4287,6 @@ impl MusicApp {
                 kind: DetailKind::Artist {
                     following: followed,
                 },
-                label: "Artist",
                 title: &page.name,
                 secondary: "",
                 caption: &caption,
@@ -4352,7 +4467,6 @@ impl MusicApp {
             DetailHeader {
                 id,
                 kind: DetailKind::Playlist { own: true },
-                label: "Playlist",
                 title: &name,
                 secondary: &desc,
                 caption: &caption,
@@ -4432,7 +4546,6 @@ impl MusicApp {
             DetailHeader {
                 id: &page.id,
                 kind: DetailKind::Playlist { own: false },
-                label: "Playlist",
                 title: &page.title,
                 secondary: &page.subtitle,
                 caption: &caption,
@@ -4563,12 +4676,16 @@ impl MusicApp {
             y = Self::section_heading(ctx, look, body, y, "Now playing");
             let rows = self.gather_tracks(std::slice::from_ref(&cur));
             let offset = self.pb.queue_index;
+            // One row under its own heading: the columns are named once,
+            // over the list that follows.
             y = self.draw_track_table(
                 ctx,
                 look,
                 body,
                 y,
-                &TrackTable::new(&rows, &full).in_queue(offset),
+                &TrackTable::new(&rows, &full)
+                    .in_queue(offset)
+                    .without_header(),
             );
             y += look.gutter;
         }
@@ -4631,11 +4748,14 @@ impl MusicApp {
             .filter(|id| matches!(self.lib.cache_state(id), CacheState::Downloading(_)))
             .count()
             .max(self.downloads.len() + self.offline_resolves.len());
-        let status = match (cached, active) {
-            (0, 0) => "Nothing is available offline yet.".to_string(),
-            (0, active) => format!("Downloading {}", songs_label(active)),
-            (cached, 0) => format!("{} available offline", songs_label(cached)),
-            (cached, active) => format!(
+        let failed = self.offline_errors.len();
+        let status = match (cached, active, failed) {
+            (0, 0, 0) => "Nothing is available offline yet.".to_string(),
+            (0, 0, 1) => "1 download failed".to_string(),
+            (0, 0, failed) => format!("{failed} downloads failed"),
+            (0, active, _) => format!("Downloading {}", songs_label(active)),
+            (cached, 0, _) => format!("{} available offline", songs_label(cached)),
+            (cached, active, _) => format!(
                 "{} available offline, {active} downloading",
                 songs_label(cached)
             ),
@@ -4672,7 +4792,7 @@ impl MusicApp {
         for (label, icon, role, action) in [
             (
                 "Play",
-                Some(Icon::Play),
+                None,
                 ButtonRole::Primary,
                 Action::Play {
                     queue: ids.clone().into(),
@@ -4712,124 +4832,32 @@ impl MusicApp {
             .current
             .clone()
             .and_then(|id| self.gather_tracks(&[id]).into_iter().next());
-        let Some(tk) = cur else {
+        if cur.is_none() {
             let content = EmptyStateContent {
                 icon: Some(Icon::Mic),
                 ..EmptyStateContent::new("Play a song to see its lyrics.")
             };
             return self.empty_page(ctx, body, body.y0, &content, None);
-        };
-
-        let band_top = body.y0 + look.gutter;
-        let band_bot = body.y1 - look.gutter;
-        let art_max = MediaSize::Regular.extent(ctx.theme);
-        let layout = lyrics_layout(body, band_top, band_bot, art_max, look.gutter);
-        let lyrics_top = match layout.art {
-            Some(art) => {
-                self.draw_lyrics_now_playing(ctx, look, art, &tk);
-                band_top
-            }
-            None => Self::draw_lyrics_title(ctx, look, layout.lyrics, band_top, &tk) + look.gutter,
-        };
-        let band = Rect::new(layout.lyrics.x0, lyrics_top, layout.lyrics.x1, band_bot);
-        if self.lyrics_synced && !self.lyrics.is_empty() {
-            let label = "Synced";
-            let h = ui::widget::BadgeFace::height(ctx.theme);
-            let w = ui::widget::BadgeFace::intrinsic_width(label, ctx.text, ctx.theme);
-            let at = Rect::new(
-                band.x1 - w,
-                body.y0 + look.section,
-                band.x1,
-                body.y0 + look.section + h,
-            );
-            ui::widget::BadgeFace::new(at, label)
-                .style(ui::widget::ChipStyle::Neutral)
-                .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         }
+
+        let readable = MediaSize::Large.extent(ctx.theme) * 2.0;
+        let column = lyrics_column(body, readable, look.gutter);
         if self.lyrics.is_empty() {
             let msg = if self.lyrics_pending_for.is_some() {
                 "Finding lyrics…"
             } else {
                 "No lyrics found for this song."
             };
-            let style = ctx.theme.text(TextRole::Body);
-            let (w, _) = ctx.text.measure_style(msg, None, &style);
-            ctx.text(
-                msg,
-                &style,
-                look.dim,
-                Point::new(band.center().x - f64::from(w) / 2.0, band.center().y),
-                None,
-            );
-            return band_bot;
+            Self::note(ctx, look, body, column.y0, msg);
+            return column.y1;
         }
-        self.draw_lyrics_lines(ctx, look, band);
-        band_bot
+        self.draw_lyrics_lines(ctx, look, column);
+        column.y1
     }
 
-    /// On a wide body the cover and the song's title fill the left column.
-    fn draw_lyrics_now_playing(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        art: Rect,
-        tk: &TrackDisp,
-    ) {
-        let cover = self.best_cover_id(&tk.id, &tk.album_id);
-        self.draw_cover(ctx, art, &cover, &tk.album);
-        let title = ctx.theme.text(TextRole::Title);
-        let body = ctx.theme.text(TextRole::Body);
-        let y = art.y1 + look.section;
-        let h = text_line(
-            ctx,
-            &tk.title,
-            &title,
-            look.text,
-            Point::new(art.x0, y),
-            art.width(),
-        );
-        text_line(
-            ctx,
-            &tk.artist,
-            &body,
-            look.dim,
-            Point::new(art.x0, y + h),
-            art.width(),
-        );
-    }
-
-    /// A narrow body names the song above the lyrics. Returns the y below.
-    fn draw_lyrics_title(
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        column: Rect,
-        y: f64,
-        tk: &TrackDisp,
-    ) -> f64 {
-        let title = ctx.theme.text(TextRole::Title);
-        let body = ctx.theme.text(TextRole::Body);
-        let w = column.width();
-        let h = text_line(
-            ctx,
-            &tk.title,
-            &title,
-            look.text,
-            Point::new(column.x0, y),
-            w,
-        );
-        y + h
-            + text_line(
-                ctx,
-                &tk.artist,
-                &body,
-                look.dim,
-                Point::new(column.x0, y + h),
-                w,
-            )
-    }
-
-    /// The lyric lines in `band`, following the playhead: the current line
-    /// in the title role, its neighbours quieter with distance.
+    /// The lyric lines in `band`, set flush with the page's leading edge and
+    /// following the playhead: the current line in the title role, its
+    /// neighbours quieter with distance.
     fn draw_lyrics_lines(&self, ctx: &mut PaintCtx<'_>, look: &Look, band: Rect) {
         let pos = self.playhead_ms as u64;
         let current = if self.lyrics_synced {
@@ -4844,17 +4872,8 @@ impl MusicApp {
         let active_style = ctx.theme.text(TextRole::Title);
         let style = ctx.theme.text(TextRole::Heading);
         let line_h = line_of(ctx, &active_style) + look.related;
-        let line_count = self.lyrics.len();
-        let band_h = band.height().max(1.0);
-        // Auto-scroll so the active line sits ~42% down the band and moves in
-        // time with playback; plain (unsynced) lyrics anchor to the top.
         let focus = current.unwrap_or(0);
-        let auto = if self.lyrics_synced && current.is_some() {
-            let want = focus as f64 * line_h - band_h * 0.42;
-            want.clamp(0.0, ((line_count as f64 * line_h) - band_h).max(0.0))
-        } else {
-            0.0
-        };
+        let auto = lyrics_scroll(current, line_h, band.height());
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -4883,10 +4902,9 @@ impl MusicApp {
                 line.text.as_str()
             };
             let shown = elide(ctx.text, text, st, maxw);
-            let (w, h) = ctx.text.measure_style(&shown, None, st);
-            let x = band.x0 + (band.width() - f64::from(w)) / 2.0;
+            let h = ctx.text.measure_style(&shown, None, st).1;
             let y = ly + (line_h - f64::from(h)) / 2.0;
-            ctx.text(&shown, st, ink, Point::new(x, y), None);
+            ctx.text(&shown, st, ink, Point::new(band.x0, y), None);
         }
         ctx.scene.pop_layer();
     }
@@ -4964,8 +4982,8 @@ impl MusicApp {
     /// The transport along the bottom of the content column: the song and its
     /// like and lyrics actions, the playback controls over the scrubber, and
     /// the queue and volume. It is part of the content, set apart by one
-    /// hairline. While the sidebar floats (a narrow window) it folds to the
-    /// song, previous/play/next and the scrubber.
+    /// hairline. On a narrow content column it folds to the song,
+    /// previous/play/next, volume and a More menu over the scrubber.
     fn draw_nowplaying(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
         surface::separator(
             ctx.scene,
@@ -5364,34 +5382,95 @@ impl MusicApp {
         self.draw_volume_slider(ctx, slider);
     }
 
-    /// The narrow transport: the song beside previous/play/next, over the
-    /// scrubber. Volume and the queue are reachable from the sidebar.
+    /// The narrow transport: the song beside previous/play/next, then the
+    /// volume button and a More menu that holds shuffle, repeat, like,
+    /// lyrics and the queue, over the scrubber. Everything the wide bar
+    /// offers stays one press away.
     fn draw_nowplaying_compact(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
         self.volume_rect = Rect::ZERO;
-        self.volume_btn_rect = Rect::ZERO;
         let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
         let caption = ctx.theme.text(TextRole::Caption);
         let scrub_h = line_of(ctx, &caption).max(look.section + look.related);
         let top = Rect::new(r.x0, r.y0, r.x1, r.y1 - scrub_h - look.tight);
-        let controls_w = 3.0 * control + 2.0 * look.related;
+        let controls_w = 5.0 * control + 3.0 * look.related + look.sibling;
         let mid = top.center().y;
-        let mut x = top.x1 - controls_w;
-        let mut next_slot = || {
-            let rect = Rect::new(x, mid - control / 2.0, x + control, mid + control / 2.0);
-            x += control + look.related;
-            rect
-        };
-        let (prev, play, next) = (next_slot(), next_slot(), next_slot());
+        let slot = |x: f64| Rect::new(x, mid - control / 2.0, x + control, mid + control / 2.0);
+        let prev = slot(top.x1 - controls_w);
+        let play = slot(prev.x1 + look.related);
+        let next = slot(play.x1 + look.related);
+        let volume = slot(next.x1 + look.sibling);
+        let more = slot(volume.x1 + look.related);
         let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
         let act = |action: Action| if idle { Action::None } else { action };
 
+        self.draw_compact_song(ctx, look, top, prev.x0 - look.sibling);
+
+        self.icon_button(
+            ctx,
+            ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
+            false,
+            act(Action::Prev),
+        );
+        let (icon, name) = if self.pb.playing {
+            (Icon::Pause, "Pause")
+        } else {
+            (Icon::Play, "Play")
+        };
+        let face = ButtonFace::icon_only(play, icon, name)
+            .role(ButtonRole::Primary)
+            .disabled(idle);
+        let hovered = self.push_hit(face.hit_rect(ctx.theme), act(Action::TogglePlay));
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &face.hovered(hovered),
+        );
+        self.icon_button(
+            ctx,
+            ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
+            false,
+            act(Action::Next),
+        );
+        // Volume opens the same slider popover as the mid-width bar.
+        self.volume_btn_rect = volume;
+        let volume_icon = if self.pb.volume == 0 {
+            Icon::VolumeX
+        } else {
+            Icon::Volume2
+        };
+        self.icon_button(
+            ctx,
+            ButtonFace::icon_only(volume, volume_icon, "Volume").control_size(ControlSize::Regular),
+            self.volume_popover_open,
+            Action::ToggleVolumePopover,
+        );
+        self.icon_button(
+            ctx,
+            ButtonFace::icon_only(more, Icon::MoreHorizontal, "More controls")
+                .control_size(ControlSize::Regular),
+            false,
+            Action::OpenPlayerMenu(more),
+        );
+        let scrub = Rect::new(r.x0, r.y1 - scrub_h, r.x1, r.y1);
+        self.draw_scrubber(ctx, look, scrub, idle);
+    }
+
+    /// The compact bar's song: its cover (which opens the lyrics) beside
+    /// title over artist, or "Nothing playing", ending at `text_x1`.
+    fn draw_compact_song(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, top: Rect, text_x1: f64) {
+        let caption = ctx.theme.text(TextRole::Caption);
         let cur = self
             .pb
             .current
             .clone()
             .and_then(|id| self.gather_tracks(&[id]).into_iter().next());
         let body = ctx.theme.text(TextRole::Body);
-        let text_x1 = prev.x0 - look.sibling;
         if let Some(tk) = cur {
             let art = Rect::new(top.x0, top.y0, top.x0 + top.height(), top.y1);
             let cover = self.best_cover_id(&tk.id, &tk.album_id);
@@ -5428,47 +5507,12 @@ impl MusicApp {
                 text_x1 - top.x0,
             );
         }
-
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Prev),
-        );
-        let (icon, name) = if self.pb.playing {
-            (Icon::Pause, "Pause")
-        } else {
-            (Icon::Play, "Play")
-        };
-        let face = ButtonFace::icon_only(play, icon, name)
-            .role(ButtonRole::Primary)
-            .disabled(idle);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), act(Action::TogglePlay));
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &face.hovered(hovered),
-        );
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Next),
-        );
-        let scrub = Rect::new(r.x0, r.y1 - scrub_h, r.x1, r.y1);
-        self.draw_scrubber(ctx, look, scrub, idle);
     }
 
     // ---- toast ------------------------------------------------------------
 
     fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let Some((msg, _)) = self.toast.as_ref() else {
+        let Some(notice) = self.toast.as_ref() else {
             return;
         };
         let area = Rect::new(
@@ -5484,7 +5528,7 @@ impl MusicApp {
             ctx.theme,
             area,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, ToastKind::Info),
+            &ToastCard::new(&notice.text, notice.kind),
         );
     }
 
@@ -5600,12 +5644,14 @@ fn songs_label(n: usize) -> String {
     }
 }
 
-/// The overline of an album page: "Album", or "Album from 2023".
-fn album_label(year: u32) -> String {
+/// The caption of an album page: when it came out, then how long it is
+/// ("Released in 2023, 12 songs, 48 min").
+fn album_caption(year: u32, rows: &[TrackDisp]) -> String {
+    let length = length_caption(rows);
     if year > 0 {
-        format!("Album from {year}")
+        format!("Released in {year}, {length}")
     } else {
-        "Album".to_string()
+        length
     }
 }
 
