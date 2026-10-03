@@ -2420,7 +2420,10 @@ mod tests {
             "Every day",
             "case repeat-every-day"
         );
+    }
 
+    #[test]
+    fn city_picker_and_city_times_are_readable() {
         // Case: the city picker covers the timezone catalogue without jargon.
         assert_eq!(
             timezone_label("America/Argentina/Buenos_Aires"),
