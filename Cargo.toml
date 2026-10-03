@@ -75,7 +75,6 @@ members = [
     "apps/firewall",
     "apps/git-client",
     "apps/hex-editor",
-    "apps/image-editor",
     "apps/imager",
     "apps/logs",
     "apps/mail",
