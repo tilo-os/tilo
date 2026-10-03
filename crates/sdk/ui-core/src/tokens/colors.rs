@@ -871,6 +871,11 @@ impl Colors {
     /// (lighter on a dark palette, darker on a light one), 0.5 the hover
     /// halfway. Colourless under inverted emphasis; faintly the tint under
     /// tinted emphasis.
+    ///
+    /// The step goes the palette's way unless the ground has no room for a
+    /// whole step there (a white well on a dark palette, a near-black one on
+    /// a light palette); then it goes the other way, so the lift always moves
+    /// a full step away from the ground it stands on and stays visible.
     #[must_use]
     pub fn lift_on(&self, ground: Color, t: f32) -> Color {
         let g = Oklch::from_color(ground);
@@ -878,7 +883,13 @@ impl Colors {
             Emphasis::Inverted => (self.palette.chroma, self.palette.hue),
             Emphasis::Tinted { hue } => (TINTED_LIFT_CHROMA, hue),
         };
-        oklch(g.l + self.palette.lift() * t, chroma, hue)
+        let step = self.palette.lift();
+        let step = if (0.0..=1.0).contains(&(g.l + step)) {
+            step
+        } else {
+            -step
+        };
+        oklch(g.l + step * t, chroma, hue)
     }
 
     /// Ink tiers for content on [`Surfaces::content`] — the theme's own text

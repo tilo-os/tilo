@@ -144,6 +144,13 @@ pub enum Icon {
     // --- Status set ---
     /// A warning: Lucide `triangle-alert`.
     TriangleAlert,
+    // --- Window navigation set ---
+    /// Show or hide the sidebar: a window with a rule near its leading
+    /// edge. Lucide `panel-left`.
+    PanelLeft,
+    /// Show or hide the inspector: the mirror of [`Icon::PanelLeft`].
+    /// Lucide `panel-right`.
+    PanelRight,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -721,6 +728,11 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"),
             path_from_d("M12 9v4"),
             path_from_d("M12 17h.01"),
+        ],
+        Icon::PanelLeft => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0), path_from_d("M9 3v18")],
+        Icon::PanelRight => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            path_from_d("M15 3v18"),
         ],
     }
 }
@@ -1361,6 +1373,8 @@ mod tests {
                 Icon::Info,
                 Icon::CloudDownload,
                 Icon::ArrowUpDown,
+                Icon::PanelLeft,
+                Icon::PanelRight,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
