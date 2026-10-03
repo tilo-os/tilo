@@ -251,6 +251,7 @@ members = [
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
+    "crates/runtime/egress",
     "crates/runtime/ush",
 
     # Session

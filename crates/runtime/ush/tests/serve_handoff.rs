@@ -14,6 +14,7 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
+    clippy::missing_panics_doc,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -32,7 +33,7 @@ use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 /// Tests that spawn a guest set process-wide variables the guest inherits.
 static GUEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-const RUNTIME: [u8; 32] = [0x11; 32];
+pub const RUNTIME: [u8; 32] = [0x11; 32];
 const TOOL: [u8; 32] = [0x22; 32];
 const TOOL_COMMAND: &str = "ush-fixture-tool";
 
@@ -125,7 +126,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
 
 /// Lay out the fixture images under `root` the way the supervisor finds
 /// them: `<hex id>/` trees and the current runtime's id.
-fn fixture_images(root: &Path) {
+pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
     std::os::unix::fs::symlink("/usr", runtime.join("usr")).unwrap();
@@ -156,7 +157,7 @@ fn fixture_images(root: &Path) {
 /// read-only overlay of two lowers — not something that merely correlates
 /// with them. Inside a build container whose own `/usr` is an overlay, the
 /// kernel refuses to stack on it, and the guest tests say so and stop.
-fn guest_unavailable() -> Option<String> {
+pub fn guest_unavailable() -> Option<String> {
     let Some(bwrap) = which_bwrap() else {
         return Some("bwrap is not installed".into());
     };

@@ -15400,6 +15400,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-egress"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-environment"
 version = "0.1.0"
 dependencies = [
@@ -18172,6 +18183,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-app-state",
  "tilo-clock",
+ "tilo-egress",
  "tilo-environment",
  "tilo-resource",
  "tilo-sandbox-core",

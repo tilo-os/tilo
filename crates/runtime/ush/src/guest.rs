@@ -22,6 +22,10 @@
 //!
 //! The guest runs as the real uid and gid — a single-id user namespace
 //! mapping — so a file written to a granted directory belongs to the user.
+//! It starts inside the session's own network namespace (see
+//! [`tilo_egress`]), whose resolver is the supervisor's DNS stub; `bwrap`'s
+//! user namespace nests inside the one that owns that network namespace, so
+//! nothing in the guest has any capability over its network.
 //! A path the guest was not granted is not missing a permission — it is not
 //! in the namespace.
 
@@ -132,6 +136,9 @@ pub struct GuestPlan {
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
+    /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
+    /// the machine's.
+    pub resolver: Option<String>,
 }
 
 impl GuestPlan {
@@ -143,7 +150,7 @@ impl GuestPlan {
     /// Create what the plan refers to: the home, the environment's `/var`
     /// state, and the session's own `/etc` entries — `passwd` and `group`
     /// naming the real user (the images know only their system accounts) and
-    /// the machine's resolver.
+    /// the resolver ([`Self::resolver`], else the machine's).
     ///
     /// # Errors
     ///
@@ -171,7 +178,11 @@ impl GuestPlan {
             etc.join("group"),
             group_with_user(&image_file("group"), &self.user),
         )?;
-        if let Some(resolver) = host_resolver(&self.host_root) {
+        if let Some(resolver) = self
+            .resolver
+            .clone()
+            .or_else(|| host_resolver(&self.host_root))
+        {
             std::fs::write(etc.join("resolv.conf"), resolver)?;
         }
         Ok(())
@@ -544,13 +555,17 @@ pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::
     Ok((file, fd))
 }
 
-/// Spawn the guest as a child.
+/// Spawn the guest as a child, inside `netns` when given (`bwrap` then
+/// nests its user namespace in the one that owns it).
 ///
 /// # Errors
 ///
 /// Returns an error if the seccomp filter can't be opened, or the child
 /// process can't be spawned.
-pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
+pub fn spawn(
+    plan: &GuestPlan,
+    netns: Option<&tilo_egress::Netns>,
+) -> std::io::Result<std::process::Child> {
     let (_blob, fd) = open_seccomp_fd(&plan.seccomp_blob)?;
     let argv = build_argv(plan, Some(fd));
     // `build_argv` always pushes "bwrap" first, so this never actually
@@ -558,7 +573,12 @@ pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
     let Some((program, rest)) = argv.split_first() else {
         return Err(std::io::Error::other("build_argv produced an empty argv"));
     };
-    std::process::Command::new(program).args(rest).spawn()
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(rest);
+    if let Some(netns) = netns {
+        netns.enter(&mut cmd);
+    }
+    cmd.spawn()
 }
 
 #[cfg(test)]
@@ -600,6 +620,7 @@ mod tests {
             shell: PathBuf::from("/usr/bin/bash"),
             term: "xterm-256color".into(),
             env: Vec::new(),
+            resolver: None,
         }
     }
 
@@ -847,6 +868,19 @@ mod tests {
             std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap(),
             "nameserver 127.0.0.53\n"
         );
+    }
+
+    #[test]
+    fn the_sessions_resolver_replaces_the_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+        std::fs::write(p.host_root.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+        p.resolver = Some(tilo_egress::RESOLV_CONF.to_owned());
+        p.prepare().unwrap();
+        let written = std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap();
+        assert!(written.contains("nameserver 127.0.0.1"), "{written}");
+        assert!(!written.contains("10.0.0.1"), "{written}");
     }
 
     #[test]

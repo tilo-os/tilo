@@ -1396,6 +1396,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
 #
+# `passt` provides `pasta`, the unprivileged connection between a shell
+# environment's own network namespace and the host's network (see
+# crates/runtime/egress). An environment granted hosts does not start
+# without it; podman's rootless networking uses the same binary.
+#
 # The developer Git CLI is intentionally absent from the immutable host. It
 # pulls libcurl/OpenSSL into the trusted OS for a convenience already provided
 # by the sandboxed Git app, which embeds its own Rust-managed libgit2 path.
@@ -1418,6 +1423,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # stdout, which must never become removal arguments. Removal needs no mirrors.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
+    passt \
     flatpak \
     dbus-tools \
     xdg-dbus-proxy \
