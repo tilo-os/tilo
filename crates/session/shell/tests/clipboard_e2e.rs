@@ -924,6 +924,8 @@ struct ClientState {
 
     /// Set once `xdg_surface.configure` has been acked — the surface is mapped.
     configured: bool,
+    /// The newest non-zero size an `xdg_toplevel.configure` asked for.
+    toplevel_size: Option<(i32, i32)>,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
     /// The compositor requested that this exact xdg toplevel exit.  `close`
@@ -1152,6 +1154,35 @@ impl TestClient {
             self.app_id,
             compositor.debug_state(),
         );
+    }
+
+    /// Answer the compositor's configures with buffers of the asked size,
+    /// as an application does, until the compositor shows this window: a
+    /// window still waiting for a frame that fits its tab is not on screen,
+    /// so no pointer reaches it.
+    fn present(&mut self, compositor: &Compositor, surface_id: u64) {
+        let mut answered = None;
+        let started = Instant::now();
+        loop {
+            self.pump();
+            if let Some(size) = self.state.toplevel_size
+                && answered != Some(size)
+            {
+                self.attach_buffer(size.0, size.1);
+                answered = Some(size);
+            }
+            if foreign_frame_presented(compositor, surface_id) {
+                self.step("presented");
+                return;
+            }
+            assert!(
+                started.elapsed() < deadline(),
+                "`{}` (surface {surface_id}) was never shown after answering its configures \
+                 (waited out the hang bound).\n{}",
+                self.app_id,
+                compositor.debug_state(),
+            );
+        }
     }
 
     /// [`Self::pointer_target`] without the panic.
@@ -2031,8 +2062,12 @@ impl Dispatch<XdgToplevel, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            state.toplevel_close_requested = true;
+        match event {
+            xdg_toplevel::Event::Close => state.toplevel_close_requested = true,
+            xdg_toplevel::Event::Configure { width, height, .. } if width > 0 && height > 0 => {
+                state.toplevel_size = Some((width, height));
+            }
+            _ => {}
         }
     }
 }
@@ -3251,6 +3286,8 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
         first_surface, selected_surface,
         "the compositor must namespace equal protocol ids by client connection"
     );
+    first.present(&compositor, first_surface);
+    selected.present(&compositor, selected_surface);
     let initial = compositor.workspace_tree();
 
     // These go through the native test-control executor, its real
@@ -4326,6 +4363,21 @@ fn spawn_word_processor(
         }
     });
     (app, app_log)
+}
+
+/// Whether the compositor shows client surface `surface_id`'s window.
+fn foreign_frame_presented(compositor: &Compositor, surface_id: u64) -> bool {
+    compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|frames| {
+            frames.iter().any(|frame| {
+                frame.get("surface_id").and_then(serde_json::Value::as_u64) == Some(surface_id)
+                    && frame.get("presented").and_then(serde_json::Value::as_bool) == Some(true)
+            })
+        })
 }
 
 /// Whether any client surface has presented a frame yet.
