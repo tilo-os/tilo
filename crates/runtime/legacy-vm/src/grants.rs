@@ -174,19 +174,21 @@ mod tests {
             let file = dir.path().join("grants.json");
             assert!(Grants::load(&file).shares(Some(0)).is_empty());
             let mut grants = Grants::default();
-            grants.grant(Path::new("/var/home/me/src"), false).unwrap();
-            grants.grant(Path::new("/var/home/me/Music"), true).unwrap();
+            grants.grant(Path::new("/var/home/you/src"), false).unwrap();
+            grants
+                .grant(Path::new("/var/home/you/Music"), true)
+                .unwrap();
             grants.save(&file).unwrap();
             let shares = Grants::load(&file).shares(Some(0));
             assert_eq!(
                 shares,
                 [
                     HostShare {
-                        path: "/var/home/me/Music".into(),
+                        path: "/var/home/you/Music".into(),
                         read_only: true
                     },
                     HostShare {
-                        path: "/var/home/me/src".into(),
+                        path: "/var/home/you/src".into(),
                         read_only: false
                     },
                 ]
@@ -202,7 +204,7 @@ mod tests {
             assert_eq!(grants.grant(Path::new("relative"), false), None);
             grants.capabilities.push(CapOverride::grant(
                 Subject::Principal(Principal::App("so.tilo.ush".into())),
-                Scope::FsPath("/var/home/me/other".into()),
+                Scope::FsPath("/var/home/you/other".into()),
                 Verb::Write,
             ));
             assert!(grants.shares(Some(0)).is_empty());
@@ -210,17 +212,17 @@ mod tests {
         // phase: a restrict narrows a share, and revoking removes it
         {
             let mut grants = Grants::default();
-            grants.grant(Path::new("/var/home/me/src"), false).unwrap();
+            grants.grant(Path::new("/var/home/you/src"), false).unwrap();
             grants.capabilities.push(CapOverride::new(
                 Subject::Principal(Principal::App(LEGACY_APP_ID.into())),
-                Scope::FsPath("/var/home/me/src".into()),
+                Scope::FsPath("/var/home/you/src".into()),
                 Effect::Restrict,
                 Verb::Read,
             ));
             assert!(grants.shares(Some(0))[0].read_only);
-            assert!(grants.revoke("/var/home/me/src"));
+            assert!(grants.revoke("/var/home/you/src"));
             assert!(grants.shares(Some(0)).is_empty());
-            assert!(!grants.revoke("/var/home/me/src"));
+            assert!(!grants.revoke("/var/home/you/src"));
         }
     }
 }

@@ -146,7 +146,7 @@ mod tests {
         // phase: a share attaches by socket under its tag, and is found again
         {
             let share = HostShare {
-                path: PathBuf::from("/var/home/me/src"),
+                path: PathBuf::from("/var/home/you/src"),
                 read_only: false,
             };
             let device = filesystem_xml(&share, Path::new("/run/user/1000/x.sock")).unwrap();

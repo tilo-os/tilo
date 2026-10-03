@@ -425,7 +425,7 @@ mod tests {
     fn launch(argv: &[&str]) -> Launch {
         Launch {
             argv: argv.iter().map(ToString::to_string).collect(),
-            cwd: Some("/var/home/me/src".into()),
+            cwd: Some("/var/home/you/src".into()),
             env: vec![("LANG".into(), "C.UTF-8".into())],
             stdio: Stdio::Relay,
             display: Display::Forwarded,
@@ -446,7 +446,7 @@ mod tests {
                 HostMessage::Mount {
                     shares: vec![GuestShare {
                         tag: "fs-0123".into(),
-                        path: "/var/home/me/src".into(),
+                        path: "/var/home/you/src".into(),
                         read_only: false,
                     }],
                 },
@@ -484,7 +484,7 @@ mod tests {
                 path: path.into(),
                 read_only: true,
             };
-            assert!(share("fs-1", "/var/home/me/Documents").validate().is_ok());
+            assert!(share("fs-1", "/var/home/you/Documents").validate().is_ok());
             for path in [
                 "/",
                 "/usr",

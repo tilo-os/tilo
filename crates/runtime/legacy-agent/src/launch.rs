@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn launches_run_as_the_guest_user_under_the_forwarder() {
         let user = user();
-        let shared = |path: &Path| path.starts_with("/var/home/me");
+        let shared = |path: &Path| path.starts_with("/var/home/you");
         // phase: a windowed app runs under waypipe in the shared directory
         {
             let view = GuestView {
@@ -184,14 +184,14 @@ mod tests {
                 session_bus: Some(Path::new("/run/user/1000/bus")),
                 is_dir: &shared,
             };
-            let spec = spec(&launch(Display::Forwarded, "/var/home/me/src"), &view);
+            let spec = spec(&launch(Display::Forwarded, "/var/home/you/src"), &view);
             assert_eq!(
                 spec.argv,
                 [
                     "waypipe", "--vsock", "-s", "2:9001", "server", "--", "code", "."
                 ]
             );
-            assert_eq!(spec.cwd, PathBuf::from("/var/home/me/src"));
+            assert_eq!(spec.cwd, PathBuf::from("/var/home/you/src"));
             assert_eq!(spec.note, None);
             assert_eq!(
                 get(&spec, "HOME"),
