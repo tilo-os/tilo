@@ -309,7 +309,7 @@ impl Model {
 
     pub(crate) fn dial(&self) -> DialReading {
         let (value, unit) = match self.phase {
-            Phase::Idle | Phase::Error => ("—".to_owned(), "Mbps"),
+            Phase::Idle | Phase::Error => ("—".to_owned(), ""),
             Phase::Ping => (format!("{:.0}", self.live), "ms"),
             Phase::Download | Phase::Upload => (format!("{:.1}", self.live), "Mbps"),
             Phase::Complete => (
@@ -386,6 +386,26 @@ impl Model {
                 self.error =
                     Some("Could not reach the test server: the connection timed out.".to_owned());
                 self.history = earlier.to_vec();
+            }
+            Some("complete-slow") => {
+                self.phase = Phase::Complete;
+                self.readings = Readings {
+                    ping: Some(64.0),
+                    jitter: Some(9.3),
+                    download: Some(18.6),
+                    upload: Some(4.2),
+                    bytes: 8_000_000,
+                    location: Some("Frankfurt".to_owned()),
+                };
+                let mut history = vec![Finished {
+                    at: now,
+                    ping: 64.0,
+                    jitter: 9.3,
+                    download: 18.6,
+                    upload: 4.2,
+                }];
+                history.extend(earlier);
+                self.history = history;
             }
             Some(name) if name.starts_with("complete") => {
                 self.phase = Phase::Complete;
