@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Why a folder could not be listed, as the error view says it.
+pub const UNREADABLE_FOLDER: &str =
+    "It was moved or removed, or you don’t have permission to open it.";
+
 /// Cheap cooperative cancellation shared with a background scanner.
 #[derive(Clone, Debug, Default)]
 pub struct ScanCancellation(Arc<AtomicBool>);
@@ -95,7 +99,7 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
         }
     } else {
         unreadable = 1;
-        error = Some("The folder is unavailable or access was not granted".into());
+        error = Some(UNREADABLE_FOLDER.into());
     }
 
     let next = AtomicUsize::new(0);
