@@ -1915,10 +1915,10 @@ impl OskWidget {
         self.suggestion_area = geometry.suggestion_area;
         self.key_area = geometry.key_area;
         self.key_geom = geometry.keys;
-        let (toolbar_area, suggestion_area, key_area) = (
+        let (toolbar_area, suggestion_area, key_rows) = (
             geometry.toolbar_area,
             geometry.suggestion_area,
-            geometry.key_area,
+            geometry.key_rows,
         );
         let mode = self.emoji_panel.mode();
         if mode != PanelMode::Closed {
@@ -1936,7 +1936,7 @@ impl OskWidget {
         let bands = PanelBands {
             toolbar: toolbar_area,
             suggestion: suggestion_area,
-            keys: key_area,
+            keys: key_rows,
             row_height: f64::from(self.target_key_height),
             ..PanelBands::default()
         }
@@ -2261,6 +2261,9 @@ impl OskWidget {
             }
             Pose::EmojiTones(text) => {
                 self.open_emoji_panel();
+                // The row belongs to an emoji on screen: show its group first.
+                self.emoji_panel.show_group_of(&text);
+                self.layout_bands();
                 self.open_emoji_tones(&text);
             }
         }

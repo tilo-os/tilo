@@ -4,7 +4,8 @@ use crate::suggest::{Suggestion, suggestion_rects};
 use crate::toolbar::{OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
 use ui::chrome::{SelectionState, selection_floor_ramp};
-use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle};
+use ui::text_render::TextWeight;
+use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead};
 use ui::{
     TextRenderer, TextRole, TextStyle, Theme,
     icons::{self, Icon},
@@ -21,7 +22,7 @@ pub(crate) const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
 
 /// A glyph key's character, as a fraction of its cell height. Keys are a
 /// content surface: the glyph follows the key it sits on, not the text scale.
-const KEY_GLYPH_CONTENT_PX_RATIO: f64 = 0.42;
+const KEY_GLYPH_CONTENT_PX_RATIO: f64 = 0.46;
 /// The press preview's glyph, as a fraction of the bubble's height.
 const PREVIEW_GLYPH_CONTENT_PX_RATIO: f64 = 0.5;
 /// A long-press option's glyph, as a fraction of its cell's height.
@@ -36,8 +37,12 @@ pub(crate) struct KeyboardGeometry {
     pub toolbar: Vec<(usize, Rect)>,
     pub suggestions: Vec<(usize, Rect)>,
     pub suggestion_area: Rect,
-    /// The band the keys fill.
+    /// The band the keys fill: where a touch belongs to the keys.
     pub key_area: Rect,
+    /// The rows the keys are laid out in: the key band less one key gap above
+    /// and below, so the first and last rows keep the same distance from the
+    /// band edges as every row keeps from the next.
+    pub key_rows: Rect,
     pub keys: Vec<(KeyId, Rect)>,
 }
 pub(crate) fn keyboard_geometry(
@@ -63,14 +68,30 @@ pub(crate) fn keyboard_geometry(
     let toolbar_area = Rect::new(x, rect.y0, x + width, toolbar_y1);
     let suggestion_area = Rect::new(x, toolbar_y1, x + width, suggestion_y1);
     let key_area = Rect::new(x, suggestion_y1, x + width, rect.y1);
+    let rows = layout.row_count().max(1) as f64;
+    let key_pad = key_pad_for_height(key_area.height() / rows);
+    let key_rows = Rect::new(x, key_area.y0 + key_pad, x + width, key_area.y1 - key_pad);
+    let key_rows = if key_rows.height() > 0.0 {
+        key_rows
+    } else {
+        key_area
+    };
+    // As many chips as the band holds at a readable width (a slot is at
+    // least three band heights wide): a narrow window shows fewer chips
+    // instead of squeezing every word into an elided stub.
+    let slots = (suggestion_area.width() / (suggestion_area.height() * 3.0))
+        .floor()
+        .max(1.0) as usize;
+    let shown = suggestions.get(..slots).unwrap_or(suggestions);
     KeyboardGeometry {
         content_rect,
         toolbar_area,
         toolbar: toolbar_rects(toolbar, toolbar_area),
-        suggestions: suggestion_rects(suggestions, suggestion_area),
+        suggestions: suggestion_rects(shown, suggestion_area),
         suggestion_area,
         key_area,
-        keys: key_rects(layout, key_area, shift),
+        key_rows,
+        keys: key_rects(layout, key_rows, shift),
     }
 }
 
@@ -328,8 +349,13 @@ impl KeyboardPresentation<'_> {
 }
 
 /// Gutter between neighbouring keys: each cell is inset by this on every side.
-fn key_pad(rect: Rect) -> f64 {
-    (rect.height() * KEY_GAP_RATIO).clamp(2.0, 6.0)
+pub(crate) fn key_pad(rect: Rect) -> f64 {
+    key_pad_for_height(rect.height())
+}
+
+/// [`key_pad`] for a row `height` tall.
+pub(crate) fn key_pad_for_height(height: f64) -> f64 {
+    (height * KEY_GAP_RATIO).clamp(2.0, 6.0)
 }
 
 /// The face of a key at rest, hovered or pressed, standing on the window
@@ -376,57 +402,57 @@ fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: R
     radius
 }
 
-/// Vertical extent of one glyph's ink above its baseline, in em, as
-/// `(bottom, top)`. A key's glyph is centred on this, not on the line box,
-/// so a full stop, a hyphen and a capital all sit on the key's centre.
-/// Measured from the outlines of the UI face.
-fn ink_span(ch: char) -> (f64, f64) {
+/// How far above its baseline the middle of a glyph's body sits, in em.
+/// Lower-case letters, punctuation and marks ride the x-height body, so a
+/// comma, a full stop and a letter on neighbouring keys share one baseline;
+/// capitals and digits are centred on their cap height.
+fn body_middle(ch: char) -> f64 {
     const X_HEIGHT: f64 = 0.51;
     const CAP_HEIGHT: f64 = 0.72;
-    match ch {
-        // Every lower-case letter rides the same body, so a row of keys keeps
-        // one baseline whatever ascenders and descenders it carries.
-        c if c.is_lowercase() => (0.0, X_HEIGHT),
-        '.' => (0.0, 0.10),
-        ',' => (-0.14, 0.10),
-        ':' => (0.0, 0.48),
-        ';' => (-0.14, 0.48),
-        '-' | '\u{2013}' | '\u{2014}' => (0.23, 0.31),
-        '+' => (0.15, 0.59),
-        '=' => (0.24, 0.51),
-        '~' => (0.296, 0.419),
-        '<' => (0.18, 0.57),
-        '>' => (0.17, 0.56),
-        '_' => (-0.12, -0.05),
-        '\'' | '"' | '^' | '\u{b0}' => (0.45, 0.75),
-        '*' => (0.44, 0.74),
-        '\u{b7}' | '\u{2022}' => (0.30, 0.45),
-        '/' | '\\' => (-0.06, 0.75),
-        '|' => (-0.13, 0.79),
-        '(' | ')' | '[' | ']' | '{' | '}' => (-0.11, 0.75),
-        '$' => (-0.11, 0.83),
-        '\u{bf}' | '\u{a1}' => (-0.21, 0.51),
-        _ => (0.0, CAP_HEIGHT),
+    if ch.is_uppercase() || ch.is_numeric() {
+        CAP_HEIGHT * 0.5
+    } else {
+        X_HEIGHT * 0.5
     }
 }
 
-/// Paint one character centred on `rect` by its ink: horizontally on its
-/// advance, vertically on the span its outline covers.
+/// Marks that are a dot or a tick in any face: drawn larger and heavier than
+/// a letter, so a key that carries only one still reads as that mark.
+const SMALL_MARKS: &str = ".,:;'\"-_*~^`";
+/// How much larger a small mark is drawn than a letter on the same key.
+const SMALL_MARK_SCALE: f32 = 1.35;
+
+/// Paint one character centred on `rect`: horizontally on its advance,
+/// vertically on the body of its kind (see [`body_middle`]). A small mark is
+/// drawn larger but stays on the baseline the letters share.
 fn draw_glyph(ctx: &mut PaintCtx<'_>, rect: Rect, ch: &str, content_px: f32, ink: Color) {
-    let style = TextStyle::content(content_px);
+    let first = ch.chars().next().unwrap_or(' ');
+    let small = ch.chars().count() == 1 && SMALL_MARKS.contains(first);
+    let (px, weight) = if small {
+        (content_px * SMALL_MARK_SCALE, TextWeight::Semibold)
+    } else {
+        (content_px, TextWeight::Medium)
+    };
+    let style = TextStyle::content(px).with_weight(weight);
     let (advance, _) = ctx.text.measure_style(ch, None, &style);
     let baseline = ctx.text.first_baseline_style(ch, None, &style);
-    let (bottom, top) = ch.chars().next().map_or((0.0, 0.0), ink_span);
-    let mid = (bottom + top) * 0.5 * f64::from(content_px);
+    // The baseline is where the letter size puts it, not the mark's own.
+    let middle = body_middle(first) * f64::from(content_px);
     let origin = Point::new(
         rect.center().x - f64::from(advance) * 0.5,
-        rect.center().y + mid - f64::from(baseline),
+        rect.center().y + middle - f64::from(baseline),
     );
     ctx.text(ch, &style, ink, origin, None);
 }
 
 /// Paint a word label (`?123`, `space`) centred on `rect` in `Label`.
+///
+/// A word wider than the key is elided, never left to spill over its edges.
 fn draw_word(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, ink: Color) {
+    let room = (rect.width() - 2.0 * key_pad(rect)).max(0.0) as f32;
+    let style = ctx.theme.text(TextRole::Label);
+    let fitted = ctx.text.elide_to_width_style(word, room, &style);
+    let word = fitted.as_str();
     let size = ctx.measure_role(word, TextRole::Label, None);
     let origin = Point::new(
         rect.center().x - size.width * 0.5,
@@ -682,23 +708,20 @@ fn draw_toolbar_item(
     Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
 }
 
-/// Draw one suggestion chip. The best (auto-inserted) pick is the one filled
-/// chip; the rest are neutral.
+/// Draw one suggestion chip. The best (auto-inserted) pick is the lifted
+/// chip; the rest are quiet.
 fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, top: bool, hovered: bool) {
-    let gap = f64::from(ctx.theme.tokens.spacing.s1);
+    let gap = f64::from(ctx.theme.tokens.spacing.s2);
     let height = ChipFace::height(ctx.theme);
     // As wide as the word needs, centred in its slot, so the label never
     // sits against one end of an evenly split band.
     let room = (rect.width() - 2.0 * gap).max(0.0);
     let natural = ChipFace::intrinsic_width(word, ChipLead::None, false, ctx.text, ctx.theme);
     let chip = Rect::from_center_size(rect.center(), (natural.min(room), height));
-    let style = if top {
-        ChipStyle::Live
-    } else {
-        ChipStyle::Neutral
-    };
+    // The auto pick is the chip in the lifted tier, like a selected segment:
+    // an emphasis that carries no colour.
     ChipFace::new(chip, word)
-        .style(style)
+        .selected(top)
         .hovered(hovered)
         .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
@@ -748,17 +771,64 @@ mod tests {
     }
 
     #[test]
-    fn lower_case_letters_share_one_ink_body_and_punctuation_sits_by_its_ink() {
-        let (bottom, top) = ink_span('x');
-        for c in ['a', 'g', 'j', 'p', 'q', 'y', 'b', 'é'] {
-            assert_eq!(ink_span(c), (bottom, top), "{c} rides the shared body");
+    fn letters_punctuation_and_marks_share_one_baseline_and_capitals_centre_on_their_height() {
+        for c in [
+            'a', 'g', 'j', 'p', 'q', 'y', 'b', 'é', '.', ',', '-', '\'', '$',
+        ] {
+            assert_eq!(
+                body_middle(c),
+                body_middle('x'),
+                "{c} rides the shared body"
+            );
         }
-        // A full stop is a low mark: its ink centre is below a letter's.
-        let centre = |c| f64::midpoint(ink_span(c).0, ink_span(c).1);
-        assert!(centre('.') < centre('x'));
-        // A hyphen floats near the middle of the lower-case body.
-        assert!((centre('-') - centre('x')).abs() < 0.15);
-        // An apostrophe is a high mark.
-        assert!(centre('\'') > centre('H'));
+        for c in ['H', 'Q', '7'] {
+            assert!(
+                body_middle(c) > body_middle('x'),
+                "{c} is centred on its cap height"
+            );
+        }
+    }
+
+    #[test]
+    fn the_key_rows_keep_one_key_gap_from_the_band_edges() {
+        let layout = KeyboardLayout::qwerty();
+        let g = keyboard_geometry(
+            Rect::new(0.0, 0.0, 720.0, 360.0),
+            &layout,
+            &[],
+            &[],
+            ShiftState::Off,
+            48.0,
+            40.0,
+            8.0,
+        );
+        let pad = key_pad_for_height(g.key_area.height() / layout.row_count() as f64);
+        assert!((g.key_rows.y0 - g.key_area.y0 - pad).abs() < 1e-6);
+        assert!((g.key_area.y1 - g.key_rows.y1 - pad).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_narrow_band_shows_fewer_chips_so_none_is_squeezed() {
+        let layout = KeyboardLayout::qwerty();
+        let words: Vec<Suggestion> = ["help", "held", "hell", "helped", "helping"]
+            .iter()
+            .map(|w| Suggestion::new(*w, 1.0))
+            .collect();
+        let chips = |width: f64| {
+            keyboard_geometry(
+                Rect::new(0.0, 0.0, width, 312.0),
+                &layout,
+                &[],
+                &words,
+                ShiftState::Off,
+                48.0,
+                40.0,
+                8.0,
+            )
+            .suggestions
+            .len()
+        };
+        assert_eq!(chips(420.0), 3);
+        assert_eq!(chips(720.0), 5);
     }
 }
