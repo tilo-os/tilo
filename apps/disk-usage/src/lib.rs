@@ -19,7 +19,11 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::DiskUsageApp::new())
 }
 pub fn shot_root_scenario(scenario: &str) -> Box<dyn Widget> {
-    if scenario.starts_with("home") {
+    if scenario.starts_with("loading") {
+        Box::new(app::DiskUsageApp::sample_loading())
+    } else if scenario.starts_with("error") {
+        Box::new(app::DiskUsageApp::sample_error())
+    } else if scenario.starts_with("home") {
         Box::new(app::DiskUsageApp::sample_home())
     } else if scenario.starts_with("analysis-hover") {
         Box::new(app::DiskUsageApp::sample_with_inspection())
