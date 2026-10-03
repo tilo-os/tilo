@@ -11,8 +11,9 @@ pub mod terminal_palette;
 pub mod typography;
 
 pub use colors::{
-    ColorRamp, Colors, Intents, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers, PresenceHue,
-    PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays, light_overlays,
+    ColorRamp, Colors, Intents, MediaColors, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers,
+    PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays,
+    light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;

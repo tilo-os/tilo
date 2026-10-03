@@ -250,9 +250,8 @@ impl Widget for HistoryHost {
             self.canvas_mut()
                 .draw(scene, transform, text, theme, presence);
         }
-        if let Some(panel) = &mut self.review {
-            panel.dialog.draw(scene, transform, text, theme, presence);
-        }
+        // The restore review is a modal: the host's top layer paints it
+        // (`draw_overlay` reaches it through `children_mut`).
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
