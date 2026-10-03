@@ -352,13 +352,12 @@ number:
   `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
   values in one expression instead of four `length(..)` fields.
 
-`tests/spacing_token_audit.rs` ratchets module-level pixel constants and
-literal `length(N)` values in widget, chrome, shell and app production code:
-a file may never carry more than its baseline records, and one that sheds a
-literal lowers its line in the same commit. It shares its file walk,
-`#[cfg(test)]` span finder and baseline plumbing with the colour ratchet in
-`tests/design_token_audit.rs` (`tests/support/ratchet.rs`), so both audits
-see exactly the same production lines.
+`tests/spacing_token_audit.rs` ratchets module-level pixel constants,
+literal `length(N)` values, literal container gaps and padding, and
+`Spacer::fixed(N)` in widget, chrome, shell and app production code: a file
+may never carry more than its shard under `tests/baselines/spacing/` records.
+Every ratchet runs on one engine (`tests/support/ratchet.rs`), so all audits
+see exactly the same production lines; §9.13 lists them.
 
 A custom theme's `spacing_px` is built inside `CustomThemeSpec::SPACING_PX_MIN
 ..= SPACING_PX_MAX` (6–22, the Themes app's range) even though the schema
@@ -444,10 +443,11 @@ reason:
   **declared** alpha that never measures itself against the ground it lands on.
   `Colors::lift()` and `Colors::hairline_on()` do measure.
 
-`design_token_audit.rs` now covers all three, ratcheted against
-`crates/sdk/ui-core/tests/design_token_baseline.txt`: a file may never gain one, and a file that
-sheds one lowers its record in the same commit. The count only goes down. That
-file, not this document, is the authority on how many are left.
+`design_token_audit.rs` now covers all three in the toolkit, the shell and
+every app, ratcheted against the shards under
+`crates/sdk/ui-core/tests/baselines/theme/`: a file may never gain one. The
+count only goes down. Those shards, not this document, are the authority on
+how many are left (§9.13).
 
 ---
 
@@ -698,7 +698,7 @@ focus stays `border_focus`; disabled is the rest face under
 A declared border or ramp token (`border_standard`, `border_strong`,
 `overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
 `tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
-their count against `tests/chrome_declared_border_baseline.txt`.
+their count against the shards under `tests/baselines/chrome-border/`.
 
 **One painter per row of that table.** `ui::surface::card(fill)` is the edged
 opaque surface; `ui::surface::panel(theme)` is the Panel row (the floating
@@ -918,35 +918,121 @@ Selector for scope, not a bespoke dialog per entry point. Specifically:
 
 ### 9.13 Enforcement
 
-Grep a chrome diff for these; each hit is a role you skipped:
+Every look rule that can be seen in source is a **ratchet** in
+`crates/sdk/ui-core/tests/`. A ratchet counts each pattern per production
+file (comments and `#[cfg(test)]` items are skipped) in the toolkit, the shell
+and every app, and the count may only fall. A change that adds a hit fails. A
+change that removes one passes, and the run notes the lower count so the
+baseline can be lowered in that change or a later one. Apps are scanned
+(`apps/*/src`, so a new app is covered the day it lands), and every root must
+yield files or the ratchet fails rather than passing empty.
 
-- `Color::from_rgb8(` / `Color::from_rgba8(` / `Color::rgb8(` / literal hex in a
-  draw path — match **both** constructor spellings, not just the one you happen
-  to have typed lately (see §8: grepping only for `Color::rgb` is how these
-  accumulated under a green check)
-- `Color::WHITE` / `Color::BLACK` — a colour is a colour even when it has a
-  name; the theme has an on-accent ink and a scrim token
-- `surface_white_` / `border_white_` (any suffix) — a declared strength, never
-  measured against its ground (§9.5)
-- `colors.neutral[` in chrome (use `surfaces.*`)
-- `.border_standard` / `.border_strong` / `overlay_border_strong` stroked on a
-  raised or overlay surface — a declared edge (§9.5); ratcheted by
-  `design_token_audit.rs::declared_borders_in_chrome_do_not_grow`
-- a numeric literal passed as a corner radius
-- `Duration::from_millis(` with a literal in an animation
+| Audit (baseline dir) | Scans | Keys | Test |
+|---|---|---|---|
+| `theme` | ui-core `src`, shell `src`, `apps/*/src`; not `theme.rs`, `tokens/`, `presence/render.rs` | `literal_color`, `white_or_black`, `theme_blind_white` | `design_token_audit.rs::theme_escape_hatches_do_not_grow` |
+| `app-paint` | shell `src`, `apps/*/src`; same exemptions | `literal_color_new`, `ramp_slot`, `legacy_alias`, `desktop_ground`, `literal_radius`, `literal_alpha`, `raw_paint`, `glyph_icon`, `transparent_shot` | `design_token_audit.rs::app_and_shell_paint_knobs_do_not_grow` |
+| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, `status_bubble.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
+| `spacing` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src` | `pixel_const`, `taffy_length`, `literal_gap`, `literal_spacer` | `spacing_token_audit.rs::spacing_audit_sees_what_it_polices_and_literals_do_not_grow` |
+| `typography` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src`; not `tokens/typography.rs`, `text_render*`, `text_metrics.rs` | `literal_font_size`, `legacy_size_api`, `font_size_const`, `type_step_arithmetic`, `raw_type_step`, `renderer_scale_helper` | `typography_token_audit.rs::typography_literals_do_not_grow` |
+| `copy` | `apps/*/src` | `all_caps_label`, `middle_dot_join`, `to_uppercase` | `copy_audit.rs::copy_rules_do_not_grow` |
+
+What each key counts (the test file pins every key against lines that must
+and must not match):
+
+- `literal_color`: `Color::from_rgb8(` / `from_rgba8(` with a literal first
+  argument. Match both constructor spellings (see §8: grepping only for
+  `Color::rgb` is how these accumulated under a green check).
+- `white_or_black`: `Color::WHITE` / `Color::BLACK`. A colour is a colour even
+  when it has a name; the theme has ink and scrim tokens.
+- `theme_blind_white`: `surface_white_*` / `border_white_*`, a declared
+  strength never measured against its ground (§9.5).
+- `literal_color_new`: `Color::new([<literal>, …])`.
+- `ramp_slot`: `.neutral[…]` or `accent[<digit>]`; use the semantic tier.
+- `legacy_alias`: `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active`.
+- `desktop_ground`: `surfaces.base` / `surfaces.window_card` outside the
+  desktop. The framework paints the window ground; apps declare regions.
+- `literal_radius`: a numeric literal as a corner radius
+  (`to_rounded_rect(8.0)`, `RoundedRect::from_rect(r, 6.0)`,
+  `fill_round(s, r, 4.0, …)`, `.radius(12.0)`).
+- `literal_alpha`: `with_alpha(0.5)`, `with_alpha_factor(x * 0.4)`,
+  `multiply_alpha(0.6)`: a fractional literal opacity.
+- `raw_paint`: `scene.fill(` / `scene.stroke(`. Chrome is composed from
+  widgets; only genuine content drawing paints, from theme values.
+- `glyph_icon`: a string or char literal containing `✕ × ⟳ ↻ ⌫ ⇅ « » ‹ › ▾ ▸ ▴
+  ◍ ◎ ◷ ⚓ ➤ ⏰` or an emoji (U+1F300–U+1FAFF); use `ui::icons`.
+- `transparent_shot`: `render_png(…TRANSPARENT…)`; shots render on the
+  framework ground, like the live window.
+- `declared_border`: `.border_standard`, `.border_strong`,
+  `overlay_border_strong` or `colors.neutral[` on a chrome surface (§9.5).
+- `pixel_const`: a module-level `const NAME: f32|f64 = <whole number ≥ 1>;`.
+- `taffy_length`: a non-zero literal in taffy's `length(…)`.
+- `literal_gap`: `.with_gap(` / `.with_padding(` / `.with_row_gap(` /
+  `.with_column_gap(` with a literal.
+- `literal_spacer`: `Spacer::fixed(<literal>)`.
+- `literal_font_size`: a literal size passed to `TextStyle::new`,
+  `.with_size`, `.with_scaled_size`, `.with_fixed_size`, `.text_size`,
+  `.with_font_size` or `.set_font_size`.
+- `legacy_size_api`: the pixel-size text calls `.draw_text(`,
+  `.draw_text_weighted(`, `.measure(`, `.measure_weighted(`,
+  `.measure_styled(`, `.elide_to_width(`, `.elide_to_width_weighted(`.
+- `font_size_const`: an `f32` constant whose name contains `FONT`, `TEXT`,
+  `SIZE`, `TITLE`, `LABEL`, `CAPTION` or `HEADING` (`*CONTENT_PX` document
+  sizes excepted).
+- `type_step_arithmetic`: arithmetic on `typography.scale.<step>`.
+- `raw_type_step`: any `typography.scale.` read or `TypeScale::default()`.
+- `renderer_scale_helper`: `renderer_input_style` / `renderer_type_size`.
+- `all_caps_label`: a string literal opening with an upper-case word of three
+  or more letters (not an acronym such as `PDF`, `HTTP`, `GET`) on a line
+  that hands text to a label, title, caption, heading, header, placeholder,
+  tooltip, button, `Text` or a draw/measure/elide call.
+- `middle_dot_join`: a string literal containing ` · ` (an `A · B · C`
+  metadata chain).
+- `to_uppercase`: `.to_uppercase()`.
+
+Hard failures, with no inherited debt, in `crates/sdk/ui-core/src`:
+`cosmic_text::Color::rgb(<literal>…)`, `.to_rounded_rect(<literal>)` and a
+literal shadow `blur:` (`design_token_audit.rs::no_hardcoded_style_literals_in_tree`).
+
+**Baselines are sharded per unit** so app changes never conflict:
+`crates/sdk/ui-core/tests/baselines/<audit>/<unit>.txt`, where the unit is
+`apps-<name>`, `ui-core` or `shell`. Each line is `<path relative to the
+repository root> <key> <count>`. A missing shard allows zero, so a unit that
+reaches zero deletes its shard and is locked at zero from then on.
+
+Updating a shard:
+
+- With cargo (CI, or a checkout with a local toolchain):
+  `UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=apps/mail cargo test -p tilo-ui --test it do_not_grow`
+  rewrites only that unit's shards (`RATCHET_SCOPE` also takes
+  `crates/session/shell`, `crates/sdk/ui-core` or a unit name). Without
+  `RATCHET_SCOPE` every shard is rewritten. An update refuses to raise any
+  count unless `RATCHET_ALLOW_GROWTH=1` is also set; set it only after
+  reviewing why each count grew.
+- With a cargo drop-in that runs tests on a remote host, which neither
+  forwards the environment nor brings a test's writes back:
+  `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
+  A ratchet with progress prints the stale entries and the full text each
+  affected shard should now hold (or `delete <path>` when the unit reached
+  zero). Write exactly that.
+
+**Inlining to dodge a ratchet is a defect.** Moving a literal into a local,
+renaming a constant so its name no longer matches, splitting a call over
+lines, or inlining "whole-number sizes at their call sites because this file
+carries no `pixel_const` to spare" (the justification once written above two
+font constants in `apps/git-client/src/app.rs`) hides the debt from the
+ratchet without paying any of it. The fix is the semantic API that removes
+the knob: a `TextRole`, a spacing token, a region, a widget. Never write a
+comment that explains why a value was shaped to avoid a ratchet; a hit that
+is genuinely correct (a document colour, a chart's data ink) stays in the
+shard with its count.
+
+Not automated yet; grep a diff for these:
+
+- `Duration::from_millis(` with a literal in an animation (use
+  `tokens::motion`)
 - a `Command::new` / blocking read reachable from `draw`
 
-One regex covering the colour half, so it can be pasted rather than remembered:
-
-```bash
-git diff -U0 | grep -nE 'Color::(from_)?rgba?8\(|Color::(WHITE|BLACK)|(surface|border)_white_'
-```
-
-The first three are enforced for `crates/sdk/ui-core/src` by
-`crates/sdk/ui-core/tests/design_token_audit.rs::theme_escape_hatches_do_not_grow`, ratcheted
-against `crates/sdk/ui-core/tests/design_token_baseline.txt` so the count can only fall. Apps
-are not scanned yet; until they are, the grep above is what stands between an
-app and a colour the user's theme cannot reach.
+`docs/ui-migration.md` maps each key to the API that replaces it.
 
 ---
 

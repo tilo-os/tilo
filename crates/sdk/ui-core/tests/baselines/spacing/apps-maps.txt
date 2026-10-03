@@ -1,0 +1,10 @@
+# The spacing ratchet for apps-maps: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/maps/src/app.rs pixel_const 8
+apps/maps/src/canvas.rs pixel_const 1
+apps/maps/src/geo.rs pixel_const 1
+apps/maps/src/map_controls.rs pixel_const 1
+apps/maps/src/net.rs pixel_const 1
+apps/maps/src/rank.rs pixel_const 1
+apps/maps/src/tiles.rs pixel_const 1
