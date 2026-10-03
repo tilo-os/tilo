@@ -9,7 +9,17 @@
       <point x="162" y="815" type="line"/>
       <point x="136" y="660" type="line"/>
     </contour>
-    <component base="dotaccentcomb" xOffset="-23"/>
-    <component base="dotaccentcomb" xOffset="168"/>
+    <contour>
+      <point x="37" y="634" type="line"/>
+      <point x="121" y="634" type="line"/>
+      <point x="121" y="720" type="line"/>
+      <point x="37" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="228" y="634" type="line"/>
+      <point x="312" y="634" type="line"/>
+      <point x="312" y="720" type="line"/>
+      <point x="228" y="720" type="line"/>
+    </contour>
   </outline>
 </glyph>

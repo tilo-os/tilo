@@ -1,22 +1,20 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="lambda" format="2">
-  <advance width="426"/>
+  <advance width="437"/>
   <unicode hex="03BB"/>
-  <anchor x="278" y="740" name="top"/>
+  <anchor x="283" y="740" name="top"/>
   <outline>
     <contour>
       <point x="202" y="720" type="line"/>
-      <point x="207" y="419" type="line"/>
-      <point x="224" y="390" type="line"/>
       <point x="208" y="0" type="line"/>
       <point x="353" y="0" type="line"/>
       <point x="340" y="720" type="line"/>
     </contour>
     <contour>
-      <point x="229" y="526" type="line"/>
-      <point x="-45" y="0" type="line"/>
-      <point x="99" y="0" type="line"/>
-      <point x="295" y="451" type="line"/>
+      <point x="-9" y="0" type="line"/>
+      <point x="121" y="0" type="line"/>
+      <point x="276" y="351" type="line"/>
+      <point x="272" y="638" type="line"/>
     </contour>
   </outline>
 </glyph>

@@ -8,7 +8,33 @@
       <point x="162" y="815" type="line"/>
       <point x="136" y="660" type="line"/>
     </contour>
-    <component base="dotaccentcomb.ss01" xOffset="-23"/>
-    <component base="dotaccentcomb.ss01" xOffset="168"/>
+    <contour>
+      <point x="87" y="604" type="curve" smooth="yes"/>
+      <point x="115" y="604"/>
+      <point x="136" y="626"/>
+      <point x="136" y="655" type="curve" smooth="yes"/>
+      <point x="136" y="684"/>
+      <point x="115" y="705"/>
+      <point x="87" y="705" type="curve" smooth="yes"/>
+      <point x="59" y="705"/>
+      <point x="37" y="684"/>
+      <point x="37" y="655" type="curve" smooth="yes"/>
+      <point x="37" y="626"/>
+      <point x="59" y="604"/>
+    </contour>
+    <contour>
+      <point x="278" y="604" type="curve" smooth="yes"/>
+      <point x="306" y="604"/>
+      <point x="327" y="626"/>
+      <point x="327" y="655" type="curve" smooth="yes"/>
+      <point x="327" y="684"/>
+      <point x="306" y="705"/>
+      <point x="278" y="705" type="curve" smooth="yes"/>
+      <point x="250" y="705"/>
+      <point x="228" y="684"/>
+      <point x="228" y="655" type="curve" smooth="yes"/>
+      <point x="228" y="626"/>
+      <point x="250" y="604"/>
+    </contour>
   </outline>
 </glyph>

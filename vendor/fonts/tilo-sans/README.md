@@ -236,7 +236,9 @@ wrong can be overridden with `com.schriftgestaltung.Glyphs.category` /
 Modern monotonic Greek, upright and italic, all masters: Α–Ω, α–ω with ς, the
 tonos and dialytika letters (Ά Έ Ή Ί Ό Ύ Ώ Ϊ Ϋ, ά έ ή ί ό ύ ώ ϊ ϋ ΐ ΰ), tonos
 ΄, dialytika-tonos ΅, ano teleia ·, the Greek question mark ; and the numeral
-signs ʹ ͵ (`numeral-greek`, `lowernumeral-greek`).
+signs ʹ ͵ (`numeral-greek`, `lowernumeral-greek`); beside them MICRO SIGN µ (`micro`,
+the Greek μ) and HORIZONTAL BAR ―, the Greek dialogue dash (`horizontalbar`,
+the em dash, with a `.case` form).
 
 **The Greek glyphs are generated.** `scripts/greek/gen.py` draws every one of
 them into all eight masters from that master's own Latin parts and measured
@@ -253,11 +255,12 @@ uv run check.py                    # after build.py: pair kerning, substitutions
 
 * Shared shapes: Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ and ο are components of the Latin
   glyphs; η comes from n, μ from u, κ from k, ι and τ from t, α from the
-  single-storey a with t's tail, ρ σ from o, ν γ from v, λ from y turned, Γ Δ Λ
-  Π Ξ from F, A, H and E's stems and bars. Bowls (δ θ φ Φ) are the master's o or O
+  single-storey a with t's tail, ρ σ from o, ν γ from v, λ's long stroke from
+  y's turned over, Γ Δ Λ Π Ξ from F, A, H and E's stems and bars (Δ's base
+  ends flush with the diagonals). Bowls (δ θ φ Φ) are the master's o or O
   stretched, so they carry Instrument's curve tension, and in the italic its
   corrected italic o.
-* Drawn shapes (β ε ζ ξ ς υ ψ ω Ψ Ω) are skeleton strokes outlined with an
+* Drawn shapes (β γ ε ζ ξ ς υ ψ ω Ψ Ω) are skeleton strokes outlined with an
   elliptical pen using o's vertical and horizontal weights; terminals are cut
   across the stroke like c's and j's, and the descender hooks of ζ ξ ς taper.
   Joins are thinned where strokes meet (β's waist and stem joins, δ's neck,
@@ -265,18 +268,29 @@ uv run check.py                    # after build.py: pair kerning, substitutions
   masters lighten small bowls (β's and ε's upper bowls, φ, ψ) and widen the
   letters whose counters would otherwise close (φ Φ ψ Ψ ω θ in Condensed Bold).
 * ζ and ξ leave their top bar from its right end, the bar ending flush with the
-  stroke. β is one stroke: the stem rolls over into the upper bowl, pinches at
-  the waist and the lower bowl runs back into the stem. γ's arms meet above the
-  baseline and run into a lighter tail.
+  stroke; ζ's spine stays diagonal well down and turns late into the bowl, with
+  a small round under the bar in the heavy masters. ε's and ξ's tongue is
+  where the two bowls part, run on a little and cut leaning back, not a bar.
+  β is one stroke: the stem rolls over into the upper bowl, pinches at the
+  waist and the lower bowl runs back into the stem. γ's right arm runs on
+  without a break into a tail that leans a little left, the left arm joining
+  it above the baseline. λ's short leg joins the long stroke a little under
+  half way up, its foot well in, so the base is narrower than Λ's. υ and ω
+  lean their arms in over the top quarter (by a share of the counter, less in
+  Condensed Bold); ω's middle stroke is short, light and set high. Ω's sides
+  turn in below the middle and run, still curving and a little lighter, into
+  the feet.
 * Italic masters are drawn upright and sheared 13°. Strokes are pre-compensated
   so the shear keeps the upright's weight distribution (a plain shear thickens
   `\` strokes and thins `/` strokes by about 11%).
 * The tonos is the acute stood up. Over a capital it sits in front of the letter
   at cap height; Ε Η Ι Ο set the white beside it, Υ and Α (whose sides run away
   from it) match Ε's mean white, and Ω's arch comes a little closer than Ο.
-  In ΐ ΰ ΅ the tonos stands up between the dots, narrower and steeper in the
-  heavy masters, with its foot between the dots' tops; the dots keep the
-  dieresis spacing where they can. No accent hangs more than about 36 units
+  Υ's tonos drops beside the arm, its top under the arm's tip, so it holds the
+  same white as Έ. In ΐ ΰ ΅ the tonos stands up between the dots, narrower and
+  steeper in the heavy masters, with its foot between the dots' tops; the dots
+  keep the dieresis spacing where they can (drawn in, and 8% smaller in
+  Condensed Bold). No accent hangs more than about 36 units
   past the advance: ϊ ϋ Ϊ Ϋ ΐ ΰ take extra sidebearing where needed.
 * Kerning (`scripts/greek/kern.py`): each Greek glyph joins the Latin
   kerning groups of the Latin glyph its sides match (Γ's arm kerns like T's,
@@ -285,16 +299,29 @@ uv run check.py                    # after build.py: pair kerning, substitutions
   the same accent). The kern writer splits pairs per script, so Greek and Latin
   never kern against each other. Where Instrument kerns the Latin analogue as
   a single glyph (T-u is a glyph pair), the Greek pair gets the same value as
-  a glyph pair, so Τυ Τω Τμ Γω Υω kern like Tu. A collision guard then opens
-  any Greek letter pair whose outlines come closer than nearly all Latin pairs
-  do in that master. Deliberate exceptions: κλ +10, φχ φλ 0, T-like arms before
-  a capital with tonos +20 to +40.
+  a glyph pair, so Τυ Τω Τμ Γω Υω kern like Tu. Where a Greek side is only
+  partly like its analogue the pair is set from the outlines against the
+  analogue's white: ζ ξ before lowercase take c's white plus about 40 units
+  (their body sits well left of the bar and hook); υ ω before ν γ χ take u's
+  white before v and x; Γ's long arm closes over x-height letters to the white
+  T's arm keeps over the same letter; an x-height bar (π σ on the right, π τ on
+  the left) keeps at least the white between two t's bars, so πτ never reads
+  as one bar. A collision guard then opens any Greek letter pair whose
+  outlines come closer than nearly all Latin pairs do in that master, and a
+  punctuation guard keeps a Greek letter at least 70% as far from brackets,
+  quotes and figures as its Latin analogue ((ζ no longer gets (c's kern).
+  Deliberate exceptions: φχ φλ λρ 0, T-like arms before a capital with tonos
+  +20 to +40, opening brackets, quotes and guillemets before a capital with
+  tonos −45 (the tonos hangs into the space: «Έκθεση, (Άδεια).
 * Features (`features/greek.fea`): `languagesystem grek dflt`; the Greek
   question mark follows the capitals under `case`; `ss01` (round dots) covers
   ϊ ϋ Ϊ Ϋ ΐ ΰ ΅, the ano teleia and the question mark; and `locl` for Greek
-  maps U+00B7 MIDDLE DOT to the ano teleia, since NFC turns U+0387 into
-  U+00B7 and Greek keyboards type it. Dropping the tonos in all-caps text is
-  left to the text layer.
+  gives U+00B7 MIDDLE DOT the ano teleia's form when it follows a Greek letter
+  directly, since NFC turns U+0387 into U+00B7 and Greek keyboards type it. A
+  middle dot with a space before it is a separator (`Αρχεία · Ρυθμίσεις`,
+  `12 MB · 3 λεπτά`) and stays centred. `case` also covers ―. Dropping the
+  tonos in all-caps text (and adding the dialytika it can call for) is left
+  to the text layer's Greek uppercasing.
 
 ## Editing
 

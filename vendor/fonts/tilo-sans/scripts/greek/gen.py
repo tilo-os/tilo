@@ -177,6 +177,26 @@ def tau(m):
     return spec(w, cs, anchors={"top": (stem_l + m.S / 2, X)})
 
 
+def arm_top(s, x, side, m, first, counter):
+    """An arm of υ ω that rises straight and leans in over its top quarter:
+    the tip stands in by a fraction of the counter (about 20 units in
+    Regular, less where the counter is narrow), cut level at the x-height.
+    side: -1 for a left arm, +1 for a right one. The node runs on above the
+    x-height and the outline is cut there."""
+    din = 4 + 0.06 * counter
+    lean = 13 * din / 20  # degrees off vertical at the tip
+    ext = 24
+    tip = (x - side * (din + ext * math.tan(math.radians(lean))), X + ext)
+    ang = 90 + side * lean
+    if first:
+        s.add(*tip, ang, k=0.5)
+        s.add(x, 0.70 * X, "v", k=0.62)
+    else:
+        s.add(x, 0.70 * X, "v", k=0.62)
+        s.add(*tip, ang, k=0.5)
+    return s
+
+
 @glyph("upsilon", 0x03C5)
 def upsilon(m):
     lsb = (m.lsb_o + m.lsb_n) / 2
@@ -186,9 +206,15 @@ def upsilon(m):
     cx = (xl + xr) / 2
     yb = -OV + m.Ho / 2
     s = stroke(m)
-    s.add(xl, X, "v").add(xl, 250, "v", seg="line").add(cx, yb, "h").add(xr, 250, "v").add(xr, X, "v", seg="line")
+    counter = xr - xl - m.So
+    arm_top(s, xl, -1, m, True, counter)
+    s.add(xl, 250, "v", seg="line").add(cx, yb, "h").add(xr, 250, "v")
+    s.add(xr, 0.70 * X, "v", seg="line")
+    arm_top(s, xr, 1, m, False, counter)
+    # arm_top added the straight node itself for the right arm: drop the duplicate
+    s.nodes.pop(-2)
     w = lsb * 2 + body
-    return spec(round(w), [s.outline()], anchors={"top": (cx, X)})
+    return spec(round(w), [s.outline(start_cut=("y", X), end_cut=("y", X))], anchors={"top": (cx, X)})
 
 
 @glyph("chi", 0x03C7)
@@ -200,9 +226,18 @@ def chi(m):
     c = m.c("x", 0)
     bl, br, tl = c[0], c[1], c[4]
     weight = (br[0] - bl[0]) * math.cos(math.atan((bl[0] - tl[0]) / (tl[1] - bl[1])))
-    dw = weight / math.cos(math.atan((w - 2 * sb) / (X - DESC)))
-    a = poly((sb, X), (sb + dw, X), (w - sb, DESC), (w - sb - dw, DESC))
-    b = poly((w - sb - dw, X), (w - sb, X), (sb + dw, DESC), (sb, DESC))
+    span = w - 2 * sb
+    if m.italic:
+        # the shear stands one diagonal up and lays the other down; size each
+        # so that, sheared, both carry the same weight across the stroke
+        def hw(dx):
+            dxs = dx - (X - DESC) * TAN
+            return 0.98 * weight * math.hypot(dxs, X - DESC) / (X - DESC)
+        da, db = hw(span), hw(-span)   # top-left to bottom-right, and the other
+    else:
+        da = db = weight / math.cos(math.atan(span / (X - DESC)))
+    a = poly((sb, X), (sb + da, X), (w - sb, DESC), (w - sb - da, DESC))
+    b = poly((w - sb - db, X), (w - sb, X), (sb + db, DESC), (sb, DESC))
     return spec(round(w), [a, b], anchors={"top": (w / 2, X)})
 
 
@@ -248,67 +283,103 @@ def alpha(m):
 
 @glyph("gamma", 0x03B3)
 def gamma(m):
+    """v's arms, steepened so they meet above the baseline. The right arm
+    runs on without a break and bends down into the tail, which leans a
+    little left; the left arm runs into it. No stalk hung from the vertex."""
     v = m.c("v", 0)
     # v: [bl, br, top-right outer, top-right inner, crotch, crotch, top-left inner, top-left outer]
     bl, br, tro, tri, c1, c2, tli, tlo = [p[:2] for p in v]
     w = m.width("v")
-    cx = (bl[0] + br[0]) / 2
-    # v's arms, lifted so they meet a little above the baseline
-    lift = 0.6 * m.Ho
+    lift = 110 + 0.4 * (m.Ho - 68)
     sq = lambda p: (p[0], lift + p[1] * (X - lift) / X)
     bl, br, c1, c2 = sq(bl), sq(br), sq(c1), sq(c2)
+    # right arm centre line, top to vertex
+    rt = ((tro[0] + tri[0]) / 2, X)
+    rb = ((bl[0] + br[0]) / 2 + (br[0] - bl[0]) * 0.0, lift)
+    d = unit(rb[0] - rt[0], rb[1] - rt[1])
+    ang = math.degrees(math.atan2(d[1], d[0]))
+    # the right arm keeps v's weight across the stroke
+    arm_w = (tro[0] - tri[0]) * math.cos(math.atan(abs(d[0] / d[1])))
+    s = stroke(m)
+    pen_w = math.sqrt((s.V * d[1]) ** 2 + (s.H * d[0]) ** 2)
+    wa = arm_w / pen_w
+    tail = 0.90 * m.S / s.V   # p's stem less a tenth
+    yj = lift + 0.35 * (X - lift)
+    xj = rt[0] + (yj - X) * d[0] / d[1]
+    xb = (bl[0] + br[0]) / 2 - 0.05 * w
+    s.add(rt[0] - 30 * d[0] / d[1] * -1, X + 30, ang, w=wa)
+    s.add(xj, yj, ang, seg="line", w=wa, k=0.5)
+    s.add(xb, DESC - 30, -96, w=tail, k=0.45)
+    right = s.outline(start_cut=("y", X), end_cut=("y", DESC))
+    # left arm: v's, on into the right stroke
+    cl = [(rt[0], X), (xj, yj)]
+    po = cross(tlo, bl, *cl)
+    pi_ = cross(tli, c2, *cl)
+    # carry the outer edge a little past the centre line so the outer
+    # crotch is the tail's own edge, not a notch
+    left = poly(tlo, tli, pi_, (po[0] + 0.25 * (po[0] - tlo[0]) * 0.0, po[1]))
+    return spec(w, [left, right], anchors={"top": (w / 2, X)})
 
-    def cross(p1, p2, p3, p4):
-        """Intersection of the lines p1-p2 and p3-p4."""
-        d = (p1[0] - p2[0]) * (p3[1] - p4[1]) - (p1[1] - p2[1]) * (p3[0] - p4[0])
-        a = p1[0] * p2[1] - p1[1] * p2[0]
-        b = p3[0] * p4[1] - p3[1] * p4[0]
-        return ((a * (p3[0] - p4[0]) - (p1[0] - p2[0]) * b) / d, (a * (p3[1] - p4[1]) - (p1[1] - p2[1]) * b) / d)
 
-    crotch = cross(tli, c2, tri, c1)
-    # the tail is lighter where it leaves the arms and fills out a little
-    # towards its end: no full-weight post hung off the vertex
-    t0, t1 = 0.74 * m.S, 0.86 * m.S
-    r = 0.75 * m.S
+def line_x(p, q, y):
+    """x on the line through p and q at height y."""
+    return p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])
 
-    def on_edge(top, bot, x):
-        t = (x - top[0]) / (bot[0] - top[0])
-        return top[1] + (bot[1] - top[1]) * t
 
-    yl = on_edge(tlo, bl, cx - t0 / 2)
-    yr = on_edge(tro, br, cx + t0 / 2)
-
-    def toward(top, bot, y):
-        t = (y - top[1]) / (bot[1] - top[1])
-        return (top[0] + (bot[0] - top[0]) * t, y)
-
-    al = toward(tlo, bl, yl + r)
-    ar = toward(tro, br, yr + r)
-    vl = (cx - t0 / 2, yl - 0.7 * r)
-    vr = (cx + t0 / 2, yr - 0.7 * r)
-    k = 0.55
-    dl = unit(bl[0] - tlo[0], bl[1] - tlo[1])
-    dr = unit(br[0] - tro[0], br[1] - tro[1])
-    c = [P(*tlo), P(*al),
-         P(al[0] + dl[0] * r * k, al[1] + dl[1] * r * k, None), P(vl[0], vl[1] + r * 0.7 * k, None), P(*vl, "curve"),
-         P(cx - t1 / 2, DESC), P(cx + t1 / 2, DESC), P(*vr),
-         P(vr[0], vr[1] + r * 0.7 * k, None), P(ar[0] + dr[0] * r * k, ar[1] + dr[1] * r * k, None), P(*ar, "curve"),
-         P(*tro), P(*tri), P(*crotch), P(*tli)]
-    return spec(w, [ccw(c)], anchors={"top": (w / 2, X)})
+def cross(p1, p2, p3, p4):
+    """Intersection of the lines p1-p2 and p3-p4."""
+    d = (p1[0] - p2[0]) * (p3[1] - p4[1]) - (p1[1] - p2[1]) * (p3[0] - p4[0])
+    a = p1[0] * p2[1] - p1[1] * p2[0]
+    b = p3[0] * p4[1] - p3[1] * p4[0]
+    return ((a * (p3[0] - p4[0]) - (p1[0] - p2[0]) * b) / d, (a * (p3[1] - p4[1]) - (p1[1] - p2[1]) * b) / d)
 
 
 @glyph("lambda", 0x03BB)
 def lambda_(m):
-    cs = m.c("y")
-    out = []
-    for c in cs:
-        c = transform(c, lambda x, y: (x, X - y))
-        c = reverse(c)
-        out.append(c)
-    # long stroke reaches the ascender
-    set_y(out[0], lambda p: p[1] > 600, ASC)
-    w = m.width("y")
-    return spec(w, out, anchors={"top": (w / 2 - 60 * m.wf, ASC + 20)})
+    """y's long stroke turned over, reaching the ascender. The short leg is
+    its own stroke: it meets the long one a little under half way up, and
+    its foot stands well inside the long stroke's, so the base is narrower
+    than a small Λ's and λλ, κλ keep their white at the baseline."""
+    y = m.c("y")
+    # y's long stroke, turned over: its descender end becomes the top at the
+    # ascender, its arm's top end the foot. Straight edges (y's notch where
+    # the arm joins would show above the lower join)
+    ends = [(p[0], X - p[1]) for p in y[0] if abs(p[1] - DESC) < 1 or abs(p[1] - X) < 1]
+    tl, tr = sorted([(x, ASC) for x, yy in ends if yy > X], key=lambda p: p[0])
+    bl, br = sorted([p for p in ends if abs(p[1]) < 1], key=lambda p: p[0])
+    # the top keeps the descender's horizontal width, the slope runs on to ASC
+    long_ = poly(tl, tr, br, bl)
+    # perpendicular weight of y's short arm, carried onto the leg
+    arm = y[1]
+    al = sorted(arm, key=lambda p: p[1])
+    lo_pts = sorted(al[:2], key=lambda p: p[0])
+    hi_pts = sorted(al[2:], key=lambda p: p[0])
+    hw = hi_pts[1][0] - hi_pts[0][0]
+    slope0 = (hi_pts[0][0] - lo_pts[0][0]) / (hi_pts[0][1] - lo_pts[0][1])
+    # a touch lighter than the long stroke, so the heavy joins stay open
+    perp = abs(hw) * math.cos(math.atan(abs(slope0))) * (0.92 if m.bold else 0.97)
+    # crotch (leg's inner edge meets the long stroke) at about 41% of the
+    # height, so the leg's centre joins at about 47%
+    foot_r = hi_pts[1][0] + 28 * m.wf
+    ls = (tl[0] - bl[0]) / ASC   # the long stroke's left edge leans this way
+    yc = 0.40 * ASC
+    for _ in range(30):
+        xc = line_x(tl, bl, yc)
+        slope = (xc - foot_r) / yc
+        fw = perp / math.cos(math.atan(slope))
+        yj = yc + fw / (slope - ls)  # the leg's outer edge meets the long stroke
+        yc += 0.5 * (0.47 * ASC - (yc + yj) / 2)
+    foot_l = foot_r - fw
+    # both edges run on into the long stroke and stop on its centre line
+    cl_t = ((tl[0] + tr[0]) / 2, ASC)
+    cl_b = ((bl[0] + br[0]) / 2, 0)
+    pi_ = cross((foot_r, 0), (xc, yc), cl_t, cl_b)
+    po = cross((foot_l, 0), (foot_l + slope * yc, yc), cl_t, cl_b)
+    leg = ccw([P(foot_l, 0), P(foot_r, 0), P(*pi_), P(*po)])
+    # y's advance: the foot drawn in is white gained at the baseline (λλ, κλ);
+    # the heavy masters give the long stroke's foot a little more room, as A has
+    w = m.width("y") + 0.15 * (m.S - 80 * m.wf)
+    return spec(round(w), [long_, leg], anchors={"top": (w / 2 - 60 * m.wf, ASC + 20)})
 
 
 # =====================================================================
@@ -334,9 +405,14 @@ def Gamma(m):
 def Delta(m):
     cs = m.c("A")
     l, r = cs[0], cs[1]
-    x0 = min(p[0] for p in l)
-    x1 = max(p[0] for p in r)
-    return spec(m.width("A"), [l, r, rect(x0, 0, x1, m.EB)], anchors={"top": m.anchor("A", "top")})
+    # the bar's ends follow the diagonals' outer edges: no step at the corners
+    lb = min((p for p in l if abs(p[1]) < 1), key=lambda p: p[0])
+    lt = min((p for p in l if abs(p[1] - CAP) < 1), key=lambda p: p[0])
+    rb = max((p for p in r if abs(p[1]) < 1), key=lambda p: p[0])
+    rt = max((p for p in r if abs(p[1] - CAP) < 1), key=lambda p: p[0])
+    eb = m.EB
+    bar = poly((lb[0], 0), (rb[0], 0), (line_x(rb, rt, eb), eb), (line_x(lb, lt, eb), eb))
+    return spec(m.width("A"), [l, r, bar], anchors={"top": m.anchor("A", "top")})
 
 
 @glyph("Theta", 0x0398)
@@ -442,6 +518,26 @@ def bar_join(m, spine, bar_l, tb):
     return rect(bar_l, ASC - tb, max(xs) - 2, ASC)
 
 
+def bar_fillet(m, spine, tb):
+    """A small round where the bar's underside meets the spine's left edge,
+    so the inner corner is not a sharp notch (it fills in at heavy weights)."""
+    yb = ASC - tb
+    a, b = span_at(spine, yb - 4)[0], span_at(spine, yb - 64)[0]
+    slope = (a - b) / 60.0                      # dx per unit y along the edge
+    cx = a + slope * 4                          # the edge at the bar's underside
+    r = (0.12 + 0.30 * m.bold) * m.S          # only the heavy masters need much of it
+    dy = r / math.hypot(1, slope)               # r along the edge
+    A = (cx - r, yb)
+    B = (cx - slope * dy, yb - dy)
+    k = 0.55
+    return ccw([P(*A, "curve"), P(cx + 2, yb + 2), P(*B),
+                P(B[0] + (cx - B[0]) * k, B[1] + (yb - B[1]) * k, None),
+                P(A[0] + (cx - A[0]) * k, yb, None)])
+
+
+TONGUE_CUT = 100  # degrees: the tongue of ε and ξ ends on a cut leaning back a little
+
+
 @glyph("epsilon", 0x03B5)
 def epsilon(m):
     f = m.wf
@@ -450,19 +546,23 @@ def epsilon(m):
     x0, x1 = lsb, lsb + body
     yb = -OV + m.Ho / 2
     yt = X + OV - m.Ho / 2
-    # the waist sits low enough that the smaller upper bowl keeps a counter
-    yw = 284 + (m.Ho - 68) * 0.2 - (14 if m.cond and m.bold else 0)
+    # the waist sits low enough that the smaller upper bowl keeps a counter;
+    # the heavy masters drop it further, their strokes take more of the bowl
+    yw = 284 - (12 if m.bold else 0) - (8 if m.cond and m.bold else 0)
     lo_w = 0.92 if m.bold else 1.0   # the heavy bowls a little lighter than the stem
-    up_w = (0.76 if m.cond else 0.84) if m.bold else 0.92  # and the upper one lighter still
-    waist = 0.70 if m.bold else 0.80
+    up_w = (0.74 if m.cond else 0.80) if m.bold else 0.92  # and the upper one lighter still
+    waist = 0.62 if m.bold else 0.76
     xll, xrl = x0 + m.So / 2, x1 - m.So / 2
     xcl = (xll + xrl) / 2 + 4 * f
     yl = (yw + yb) / 2
-    # the tongue stops short of the centre: a join, not a bar (not a turned 3)
-    xt = xcl - 0.10 * (xrl - xcl)
+    # the tongue is where the two bowls part, run on a little and cut on a
+    # slant: a join, not a bar (not a turned 3)
+    xt = xll + 0.40 * (xrl - xll) + 0.35 * (m.So - 82 * f)
+    run = 0.6 * m.Ho
+    cut = ("line", (xt, yw), TONGUE_CUT)
     lo = stroke(m)
-    lo.add(xt, yw, "h", w=waist).add(xll, yl, "v", w=lo_w).add(xcl, yb, "h").add(xrl, yl, "v", w=lo_w)
-    low = lo.outline(end_cut=("y", term_y(yl, yb + m.Ho / 2, 0.42)))
+    lo.add(xt + run, yw, "h", w=waist).add(xll, yl, "v", w=lo_w).add(xcl, yb, "h").add(xrl, yl, "v", w=lo_w)
+    low = lo.outline(start_cut=cut, end_cut=("y", term_y(yl, yb + m.Ho / 2, 0.42)))
     # upper bowl: narrower, set in from both sides, opening wider at the top
     xlu = xll + 0.06 * body
     xru = xrl - 0.09 * body
@@ -470,8 +570,8 @@ def epsilon(m):
     yu = (yw + yt) / 2 + 4
     up = stroke(m)
     up.add(xru, yu, "v", w=up_w).add(xcu, yt, "h", w=up_w).add(xlu, yu, "v", w=up_w)
-    up.add(xcu - 0.15 * (xru - xlu), yw, "h", w=waist).add(xt, yw, "h", seg="line", w=waist)
-    upper = up.outline(start_cut=("y", term_y(yu, yt - m.Ho / 2, 0.58)))
+    up.add(xt + run, yw, "h", w=waist)
+    upper = up.outline(start_cut=("y", term_y(yu, yt - m.Ho / 2, 0.58)), end_cut=cut)
     w = x1 + m.lsb_o + 8 * f
     return spec(round(w), [low, upper], anchors={"top": (xcu, X)})
 
@@ -512,14 +612,15 @@ def zeta(m):
     yb = -OV + m.Ho / 2
     sx, sy = spine_start(m, x0, body)
     s = stroke(m)
-    # condensed: a lower, later turn keeps the spine diagonal rather than upright
-    s.add(sx, sy, -128 if m.cond else -132, k=0.22, w=0.84)
-    s.add(xl, 196 if m.cond else 226, "v", k=0.60)
+    # the spine stays a diagonal well down the x-height and turns late into
+    # the bowl, still leaning as it passes the left side: no upright wall
+    s.add(sx, sy, -128 if m.cond else -132, k=0.34, w=0.84)
+    s.add(xl + 0.02 * body, 176 if m.cond else 196, -98, k=0.58, w=0.94 if m.bold else 1.0)
     hook(s, m, xl, xr, body, yb)
     c = s.outline(start_cut=("y", ASC))
     bar = bar_join(m, c, x0 + 0.04 * body, tb)
     w = x1 + 22 * f
-    return spec(round(w), [bar, c], anchors={"top": ((x0 + x1) / 2, ASC + 20)})
+    return spec(round(w), [bar, c, bar_fillet(m, c, tb)], anchors={"top": ((x0 + x1) / 2, ASC + 20)})
 
 
 @glyph("xi", 0x03BE)
@@ -531,23 +632,29 @@ def xi(m):
     xl, xr = x0 + m.So / 2, x1 - m.So / 2
     tb = top_bar(m)
     yb = -OV + m.Ho / 2
-    yw = 404 + (m.Ho - 68) * 0.3
-    tongue = (0.72 if m.cond and m.bold else 0.84) if m.bold else 0.9
-    xt = xl + 0.64 * (xr - xl)
+    # the heavy masters set the waist lower and the strokes round the upper
+    # lobe lighter, so its counter stays open
+    yw = 404 + (m.Ho - 68) * 0.3 - (26 if m.bold else 0)
+    tongue = 0.62 if m.bold else 0.76
+    lobe = (0.80 if m.cond else 0.84) if m.bold else 1.0
+    xt = xl + 0.50 * (xr - xl) + 0.35 * (m.So - 82 * f)
+    run = 0.6 * m.Ho
+    cut = ("line", (xt, yw), TONGUE_CUT)
     sx, sy = spine_start(m, x0, body)
     # upper lobe: leaves the bar near its right end like ζ's spine, turns at
-    # the left and comes back as the tongue
+    # the left and runs back into the tongue; the lower bowl leaves the
+    # tongue the same way ε's does, so the waist is one turning stroke
     up = stroke(m)
-    up.add(sx, sy, -138 if m.cond else -142, k=0.25, w=0.82)
-    up.add(xl + 0.03 * body, (ASC - tb + yw) / 2 - 4, "v", w=0.92 if m.bold else 1.0)
-    up.add(xl + 0.40 * (xr - xl), yw, "h", w=tongue).add(xt, yw, "h", seg="line", w=tongue)
-    upper = up.outline(start_cut=("y", ASC))
+    up.add(sx, sy, -138 if m.cond else -142, k=0.30, w=0.82)
+    up.add(xl + (0.0 if m.bold else 0.03) * body, (ASC - tb + yw) / 2 - 4, "v", w=lobe)
+    up.add(xt + run, yw, "h", w=tongue)
+    upper = up.outline(start_cut=("y", ASC), end_cut=cut)
     lo = stroke(m)
-    lo.add(xt, yw, "h", w=tongue).add(xl, 196, "v")
+    lo.add(xt + run, yw, "h", w=tongue).add(xl, 196, "v")
     hook(lo, m, xl, xr, body, yb)
     bar = bar_join(m, upper, x0 + 0.04 * body, tb)
     w = x1 + 10 * f  # the open right side needs less room than c's
-    return spec(round(w), [bar, upper, lo.outline()], anchors={"top": ((x0 + x1) / 2, ASC + 20)})
+    return spec(round(w), [bar, upper, lo.outline(start_cut=cut)], anchors={"top": ((x0 + x1) / 2, ASC + 20)})
 
 
 @glyph("beta", 0x03B2)
@@ -607,11 +714,14 @@ def theta(m):
     lsb = m.lsb_o + 4 * f
     body = (0.88 + (0.08 if m.cond and m.bold else 0)) * m.o_out.w + 0.12 * m.So
     x0, x1 = lsb, lsb + body
-    cs = ring(m, x0, -OV, x1, ASC + OV)
-    cy = (ASC) / 2
-    # the bar is a horizontal like e's: lighter than the bowl
-    hb = m.Ho * (0.80 if m.bold else 0.92)
-    cs.append(rect(x0 + m.So - 6, cy - hb / 2, x1 - m.So + 6, cy + hb / 2))
+    cb = m.cond and m.bold
+    V = m.So * (0.90 if cb else 1.0)
+    cs = ring(m, x0, -OV, x1, ASC + OV, V=V)
+    # the bar is a horizontal like e's: lighter than the bowl, and a little
+    # under the middle in the heavy masters so both counters look alike
+    cy = ASC / 2 - (8 if m.bold else 0)
+    hb = m.Ho * ((0.66 if cb else 0.74) if m.bold else 0.92)
+    cs.append(rect(x0 + V - 6, cy - hb / 2, x1 - V + 6, cy + hb / 2))
     w = x1 + lsb
     return spec(round(w), cs, anchors={"top": ((x0 + x1) / 2, ASC + 20)})
 
@@ -619,7 +729,7 @@ def theta(m):
 def phi_bowl(m, caps=False):
     """φ/Φ's bowl is wider than o so the counters either side of the stem stay
     open, and lighter top and bottom where the stem crosses it."""
-    wide = 1.0 + 0.05 * m.bold + 0.06 * m.cond + 0.06 * (m.cond and m.bold)
+    wide = 1.0 + 0.10 * m.bold + 0.06 * m.cond + 0.08 * (m.cond and m.bold)
     V = (m.SO if caps else m.So) * (0.92 if m.bold else 1.0)
     H = (m.HO if caps else m.Ho) * (0.86 if m.bold else 0.94)
     return wide, V, H
@@ -634,7 +744,7 @@ def phi(m):
     x0, x1 = lsb, lsb + body
     cs = ring(m, x0, -OV, x1, X + OV, V=V, H=H)
     xc = (x0 + x1) / 2
-    inner = m.S * (0.86 if m.bold else 0.94)
+    inner = m.S * (0.80 if m.bold else 0.94)
     cs.append(rect(xc - m.S / 2, DESC, xc + m.S / 2, -OV + H / 2))
     cs.append(rect(xc - inner / 2, -OV + H / 4, xc + inner / 2, X + OV - H / 4))
     cs.append(rect(xc - m.S / 2, X + OV - H / 2, xc + m.S / 2, ASC))
@@ -654,12 +764,13 @@ def u_shape(m, xl, xr, ytop, y_turn, ybot, caps=False, bottom_w=1.0, V=None):
 def psi(m):
     f = m.wf
     lsb = (m.lsb_o + m.lsb_n) / 2
-    body = (1.06 + 0.05 * m.bold + 0.08 * (m.cond and m.bold)) * m.o_out.w
+    # the heavy masters widen so the counters beside the stem stay open
+    body = (1.06 + 0.13 * m.bold + 0.12 * (m.cond and m.bold)) * m.o_out.w
     V = m.So * (0.92 if m.bold else 1.0)
     xl, xr = lsb + V / 2, lsb + body - V / 2
     xc = (xl + xr) / 2
     u = u_shape(m, xl, xr, X, 250, -OV + m.Ho / 2, bottom_w=0.80 if m.bold else 0.9, V=V)
-    st = m.S * (0.90 if m.bold else 0.96)
+    st = m.S * (0.84 if m.bold else 0.96)
     stem = rect(xc - st / 2, DESC, xc + st / 2, ASC)
     w = lsb * 2 + body
     return spec(round(w), [u, stem], anchors={"top": (xc, ASC + 20)})
@@ -673,18 +784,23 @@ def omega(m):
     xl, xr = lsb + m.So / 2, lsb + body - m.So / 2
     xc = (xl + xr) / 2
     yb = -OV + m.Ho / 2
-    mid_top = 300
-    # the middle stroke and the bowls' bottoms thin where they meet
-    sw = m.S * (0.78 if m.bold else 0.88)
+    # the middle stroke is short, light and set high: the two bowls read as
+    # one letter, not as a turned m
+    mid_top = 345 - (10 if m.bold else 0)
+    sw = m.S * (0.68 if m.bold else 0.76)
     bw = 0.84 if m.bold else 0.94
     a = stroke(m)
-    a.add(xl, X, "v").add(xl, 240, "v", seg="line").add((xl + xc) / 2 - 4 * f, yb, "h", w=bw)
+    counter = (xr - xl) / 2 - m.So / 2 - sw / 2
+    arm_top(a, xl, -1, m, True, counter)
+    a.add(xl, 240, "v", seg="line").add((xl + xc) / 2 - 4 * f, yb, "h", w=bw)
     a.add(xc, 170, "v", wl=sw, wr=sw).add(xc, mid_top, "v", seg="line", wl=sw, wr=sw)
     b = stroke(m)
     b.add(xc, mid_top, "v", wl=sw, wr=sw).add(xc, 170, "v", seg="line", wl=sw, wr=sw)
-    b.add((xc + xr) / 2 + 4 * f, yb, "h", w=bw).add(xr, 240, "v").add(xr, X, "v", seg="line")
+    b.add((xc + xr) / 2 + 4 * f, yb, "h", w=bw).add(xr, 240, "v")
+    arm_top(b, xr, 1, m, False, counter)
+    b.nodes[-2]["seg"] = "line"
     w = lsb * 2 + body
-    return spec(round(w), [a.outline(), b.outline()], anchors={"top": (xc, X)})
+    return spec(round(w), [a.outline(start_cut=("y", X)), b.outline(end_cut=("y", X))], anchors={"top": (xc, X)})
 
 
 @glyph("nu", 0x03BD)
@@ -718,7 +834,7 @@ def Phi(m):
     x0, x1 = lsb, lsb + body
     cs = ring(m, x0, 92, x1, 628, V=V, H=H, caps=True)
     xc = (x0 + x1) / 2
-    inner = m.SH * (0.86 if m.bold else 0.94)
+    inner = m.SH * (0.80 if m.bold else 0.94)
     cs.append(rect(xc - m.SH / 2, 0, xc + m.SH / 2, 92 + H / 2))
     cs.append(rect(xc - inner / 2, 92 + H / 4, xc + inner / 2, 628 - H / 4))
     cs.append(rect(xc - m.SH / 2, 628 - H / 2, xc + m.SH / 2, CAP))
@@ -730,12 +846,12 @@ def Phi(m):
 def Psi(m):
     f = m.wf
     lsb = m.lsb_H - 10 * f
-    body = (0.98 + 0.04 * m.bold + 0.06 * (m.cond and m.bold)) * m.O_out.w
-    V = m.SO * (0.92 if m.bold else 1.0)
+    body = (0.98 + 0.04 * m.bold + 0.16 * (m.cond and m.bold)) * m.O_out.w
+    V = m.SO * ((0.86 if m.cond else 0.92) if m.bold else 1.0)
     xl, xr = lsb + V / 2, lsb + body - V / 2
     xc = (xl + xr) / 2
     u = u_shape(m, xl, xr, CAP, 420, 196, caps=True, bottom_w=0.80 if m.bold else 0.9, V=V)
-    st = m.SH * (0.92 if m.bold else 1.0)
+    st = m.SH * ((0.84 if m.cond else 0.92) if m.bold else 1.0)
     stem = rect(xc - st / 2, 0, xc + st / 2, CAP)
     w = lsb * 2 + body
     return spec(round(w), [u, stem], anchors={"top": (xc, CAP)})
@@ -743,6 +859,9 @@ def Psi(m):
 
 @glyph("Omega", 0x03A9)
 def Omega(m):
+    """O's bowl, open at the bottom: its sides turn in below the middle and
+    run on, still curving, into the feet. The legs taper a little from the
+    bowl and never stand upright, so there is no knee and no swell."""
     f = m.wf
     lsb = m.O_out.x0
     body = m.O_out.w
@@ -750,18 +869,28 @@ def Omega(m):
     xl, xr = x0 + m.SO / 2, x1 - m.SO / 2
     xc = (xl + xr) / 2
     top = CAP + OV - m.HO / 2
-    gap = 0.25 * body
-    xa, xb = xc - (gap + m.SO) / 2, xc + (gap + m.SO) / 2
+    leg = 0.86 if m.bold else 0.92
+    # the feet stand a third of the counter apart, in every width
+    gap = 0.36 * (body - 2 * m.SO)
+    lw = leg * m.SO
+    xa, xb = xc - (gap + lw) / 2, xc + (gap + lw) / 2
+    ymid = 330 + 30 * m.cond
+    # the legs reach the feet leaning in, as far as the bowl has come in
+    lean = 0.62 * math.degrees(math.atan((xa - xl) / ymid))
+    ext = 30
+    dx = ext * math.tan(math.radians(lean))
     s = stroke(m, caps=True)
-    s.add(xa, 0, "v").add(xa, 96, "v", seg="line").add(xl, 420, "v").add(xc, top, "h")
-    s.add(xr, 420, "v").add(xb, 96, "v").add(xb, 0, "v", seg="line")
-    arc = s.outline()
+    s.add(xa + dx, -ext, 90 + lean, w=leg, k=0.50)
+    s.add(xl, ymid, "v", k=0.56)
+    s.add(xc, top, "h").add(xr, ymid, "v", k=0.56)
+    s.add(xb - dx, -ext, 90 - lean, w=leg, k=0.50)
+    arc = s.outline(start_cut=("y", 0), end_cut=("y", 0))
+    xs = crossings(arc, 0.5)
     foot = m.EB
-    fl = rect(x0 + 6 * f, 0, xa + m.SO / 2, foot)
-    fr = rect(xb - m.SO / 2, 0, x1 - 6 * f, foot)
+    fl = rect(x0 + 6 * f, 0, xs[1], foot)
+    fr = rect(xs[-2], 0, x1 - 6 * f, foot)
     w = x1 + lsb
     return spec(round(w), [arc, fl, fr], anchors={"top": (xc, CAP)})
-
 
 
 # =====================================================================
@@ -857,6 +986,21 @@ def flatten(contour, steps=12):
         else:
             out.append(tuple(pts[-1][:2]))
     return out
+
+
+def crossings(contours, y):
+    """Every x where the outline crosses the horizontal line y, sorted."""
+    if contours and isinstance(contours[0][0], (int, float)):
+        contours = [contours]
+    xs = []
+    for c in contours:
+        poly_ = flatten(c)
+        n = len(poly_)
+        for i in range(n):
+            (x0, y0), (x1, y1) = poly_[i], poly_[(i + 1) % n]
+            if (y0 - y) * (y1 - y) <= 0 and y0 != y1:
+                xs.append(x0 + (y - y0) * (x1 - x0) / (y1 - y0))
+    return sorted(xs)
 
 
 def span_at(contours, y):
@@ -990,8 +1134,17 @@ def dieresistonos_glyph(ss01=False):
         x0, x1 = dieresistonos_ink(m)
         sb = 50 * m.wf
         d = sb - x0
-        return spec(round(x1 - x0 + 2 * sb), [translate(sh, d, 0)],
-                    components=[(n, dx + d, dy) for n, dx, dy in comps])
+        # the dots are drawn in, not referenced: Condensed Bold's heavy square
+        # dots crowd the tonos between them, so they shrink a little there
+        k = 0.92 if m.cond and m.bold else 1.0
+        dots = []
+        for n, dx, dy in comps:
+            for c in m.c(n):
+                b = Bounds(c)
+                cx, cy = (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2
+                c = transform(c, lambda x, y: (cx + (x - cx) * k, cy + (y - cy) * k))
+                dots.append(translate(c, dx + d, dy))
+        return spec(round(x1 - x0 + 2 * sb), [translate(sh, d, 0)] + dots)
     return f
 
 
@@ -1019,6 +1172,7 @@ for _n, _b, _u in [("iotadieresistonos", "iota", 0x0390), ("upsilondieresistonos
 # ---------------------------------------------------------------- capitals with tonos
 
 CAP_TONOS_TOP = 736
+UPSILON_TONOS_DROP = 58
 
 
 def cap_tonos_shift(m, base, sb, dy, ref=None):
@@ -1095,6 +1249,11 @@ for _n, _b, _u in [("Alphatonos", "Alpha", 0x0386), ("Epsilontonos", "Epsilon", 
             # letters whose side falls away under the tonos (Υ's arm, Α's
             # diagonal) match Ε's mean white instead
             ref = cap_tonos_ref(m, sb, dy) if base in ("Upsilon", "Alpha") else None
+            if base == "Upsilon":
+                # Υ's arm tip stands at cap height and its side runs away
+                # below: the tonos drops beside the arm, its top under the
+                # tip, so the letter can come in to Ε's white
+                dy -= UPSILON_TONOS_DROP
             shift = cap_tonos_shift(m, base, sb, dy, ref)
             return spec(round(glyph_width(m, base) + shift), components=[("tonos", dx, dy), (base, shift, 0)])
         return f
@@ -1134,6 +1293,25 @@ def numeral_greek(m):
 def lowernumeral_greek(m):
     t = tonos(m)
     return spec(t["width"] - 30 * m.wf, components=[("tonos", -15 * m.wf, -TONOS_BOTTOM - 150)])
+
+
+# ---------------------------------------------------------------- symbols beside the Greek
+
+@glyph("micro", 0x00B5)
+def micro(m):
+    """MICRO SIGN (µs, µm): the Greek μ."""
+    return spec(glyph_width(m, "mu"), components=[("mu", 0, 0)])
+
+
+@glyph("horizontalbar", 0x2015)
+def horizontalbar(m):
+    """HORIZONTAL BAR, the Greek dialogue dash: the em dash."""
+    return spec(m.width("emdash"), components=[("emdash", 0, 0)])
+
+
+@glyph("horizontalbar.case")
+def horizontalbar_case(m):
+    return spec(m.width("emdash.case"), components=[("emdash.case", 0, 0)])
 
 
 # =====================================================================

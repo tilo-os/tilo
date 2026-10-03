@@ -19,8 +19,8 @@
     <contour>
       <point x="36" y="0" type="line"/>
       <point x="692" y="0" type="line"/>
-      <point x="692" y="72" type="line"/>
-      <point x="36" y="72" type="line"/>
+      <point x="664" y="72" type="line"/>
+      <point x="64" y="72" type="line"/>
     </contour>
   </outline>
 </glyph>

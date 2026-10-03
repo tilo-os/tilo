@@ -700,6 +700,10 @@
     <string>h.glif</string>
     <key>hbar</key>
     <string>hbar.glif</string>
+    <key>horizontalbar</key>
+    <string>horizontalbar.glif</string>
+    <key>horizontalbar.case</key>
+    <string>horizontalbar.case.glif</string>
     <key>hungarumlaut</key>
     <string>hungarumlaut.glif</string>
     <key>hungarumlautcomb</key>
@@ -804,6 +808,8 @@
     <string>macron.glif</string>
     <key>macroncomb</key>
     <string>macroncomb.glif</string>
+    <key>micro</key>
+    <string>micro.glif</string>
     <key>minus</key>
     <string>minus.glif</string>
     <key>minus.tf</key>

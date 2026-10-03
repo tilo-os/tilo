@@ -266,8 +266,32 @@ class Stroke:
         return ccw(pts)
 
 
+def _line_cut(seg, cut):
+    """A cut along an arbitrary line: ('line', (px, py), angle in degrees).
+    Rotates the segment so the line is horizontal and cuts at y=0."""
+    _, (px, py), ang = cut
+    a = math.radians(ang)
+    c, s = math.cos(a), math.sin(a)
+    # rotate by -a about p: the line becomes the x-axis
+    rot = [((x - px) * c + (y - py) * s, -(x - px) * s + (y - py) * c) for x, y in (q[:2] for q in seg[1])]
+    return rot, (c, s, px, py)
+
+
 def trim_segment(seg, cut, keep):
     kind, p = seg
+    if cut[0] == "line":
+        rot, (c, s, px, py) = _line_cut(seg, cut)
+        if kind == "line":
+            a, b = rot
+            t = a[1] / (a[1] - b[1])
+        else:
+            t = cubic_t_at(*rot, 1, 0.0)
+        if kind == "line":
+            a, b = p
+            m = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            return ("line", [m, b]) if keep == "end" else ("line", [a, m])
+        s0, s1 = split(*p, t)
+        return ("curve", list(s1)) if keep == "end" else ("curve", list(s0))
     axis = 0 if cut[0] == "x" else 1
     if kind == "line":
         a, b = p

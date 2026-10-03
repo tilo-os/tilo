@@ -13,12 +13,22 @@ the outlines. Rerunning it replaces every Greek group membership and pair.
    would fall through to 0. Every Greek pair (Greek-Greek and Greek against
    punctuation) is compared with the value its Latin analogues get, and any
    difference is written as a glyph pair, in every master.
-3. A few pairs differ on purpose (OVERRIDES), and the capitals with a tonos
-   keep the tonos clear of a preceding T-like arm.
-4. Collision guard: in every master the outlines of each Greek letter pair,
+3. A few pairs differ on purpose (OVERRIDES): the capitals with a tonos keep
+   the tonos clear of a preceding T-like arm, and let it hang into the space
+   after an opening bracket, quote or guillemet.
+4. Where a Greek side is only partly like its analogue, the pair is set from
+   the outlines against the analogue's white (`optical`): ζ ξ before
+   lowercase take c's white plus a little; υ ω before ν γ χ take u's white
+   before v and x; Γ's long arm closes over x-height letters to the white T's
+   arm keeps; an x-height bar (π σ on the right, π τ on the left) keeps at
+   least the white between two t's bars.
+5. Collision guard: in every master the outlines of each Greek letter pair,
    after kerning, must stay at least as far apart as nearly every Latin
    letter pair does (the 2nd percentile of Latin pair distances, x0.55, in that
    master). Pairs closer than that are opened up.
+6. Punctuation guard: a Greek letter beside punctuation (brackets, quotes,
+   slash, figures) keeps at least 70% of the distance its Latin analogue
+   keeps there; only negative kerning is taken back.
 
     uv run vendor/fonts/tilo-sans/scripts/greek/kern.py [--report]
 """
@@ -71,6 +81,8 @@ ANALOG = {
     "iotadieresistonos": ("t", "idieresis"), "upsilondieresistonos": ("o", "udieresis"),
     # punctuation
     "questiongreek": ("semicolon", "semicolon"), "anoteleia": ("period", "period"),
+    # symbols drawn from the Greek
+    "micro": ("u", "u"), "horizontalbar": ("emdash", "emdash"), "horizontalbar.case": ("emdash.case", "emdash.case"),
 }
 # round-dot variants kern like their base
 for _g in list(ANALOG):
@@ -82,8 +94,8 @@ ANALOG["anoteleia.ss01"] = ("period.ss01", "period.ss01")
 TONOS_CAPS = ["Alphatonos", "Epsilontonos", "Etatonos", "Iotatonos", "Omicrontonos", "Upsilontonos", "Omegatonos"]
 # (left, right): value at Regular weight and width, scaled per master by o's width
 OVERRIDES = {
-    ("kappa", "lambda"): 10,   # κλ: κ's foot and λ's foot sit side by side on the baseline
     ("phi", "chi"): 0, ("phi", "lambda"): 0,  # φ's bowl is wider than o
+    ("lambda", "rho"): 0,  # λ's foot stands where ρ's stem crosses the baseline
 }
 # a T-like arm level with the bar of ζ and ξ: keep the two bars apart
 for _l in ("Tau", "Gamma", "Upsilon", "Upsilondieresis"):
@@ -93,6 +105,12 @@ for _l in ("Tau", "Gamma", "Upsilon", "Upsilondieresis"):
 for _l, _v in (("Tau", 40), ("Gamma", 40), ("Upsilon", 40), ("Psi", 30), ("Rho", 20)):
     for _r in TONOS_CAPS:
         OVERRIDES[(_l, _r)] = _v
+# an opening bracket, quote or guillemet before a capital with tonos: the
+# tonos may hang into the space, or the letter sits visibly apart («Έκθεση)
+for _l in ("parenleft", "parenleft.case", "bracketleft", "bracketleft.case", "braceleft", "braceleft.case",
+           "quoteleft", "quotedblleft", "guillemetleft", "guilsinglleft"):
+    for _r in TONOS_CAPS:
+        OVERRIDES[(_l, _r)] = -45
 
 GREEK = set(ANALOG)
 
@@ -215,6 +233,140 @@ def latin_floor(prof, kern, names):
     return 0.55 * float(np.percentile(ds, 2))
 
 
+# ---------------------------------------------------------------- optical rules
+
+X, CAP = 510, 720
+
+
+def rows(prof, name, y0, y1):
+    Y, lo, hi, w = prof.get(name)
+    sel = (Y >= y0) & (Y <= y1)
+    return Y[sel], lo[sel], hi[sel], w
+
+
+def gap_same(prof, a, b, kern, y0, y1):
+    """Narrowest white between a and b, set as a pair, measured level (the
+    same height on both sides) within y0..y1. None if they share no height."""
+    ya, _, ra, wa = rows(prof, a, y0, y1)
+    yb, lb, _, _ = rows(prof, b, y0, y1)
+    common = np.intersect1d(ya, yb)
+    if not len(common):
+        return None
+    return float((lb[np.isin(yb, common)] + wa + kern - ra[np.isin(ya, common)]).min())
+
+
+def gap_bands(prof, a, b, kern, band_a, band_b):
+    """White from a's rightmost ink within band_a to b's leftmost within band_b
+    (a T-like arm over a lowercase letter)."""
+    ya, _, ra, wa = rows(prof, a, *band_a)
+    yb, lb, _, _ = rows(prof, b, *band_b)
+    if not len(ya) or not len(yb):
+        return None
+    return float(lb.min() + wa + kern - ra.max())
+
+
+def bar_floor(prof, latin):
+    """The white Instrument keeps between two t's crossbars at the x-height:
+    the tightest bar-to-bar meeting the Latin has."""
+    return gap_same(prof, "t", "t", latin("t", "t"), X - 100, X)
+
+
+# ζ ξ: c's right side, but their x-height body sits well left of the bar and
+# hook that set the sidebearing
+OPEN_RIGHT = ("zeta", "xi")
+# υ ω and their accented forms: o on the right against round letters, but the
+# arm rises to the x-height like u's stem
+ARM_RIGHT = ("upsilon", "omega", "upsilontonos", "omegatonos", "upsilondieresis", "upsilondieresistonos")
+DIAGONAL_LEFT = {"nu": "v", "gamma": "v", "chi": "x"}
+BAR_RIGHT = ("pi", "sigma")
+BAR_LEFT = ("pi", "tau")
+
+
+def optical(t, prof, latin, wf, letters, an):
+    lower = [g for g in letters if g[0].islower() and g not in ("micro",)]
+
+    def top(g):
+        Y, _, _, _ = prof.get(g)
+        return Y.max()
+
+    # ζ ξ before lowercase: the white of c before the same letter, and a
+    # little more (their open right side is not a bowl)
+    for a in OPEN_RIGHT:
+        for b in lower:
+            B = an(b, 2)
+            if B is None:
+                continue
+            ref = gap_same(prof, "c", B, latin("c", B), 0, X)
+            cur = gap_same(prof, a, b, 0, 0, X)
+            if ref is not None and cur is not None:
+                t[(a, b)] = min(t[(a, b)], round(ref + 40 * wf - cur))
+    # υ ω before ν γ χ: the white u keeps before v and x
+    for a in lower:
+        if a.split(".")[0] not in ARM_RIGHT:
+            continue
+        for b, B in DIAGONAL_LEFT.items():
+            ref = gap_same(prof, "u", B, latin("u", B), 0, X)
+            cur = gap_same(prof, a, b, 0, 0, X)
+            if ref is not None and cur is not None:
+                t[(a, b)] = max(t[(a, b)], round(ref - cur))
+    # Γ's arm reaches twice as far as T's right half: over an x-height letter
+    # it closes to the white T's arm keeps over the same letter; over an
+    # accented one it also keeps T's distance from the accent
+    arm = (CAP - 150, CAP)
+    for b in lower:
+        B = an(b, 2)
+        if B is None:
+            continue
+        ref = gap_bands(prof, "T", B, latin("T", B), arm, (-300, X + 20))
+        cur = gap_bands(prof, "Gamma", b, 0, arm, (-300, X + 20))
+        if ref is None or cur is None:
+            continue
+        v = round(ref - cur)
+        if top(b) > X + 20:
+            clear = prof.distance("T", B, latin("T", B))
+            while prof.distance("Gamma", b, v) < clear and v < 300:
+                v += 2
+        t[("Gamma", b)] = v
+    # a bar at the x-height (π's and σ's on the right, π's and τ's on the
+    # left) never comes closer to the next letter than t's bar comes to the
+    # next t's, or πτ πν πγ read as one stroke
+    bar = bar_floor(prof, latin)
+    for a in lower:
+        for b in lower:
+            if a not in BAR_RIGHT and b not in BAR_LEFT:
+                continue
+            g = gap_same(prof, a, b, t[(a, b)], X - 100, X)
+            if g is not None and g < bar:
+                t[(a, b)] += math.ceil(bar - g)
+
+
+OPENING = ("parenleft", "bracketleft", "braceleft", "quoteleft", "quotedblleft", "guillemetleft", "guilsinglleft")
+CLOSING = ("parenright", "bracketright", "braceright", "quoteright", "quotedblright", "guillemetright", "guilsinglright")
+
+
+def punct_guard(t, prof, latin, letters, punct, an, opened, m):
+    """Never let a Greek letter come much closer to punctuation than its
+    Latin analogue does: at least 70% of the analogue's distance. Only takes
+    back negative kerning; it never spaces wider than the plain advances."""
+    for p in punct:
+        for g in letters:
+            for a, b, A, B in ((p, g, p, an(g, 2)), (g, p, an(g, 1), p)):
+                if A is None or B is None or (a, b) not in t:
+                    continue
+                v = t[(a, b)]
+                if v >= 0:
+                    continue
+                want = 0.70 * prof.distance(A, B, latin(A, B))
+                if prof.distance(a, b, v) >= want:
+                    continue
+                nv = v
+                while nv < 0 and prof.distance(a, b, nv) < want:
+                    nv += 2
+                nv = min(nv, 0)
+                opened.append((m, a, b, v, nv, round(prof.distance(a, b, v))))
+                t[(a, b)] = nv
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -279,8 +431,11 @@ def main():
             if (a, b) in OVERRIDES:
                 v = round(OVERRIDES[(a, b)] * wf)
             t[(a, b)] = v
-        # 4. collision guard on letter pairs
         prof = Profiles(fonts[m])
+        # 4. where a Greek side differs from its Latin analogue, set the pair
+        # by the outlines against the analogue's white
+        optical(t, prof, latin, wf, letters, an)
+        # 5. collision guard on letter pairs
         floor = latin_floor(prof, latin, names)
         for a in letters:
             for b in letters:
@@ -297,6 +452,10 @@ def main():
                     nv = math.ceil(hi)
                     opened.append((m, a, b, v, nv, round(d)))
                     t[(a, b)] = nv
+        # 6. punctuation: a Greek letter beside a bracket or quote keeps most
+        # of the white its Latin analogue has there (ζ and ξ reach up and down
+        # into the bracket's curl, where c does not)
+        punct_guard(t, prof, latin, letters, punct, an, opened, m)
         targets[m] = (t, floor)
 
     # 2./3. glyph pairs wherever the groups don't already give the target, in any master

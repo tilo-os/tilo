@@ -353,11 +353,13 @@
     </array>
     <key>public.kern1.KO_endash</key>
     <array>
+      <string>horizontalbar</string>
       <string>endash</string>
       <string>emdash</string>
     </array>
     <key>public.kern1.KO_endash.case</key>
     <array>
+      <string>horizontalbar.case</string>
       <string>endash.case</string>
       <string>emdash.case</string>
     </array>
@@ -659,6 +661,7 @@
     </array>
     <key>public.kern1.KO_u</key>
     <array>
+      <string>micro</string>
       <string>alphatonos</string>
       <string>psi</string>
       <string>mu</string>
@@ -1030,11 +1033,13 @@
     </array>
     <key>public.kern2.KO_endash</key>
     <array>
+      <string>horizontalbar</string>
       <string>endash</string>
       <string>emdash</string>
     </array>
     <key>public.kern2.KO_endash.case</key>
     <array>
+      <string>horizontalbar.case</string>
       <string>endash.case</string>
       <string>emdash.case</string>
     </array>
@@ -1286,6 +1291,7 @@
     <array>
       <string>upsilondieresistonos.ss01</string>
       <string>upsilondieresis.ss01</string>
+      <string>micro</string>
       <string>upsilondieresistonos</string>
       <string>upsilondieresis</string>
       <string>omegatonos</string>
