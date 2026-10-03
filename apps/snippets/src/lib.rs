@@ -40,10 +40,12 @@
 
 pub mod actions;
 pub mod app;
+mod detail_pane;
 pub mod doc;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
+mod list_pane;
 pub mod model;
 pub mod resource;
 pub mod search_provider;
@@ -78,10 +80,12 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 /// single headless screenshot (the live `--shots` renderer paints one frame
 /// and can't reach toggled states through input). Recognised scenarios:
 ///
-/// * `"narrow"` — pair with a sub-breakpoint `--viewport` to show the
-///   primary sidebar as an open overlay flap over the content + scrim.
-/// * `"detail"` — pair with a very-narrow `--viewport` to show the
-///   single-pane push stack on the detail with its Back affordance.
+/// * `"narrow"` — pair with a narrow `--viewport` to show the sidebar as an
+///   open drawer over the content.
+/// * `"detail"` — pair with a very narrow `--viewport` to show the open
+///   snippet pushed in front of the list, with the shell's Back button.
+/// * `"expand"` — the fill-in-variables dialog over the open snippet.
+/// * `"language"`, `"more"` — the language picker or the overflow menu.
 ///
 /// An empty / unknown name yields the same frame as [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {

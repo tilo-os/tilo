@@ -1,48 +1,60 @@
-//! The expand-with-variables modal.
+//! The fill-in-variables dialog.
 //!
-//! When the user copies a snippet whose body contains `${placeholder}`
-//! variables, this modal collects a value for each one, shows a live
-//! preview of the substituted result, and copies the filled text. It is
-//! a self-contained overlay: it draws itself above the rest of the app
-//! and consumes all input while open. State is local (it's a transient
-//! per-peer flow, not part of the shared library).
+//! Copying a snippet whose body holds `${placeholder}` variables opens this
+//! dialog: one field per variable, a live preview of the filled body, and
+//! Copy. It is the toolkit's modal sheet ([`modal_dialog`]) drawn in the
+//! window's top layer; it consumes all input while open. Its values are
+//! local to this peer (a transient flow, not part of the shared library).
 
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, EventCtx, TextInput, Widget};
+use ui::tokens::TextRole;
+use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalSpec};
+use ui::widget::{ControlSize, EventCtx, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::ExpandOutcome;
-use crate::draw;
 use crate::highlight;
 use crate::model::{self, Snippet, SnippetId};
 
-/// One placeholder field: its name and the user's current value.
+/// The most preview lines the dialog shows before it elides the rest.
+const PREVIEW_LINES: usize = 8;
+
+/// The dialog's title.
+const TITLE: &str = "Fill in variables";
+
+/// One placeholder field: its name and the person's current value.
 struct Field {
     name: String,
     input: TextInput,
 }
 
+/// Where the dialog's parts landed in the last paint.
+#[derive(Default)]
+struct Geometry {
+    card: Rect,
+    /// Cancel, then Copy.
+    actions: Vec<Rect>,
+    scrim: Rect,
+    fields: Vec<Rect>,
+}
+
 pub struct ExpandModal {
     snippet_id: SnippetId,
-    title: String,
     body: String,
     language: crate::model::Language,
     fields: Vec<Field>,
     /// Index of the field with keyboard focus.
     focused: usize,
-    /// Hit regions recorded each draw: (rect, which field index, or
-    /// sentinel for the buttons). Resolved on click.
-    field_rects: Vec<Rect>,
-    copy_rect: Rect,
-    cancel_rect: Rect,
+    pointer: Point,
+    geometry: Geometry,
 }
 
 impl ExpandModal {
@@ -53,9 +65,8 @@ impl ExpandModal {
             .map(|name| Field {
                 input: TextInput::local()
                     .with_id(&format!("snippets.expand.field.{name}"))
-                    .with_placeholder("type a value…")
-                    .with_font_size(13.0)
-                    .with_plain_chrome(),
+                    .with_placeholder("Value")
+                    .with_text_role(TextRole::Code),
                 name,
             })
             .collect();
@@ -64,14 +75,12 @@ impl ExpandModal {
         }
         Self {
             snippet_id: s.id,
-            title: s.title.clone(),
             body: s.body.clone(),
             language: s.language,
             fields,
             focused: 0,
-            field_rects: Vec::new(),
-            copy_rect: Rect::ZERO,
-            cancel_rect: Rect::ZERO,
+            pointer: Point::ZERO,
+            geometry: Geometry::default(),
         }
     }
 
@@ -87,285 +96,185 @@ impl ExpandModal {
         model::expand(&self.body, &self.values())
     }
 
-    /// True once every field has a non-empty value.
-    fn all_filled(&self) -> bool {
-        self.fields
-            .iter()
-            .all(|f| !f.input.value().trim().is_empty())
+    /// The sheet's panel, for the host's modal capture.
+    pub fn card_rect(&self) -> Rect {
+        self.geometry.card
     }
 
-    /// Render the modal. The modal records its own button/field hit
-    /// regions internally (the panes beneath are inert while it's open).
+    fn actions(&self) -> [ModalAction<'static>; 2] {
+        let hovered = |index: usize| {
+            self.geometry
+                .actions
+                .get(index)
+                .is_some_and(|rect| rect.contains(self.pointer))
+        };
+        [
+            ModalAction::secondary("Cancel").hovered(hovered(0)),
+            ModalAction::primary("Copy").hovered(hovered(1)),
+        ]
+    }
+
+    /// The label column: wide enough for the longest variable name, never
+    /// more than a third of the body.
+    fn label_width(&self, text: &mut TextRenderer, theme: &Theme, body_w: f64) -> f64 {
+        let style = theme.text(TextRole::Code);
+        self.fields
+            .iter()
+            .map(|f| f64::from(text.measure_style(&f.name, None, &style).0))
+            .fold(0.0, f64::max)
+            .min(body_w / 3.0)
+            .ceil()
+    }
+
+    fn body_height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let field_h = ControlSize::Regular.height(theme);
+        let rows = self.fields.len() as f64;
+        let fields = rows * field_h + (rows - 1.0).max(0.0) * f64::from(rhythm.sibling);
+        let heading = f64::from(
+            text.measure_style("Ag", None, &theme.text(TextRole::Subheading))
+                .1,
+        );
+        fields
+            + f64::from(rhythm.group)
+            + heading
+            + f64::from(rhythm.related)
+            + self.preview_height(theme)
+    }
+
+    fn preview_height(&self, theme: &Theme) -> f64 {
+        let line = f64::from(theme.text(TextRole::Code).line_height_px());
+        let lines = self.preview().lines().count().clamp(1, PREVIEW_LINES);
+        lines as f64 * line + f64::from(theme.tokens.spacing.s3) * 2.0
+    }
+
+    /// Paint the dialog over `window` and record where its parts landed.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
         t: Affine,
-        tr: &mut TextRenderer,
+        text: &mut TextRenderer,
         theme: &Theme,
-        area: Rect,
+        window: Rect,
     ) {
-        let panel = Self::draw_frame(scene, t, theme, area);
-        let pad = 24.0;
-        let y = self.draw_header(scene, t, tr, theme, panel, pad);
-        let y = self.draw_fields(scene, t, tr, theme, panel, pad, y);
-        self.draw_preview(scene, t, tr, theme, panel, pad, y);
-        self.draw_buttons(scene, t, tr, theme, panel, pad);
+        let actions = self.actions();
+        let spec = ModalSpec::new(TITLE)
+            .closable(false)
+            .actions(&actions)
+            .body_height(self.body_height(text, theme));
+        let layout = modal_dialog::layout(window, &spec, text, theme);
+        modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
+
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let body = layout.body;
+        let field_h = ControlSize::Regular.height(theme);
+        let label_w = self.label_width(text, theme, body.width());
+        let field_x = body.x0 + label_w + f64::from(rhythm.section);
+        let mut y = body.y0;
+        self.geometry.fields.clear();
+        for field in &mut self.fields {
+            let row = Rect::new(body.x0, y, body.x1, y + field_h);
+            PaintCtx::new(scene, t, text, &ink).text_role_in_band(
+                &field.name,
+                TextRole::Code,
+                ink.text_primary,
+                row.x0,
+                row,
+                Some(label_w as f32),
+            );
+            let rect = Rect::new(field_x, row.y0, body.x1, row.y1);
+            field.input.apply_layout_external(rect);
+            field
+                .input
+                .draw(scene, t, text, &ink, &ui::presence::PresenceCtx::empty());
+            self.geometry.fields.push(rect);
+            y = row.y1 + f64::from(rhythm.sibling);
+        }
+        if !self.fields.is_empty() {
+            y -= f64::from(rhythm.sibling);
+        }
+
+        // The filled body, as it will be copied.
+        y += f64::from(rhythm.group);
+        let mut ctx = PaintCtx::new(scene, t, text, &ink);
+        ctx.text_role(
+            "Preview",
+            TextRole::Subheading,
+            ink.text_primary,
+            Point::new(body.x0, y),
+            None,
+        );
+        y += ctx.line_box(TextRole::Subheading) + f64::from(rhythm.related);
+        let well = Rect::new(
+            body.x0,
+            y,
+            body.x1,
+            (y + self.preview_height(theme)).min(body.y1),
+        );
+        self.paint_preview(scene, t, text, theme, well);
+
+        modal_dialog::paint_actions(scene, t, text, theme, &layout, &spec);
+        self.geometry.card = layout.card;
+        self.geometry.scrim = layout.scrim;
+        self.geometry.actions = layout.actions;
     }
 
-    /// Scrim + the panel's background and border. Returns the panel rect
-    /// every other section draws relative to.
-    fn draw_frame(scene: &mut Scene, t: Affine, theme: &Theme, area: Rect) -> Rect {
-        let c = &theme.tokens.colors;
-        // Scrim.
-        draw::fill_rect(scene, t, area, c.surfaces.overlay);
-
-        // Panel centred horizontally, biased toward the top.
-        let pw = 640.0_f64.min(area.width() - 80.0);
-        let ph = 520.0_f64.min(area.height() - 80.0);
-        let px = area.x0 + (area.width() - pw) / 2.0;
-        let py = area.y0 + (area.height() - ph) / 2.0;
-        let panel = Rect::new(px, py, px + pw, py + ph);
-        // Panel role (HIG §9.5): the modal's ground and its derived border,
-        // shared with every other floating panel on the desktop.
-        draw::fill_round(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            ui::chrome::panel_ground(theme),
-        );
-        draw::stroke_edge(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            ui::chrome::panel_border(theme),
-        );
-        panel
-    }
-
-    /// The "Fill in variables" title and the snippet's own title beneath
-    /// it. Returns the y cursor for the next section.
-    fn draw_header(
+    fn paint_preview(
         &self,
         scene: &mut Scene,
         t: Affine,
-        tr: &mut TextRenderer,
+        text: &mut TextRenderer,
         theme: &Theme,
-        panel: Rect,
-        pad: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let mut y = panel.y0 + pad;
-
-        PaintCtx::new(scene, t, tr, theme).text(
-            "Fill in variables",
-            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-            Point::new(panel.x0 + pad, y),
-            None,
-        );
-        y += 24.0;
-        PaintCtx::new(scene, t, tr, theme).text(
-            &self.title,
-            &TextStyle::new(13.0),
-            c.text_dim,
-            Point::new(panel.x0 + pad, y),
-            None,
-        );
-        y + 30.0
-    }
-
-    /// One labelled input row per placeholder, or a "no variables" note
-    /// when the snippet has none. Records `field_rects` for hit-testing
-    /// and returns the y cursor for the next section.
-    fn draw_fields(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        pad: f64,
-        mut y: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        self.field_rects.clear();
-        let label_w = 130.0;
-        for (i, f) in self.fields.iter_mut().enumerate() {
-            let row_y = y;
-            // Label as ${name}.
-            let lbl = format!("${{{}}}", f.name);
-            PaintCtx::new(scene, t, tr, theme).text(
-                &lbl,
-                &draw::mono_style(13.0, TextWeight::Semibold),
-                c.accent[5],
-                Point::new(panel.x0 + pad, row_y + 7.0),
-                None,
-            );
-            // Input box.
-            let input = Rect::new(
-                panel.x0 + pad + label_w,
-                row_y,
-                panel.x1 - pad,
-                row_y + 30.0,
-            );
-            let focused = i == self.focused;
-            ui::surface::card(
-                scene,
-                t,
-                input,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-            if focused {
-                draw::stroke_round(
-                    scene,
-                    t,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    c.border_focus,
-                    1.5,
-                );
-            }
-            // The modal keeps its established label/box chrome; the shared
-            // editor owns only the inset content and interaction behaviour.
-            f.input.apply_layout_external(Rect::new(
-                input.x0 + 10.0,
-                input.y0,
-                input.x1 - 10.0,
-                input.y1,
-            ));
-            f.input
-                .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
-            self.field_rects.push(input);
-            y += 40.0;
-        }
-
-        if self.fields.is_empty() {
-            PaintCtx::new(scene, t, tr, theme).text(
-                "This snippet has no variables.",
-                &TextStyle::new(13.0),
-                c.text_dim,
-                Point::new(panel.x0 + pad, y),
-                None,
-            );
-            y += 30.0;
-        }
-        y
-    }
-
-    /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
-    fn draw_preview(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        pad: f64,
-        mut y: f64,
+        well: Rect,
     ) {
-        let c = &theme.tokens.colors;
-        // Live preview header.
-        y += 4.0;
-        PaintCtx::new(scene, t, tr, theme).text(
-            "PREVIEW",
-            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
-            c.text_dim,
-            Point::new(panel.x0 + pad, y),
-            None,
-        );
-        y += 18.0;
-
-        // Preview card with highlighted, substituted body.
-        let card = Rect::new(panel.x0 + pad, y, panel.x1 - pad, panel.y1 - 72.0);
+        let ground = theme.tokens.colors.surfaces.raised;
         ui::surface::card(
             scene,
             t,
-            card,
-            f64::from(theme.tokens.radii.md),
-            c.neutral[0],
+            well,
+            f64::from(theme.tokens.radii.control),
+            ground,
         );
+        let ink = theme.on_ground(ground);
+        let code = theme.text(TextRole::Code);
+        let line = f64::from(code.line_height_px());
+        let pad = f64::from(theme.tokens.spacing.s3);
         let preview = self.preview();
-        let mut cy = card.y0 + 12.0;
-        for spans in highlight::highlight_lines(&preview, self.language) {
-            if cy > card.y1 - 18.0 {
+        let mut ctx = PaintCtx::new(scene, t, text, &ink);
+        let mut y = well.y0 + pad;
+        for spans in highlight::highlight_lines(&preview, self.language).take(PREVIEW_LINES) {
+            if y + line > well.y1 {
                 break;
             }
-            let mut sx = card.x0 + 14.0;
+            let mut x = well.x0 + pad;
             for span in spans {
-                let color = theme.tokens.syntax.color(span.kind);
-                PaintCtx::new(scene, t, tr, theme).text(
-                    &span.text,
-                    &draw::mono_style(13.0, TextWeight::Regular),
-                    color,
-                    Point::new(sx, cy),
+                if x >= well.x1 - pad {
+                    break;
+                }
+                let max = (well.x1 - pad - x) as f32;
+                let shown = ctx.text.elide_to_width_style(&span.text, max, &code);
+                ctx.text(
+                    &shown,
+                    &code,
+                    theme.tokens.syntax.color(span.kind),
+                    Point::new(x, y),
                     None,
                 );
-                sx += draw::mono_width(tr, &span.text, 13.0);
+                x += f64::from(ctx.text.measure_style(&shown, None, &code).0);
             }
-            cy += 19.0;
+            y += line;
         }
     }
 
-    /// The Copy / Cancel buttons, right-aligned along the panel's bottom
-    /// edge. Records `copy_rect` / `cancel_rect` for hit-testing.
-    fn draw_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        pad: f64,
-    ) {
-        let by = panel.y1 - 52.0;
-        let copy_label = if self.all_filled() {
-            "Copy"
-        } else {
-            "Copy (partial)"
-        };
-        let cw = f64::from(tr.measure(copy_label, 14.0, None).0) + 36.0;
-        self.copy_rect = Rect::new(panel.x1 - pad - cw, by, panel.x1 - pad, by + 36.0);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(self.copy_rect, copy_label)
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(14.0)
-                .weight(TextWeight::Semibold)
-                .primary(),
-        );
-
-        let cancel_w = f64::from(tr.measure("Cancel", 14.0, None).0) + 36.0;
-        self.cancel_rect = Rect::new(
-            self.copy_rect.x0 - 12.0 - cancel_w,
-            by,
-            self.copy_rect.x0 - 12.0,
-            by + 36.0,
-        );
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(self.cancel_rect, "Cancel")
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(14.0)
-                .weight(TextWeight::Semibold),
-        );
-    }
-
-    /// Route a window event. Returns the modal's lifecycle outcome.
+    /// Route a window event. Returns the dialog's lifecycle outcome.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut EventCtx<'_>,
-        mouse: Point,
+        pointer: Point,
     ) -> ExpandOutcome {
+        self.pointer = pointer;
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
@@ -390,24 +299,31 @@ impl ExpandModal {
             }
         }
 
-        let left_press = matches!(
+        if matches!(
             event,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             }
-        );
-        if left_press {
-            if self.copy_rect.contains(mouse) {
-                return ExpandOutcome::Copy(self.preview(), self.snippet_id);
-            }
-            if self.cancel_rect.contains(mouse) {
-                return ExpandOutcome::Cancel;
+        ) {
+            let layout_hit = self.hit(pointer);
+            match layout_hit {
+                Some(ModalHit::Action(0) | ModalHit::Close | ModalHit::Scrim) => {
+                    return ExpandOutcome::Cancel;
+                }
+                Some(ModalHit::Action(_)) => {
+                    return ExpandOutcome::Copy(self.preview(), self.snippet_id);
+                }
+                _ => {}
             }
         }
 
-        let pointed = self.field_rects.iter().position(|r| r.contains(mouse));
+        let under = self
+            .geometry
+            .fields
+            .iter()
+            .position(|r| r.contains(pointer));
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -415,15 +331,15 @@ impl ExpandModal {
                 button: MouseButton::Left | MouseButton::Right,
                 ..
             }
-        ) && let Some(index) = pointed
+        ) && let Some(index) = under
         {
             self.focused = index;
             self.focus_field(index);
         }
 
-        // Cursor motion reaches every editor so each can maintain accurate
-        // hover/drag state. Keyboard and IME events go only to the focused
-        // field; pointer events go to the field under the pointer.
+        // Pointer motion reaches every field so each keeps its hover and
+        // drag state. Keys and IME go to the focused field; pointer events
+        // to the field under the pointer.
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             for field in &mut self.fields {
                 let mut child_handled = false;
@@ -435,7 +351,7 @@ impl ExpandModal {
                     },
                 );
             }
-        } else if let Some(index) = pointed.or_else(|| {
+        } else if let Some(index) = under.or_else(|| {
             self.fields
                 .get(self.focused)
                 .is_some_and(|f| f.input.is_focused())
@@ -454,6 +370,17 @@ impl ExpandModal {
         }
 
         ExpandOutcome::Stay
+    }
+
+    /// What `p` lands on, from the last paint.
+    fn hit(&self, p: Point) -> Option<ModalHit> {
+        if let Some(index) = self.geometry.actions.iter().position(|r| r.contains(p)) {
+            return Some(ModalHit::Action(index));
+        }
+        if self.geometry.card.contains(p) {
+            return Some(ModalHit::Card);
+        }
+        self.geometry.scrim.contains(p).then_some(ModalHit::Scrim)
     }
 
     fn focus_field(&mut self, index: usize) {
@@ -524,9 +451,16 @@ impl ExpandModal {
                 })
             })
             .collect();
+        let rect = |index: usize| {
+            self.geometry
+                .actions
+                .get(index)
+                .copied()
+                .unwrap_or(Rect::ZERO)
+        };
         for (target, label, bounds) in [
-            ("snippets.expand.copy", "Copy", self.copy_rect),
-            ("snippets.expand.cancel", "Cancel", self.cancel_rect),
+            ("snippets.expand.cancel", "Cancel", rect(0)),
+            ("snippets.expand.copy", "Copy", rect(1)),
         ] {
             children.push(
                 AccessNode::new(Role::Button)
@@ -541,7 +475,7 @@ impl ExpandModal {
         }
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(&self.title)
+                .with_name(TITLE)
                 .with_children(children),
         )
     }

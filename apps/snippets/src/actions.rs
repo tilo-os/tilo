@@ -64,7 +64,6 @@ pub fn reveal_tag_address(tag: &str) -> ActionAddress {
 pub enum SnippetsOperation {
     OpenSnippet { id: SnippetId },
     RevealTag { tag: String },
-    FocusSearch,
 }
 
 /// Decode a Snippets view operation when the type matches.
@@ -331,18 +330,7 @@ fn encode_spec(id: &str, label: &str, action: &SnippetsAction) -> ActionSpec {
 /// One-line label for a snippet resource in the palette.
 fn snippet_label(s: &Snippet) -> String {
     let t = s.title.trim();
-    let base = if t.is_empty() { "Untitled snippet" } else { t };
-    format!("{} · {}", base, s.language.label())
-}
-
-/// Library-level View ops (search focus). Document mutations live on
-/// [`crate::resource::Snippets::declarations`] / [`crate::resource::Snippets::children`].
-pub(crate) fn library_view_specs() -> Vec<ActionSpec> {
-    vec![view_operation(
-        "search",
-        "Search snippets",
-        &SnippetsOperation::FocusSearch,
-    )]
+    if t.is_empty() { "Untitled snippet" } else { t }.to_string()
 }
 
 /// Document-derived children for [`tilo_resource::publish`]: tags and snippets.

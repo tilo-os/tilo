@@ -12,10 +12,13 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
+use ui::paint::PaintCtx;
+use ui::tokens::TextRole;
+use ui::widget::{PropertyListFace, PropertyRow};
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
@@ -175,67 +178,67 @@ impl HistoryPreview for SnippetsPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
+        let spacing = &theme.tokens.spacing;
+        let gutter = f64::from(spacing.rhythm.group);
+        let width = (self.bounds.width() - gutter * 2.0).max(1.0);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
-        let x = self.bounds.x0 + 20. - self.view.scroll.0;
-        let mut y = self.bounds.y0 + 20. - self.view.scroll.1;
-        if let Some(s) = self
+        let x = self.bounds.x0 + gutter - self.view.scroll.0;
+        let mut y = self.bounds.y0 + gutter - self.view.scroll.1;
+        let snippet = self
             .snippets
             .iter()
-            .find(|s| Some(s.id.to_string()) == self.view.page)
-        {
-            for (line, size) in [
-                (&s.title, 24.),
-                (
-                    &format!(
-                        "{} · {} · {}",
-                        s.language.label(),
-                        s.folder,
-                        s.tags.join(", ")
-                    ),
-                    14.,
-                ),
-                (&s.description, 14.),
-                (
-                    &format!("Favorite: {} · Recorded uses: {}", s.favorite, s.uses),
-                    12.,
-                ),
-            ] {
-                let width = (self.bounds.width() - 40.).max(1.) as f32;
-                tr.draw_text(
-                    scene,
-                    line,
-                    size,
-                    theme.text_primary,
-                    t * Affine::translate((x, y)),
-                    Some(width),
+            .find(|s| Some(s.id.to_string()) == self.view.page);
+        if let Some(s) = snippet {
+            let mut ctx = PaintCtx::new(scene, t, tr, theme);
+            ctx.text_role(
+                &s.title,
+                TextRole::Title,
+                theme.text_primary,
+                Point::new(x, y),
+                Some(width as f32),
+            );
+            y += ctx
+                .measure_role(&s.title, TextRole::Title, Some(width as f32))
+                .height
+                + f64::from(spacing.rhythm.section);
+            let facts = facts(s);
+            let rows: Vec<PropertyRow<'_>> = facts
+                .iter()
+                .map(|(label, value)| PropertyRow::new(label, value))
+                .collect();
+            let list = PropertyListFace::new(&rows);
+            let height = list.height(ctx.text, theme, width);
+            list.paint(&mut ctx, Rect::new(x, y, x + width, y + height));
+            y += height + f64::from(spacing.rhythm.section);
+            if !s.description.trim().is_empty() {
+                ctx.text_role(
+                    &s.description,
+                    TextRole::Body,
+                    theme.text_dim,
+                    Point::new(x, y),
+                    Some(width as f32),
                 );
-                y += f64::from(tr.measure(line, size, Some(width)).1) + 12.;
+                y += ctx
+                    .measure_role(&s.description, TextRole::Body, Some(width as f32))
+                    .height
+                    + f64::from(spacing.rhythm.section);
             }
-            // The code body's line pitch at the current text scale — the same
-            // rule the live app's metrics use — so the card holds its lines at
-            // 2x; the card keeps its 24 px-per-line allowance at 1x.
-            let line_h =
-                crate::app::BODY_LINE + crate::draw::line_growth(tr, crate::app::BODY_FONT);
-            let pitch = 24. + (line_h - crate::app::BODY_LINE);
-            let height = (s.body.lines().count() as f64 * pitch + 40.).max(80.);
-            crate::app::SnippetsApp::draw_code(
+            let height = crate::draw::code_height(theme, s);
+            crate::draw::paint_code(
                 scene,
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, (self.bounds.x1 - 20.).max(x + 2000.), y + height),
+                Rect::new(x, y, x + width, y + height),
                 s,
-                line_h,
             );
         } else {
-            tr.draw_text(
-                scene,
-                "No snippets in this historical version",
-                18.,
-                theme.tokens.colors.text_dim,
-                t * Affine::translate((x, y)),
-                Some((self.bounds.width() - 40.) as f32),
+            PaintCtx::new(scene, t, tr, theme).text_role(
+                "No snippets in this version",
+                TextRole::Body,
+                theme.text_dim,
+                Point::new(x, y),
+                Some(width as f32),
             );
         }
         scene.pop_layer();
@@ -255,19 +258,17 @@ impl HistoryPreview for SnippetsPreview {
                 .iter()
                 .find(|s| Some(s.id.to_string()) == self.view.page)
                 .map_or_else(
-                    || "No snippets in this historical version".into(),
+                    || "No snippets in this version".into(),
                     |s| {
-                        format!(
-                            "{}\n{} · {} · {}\n{}\n{}\nFavorite: {} · Recorded uses: {}",
-                            s.title,
-                            s.language.label(),
-                            s.folder,
-                            s.tags.join(", "),
-                            s.description,
-                            s.body,
-                            s.favorite,
-                            s.uses
-                        )
+                        let mut lines = vec![s.title.clone()];
+                        lines.extend(
+                            facts(s)
+                                .into_iter()
+                                .map(|(label, value)| format!("{label}: {value}")),
+                        );
+                        lines.push(s.description.clone());
+                        lines.push(s.body.clone());
+                        lines.join("\n")
                     },
                 ),
             pages: self
@@ -277,6 +278,29 @@ impl HistoryPreview for SnippetsPreview {
                 .collect(),
         }
     }
+}
+
+/// A past version's facts, as label and value.
+fn facts(s: &crate::model::Snippet) -> Vec<(&'static str, String)> {
+    let mut facts = vec![("Language", s.language.label().to_string())];
+    if !s.folder.is_empty() {
+        facts.push(("Folder", s.folder.clone()));
+    }
+    if !s.tags.is_empty() {
+        facts.push(("Tags", s.tags.join(", ")));
+    }
+    facts.push((
+        "Favorite",
+        if s.favorite { "Yes" } else { "No" }.to_string(),
+    ));
+    facts.push((
+        "Copied",
+        ui::i18n::I18nManager::format(
+            "snippets-uses",
+            &[("count", ui::i18n::ArgValue::Number(f64::from(s.uses)))],
+        ),
+    ));
+    facts
 }
 
 // Closed, local navigation only. The host owns the accessible page controls at
