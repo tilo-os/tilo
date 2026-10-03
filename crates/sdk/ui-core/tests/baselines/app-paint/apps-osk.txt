@@ -1,0 +1,13 @@
+# The app-paint ratchet for apps-osk: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/osk/src/emoji_panel.rs desktop_ground 2
+apps/osk/src/emoji_panel.rs legacy_alias 1
+apps/osk/src/emoji_panel.rs raw_paint 5
+apps/osk/src/framework_history.rs legacy_alias 1
+apps/osk/src/framework_history.rs raw_paint 1
+apps/osk/src/layout.rs glyph_icon 6
+apps/osk/src/presentation.rs desktop_ground 2
+apps/osk/src/presentation.rs raw_paint 12
+apps/osk/src/toolbar.rs glyph_icon 1
+apps/osk/src/visual_review.rs desktop_ground 1
