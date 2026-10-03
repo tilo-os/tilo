@@ -1403,7 +1403,7 @@ impl<Row> DataTable<Row> {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tier_on(tokens.colors.surfaces.base, ZEBRA_ALPHA),
+                    tier_on(tokens.colors.surfaces.content, ZEBRA_ALPHA),
                     None,
                     &row_rect,
                 );
@@ -1995,7 +1995,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.surfaces.content,
             None,
             &self.rect,
         );
@@ -2484,16 +2484,16 @@ pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
-/// The fill of a selected row (HIG §9.3): the shared active tier, or the
-/// near-black floor where that tier does not register against the ground.
+/// The fill of a selected row (HIG §9.3): the selection lift of the window
+/// ground, or the near-black floor where a lift does not register.
 #[must_use]
 pub(crate) fn selection_fill(theme: &Theme) -> Color {
     use crate::a11y::relative_luminance;
-    let base = theme.tokens.colors.surfaces.base;
-    if relative_luminance(base) < NEAR_BLACK_GROUND_LUMINANCE {
-        return Colors::hairline_on(base, NEAR_BLACK_SELECTED_ALPHA);
+    let content = theme.tokens.colors.surfaces.content;
+    if relative_luminance(content) < NEAR_BLACK_GROUND_LUMINANCE {
+        return Colors::hairline_on(content, NEAR_BLACK_SELECTED_ALPHA);
     }
-    crate::chrome::selection_tier(theme, crate::chrome::SelectionState::active(true)).fill
+    theme.tokens.colors.intent.selection
 }
 
 /// Paint one selected row as the shared selection lift (HIG §9.3), never an
@@ -2546,7 +2546,7 @@ mod tier_tests {
     fn selected_rows_and_tier_hairlines_register_on_every_ground() {
         fn selected_row_fill_registers_on_every_preset() {
             for theme in presets() {
-                let base = theme.tokens.colors.surfaces.base;
+                let base = theme.tokens.colors.surfaces.content;
                 let fill = selection_fill(&theme);
                 let moved = edge_delta(fill, base);
                 assert!(
@@ -2562,7 +2562,7 @@ mod tier_tests {
         /// as a control and still carries the theme's text.
         fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
             let theme = Theme::high_contrast();
-            let base = theme.tokens.colors.surfaces.base;
+            let base = theme.tokens.colors.surfaces.content;
             let shared =
                 crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true))
                     .fill;
@@ -2589,7 +2589,7 @@ mod tier_tests {
         fn tier_on_is_plain_hairline_on_ordinary_grounds() {
             for theme in [Theme::dark(), Theme::light()] {
                 let s = &theme.tokens.colors.surfaces;
-                for ground in [s.base, s.raised] {
+                for ground in [s.content, s.raised] {
                     for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
                         assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
                     }

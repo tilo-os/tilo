@@ -1015,7 +1015,7 @@ impl NowPlayingCard {
                 transform,
                 check,
                 ui::icons::Icon::Check,
-                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                colors.intent.inverted,
                 1.5,
             );
         }

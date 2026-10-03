@@ -1272,7 +1272,7 @@ impl NotificationCenter {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            colors.intent.inverted,
             None,
             &RoundedRect::from_rect(undo, 9.0),
         );
@@ -1282,7 +1282,7 @@ impl NotificationCenter {
             scene,
             &label,
             size,
-            colors.on_accent(4.5),
+            colors.intent.on_inverted,
             transform.pre_translate(
                 (
                     undo.center().x - f64::from(w) / 2.0,

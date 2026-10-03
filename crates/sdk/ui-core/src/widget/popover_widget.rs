@@ -391,14 +391,20 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         self.recompute_layout(theme, text_renderer);
         self.place_content(theme, text_renderer);
 
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let body = self.rect;
         let shape = RoundedRect::from_rect(body, radius);
 
         // Drop shadow from the elevation token (HIG §9.3: a popover is a
         // Panel, `e4`), following the body's own radius — not four literal
         // black rings that weigh the same on a light ground.
-        crate::surface::shadow(scene, transform, body, radius, &theme.tokens.elevation.e4);
+        crate::surface::shadow(
+            scene,
+            transform,
+            body,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
 
         let fill = theme.tokens.colors.surfaces.overlay;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);

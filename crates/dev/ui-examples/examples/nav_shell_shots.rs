@@ -123,7 +123,7 @@ fn make_shell(theme: &Theme) -> NavShell {
     let detail = panel(
         theme,
         theme.bg_app,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         "Design review",
         116.0,
         &[

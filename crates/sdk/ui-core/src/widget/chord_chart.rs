@@ -268,16 +268,7 @@ impl ChordChart {
         )
     }
     fn palette(index: usize, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
-        let p = [
-            c.accent.stops[5],
-            c.semantic.success,
-            c.semantic.warning,
-            c.semantic.info,
-            c.semantic.danger,
-            c.accent.stops[7],
-        ];
-        p.get(index % p.len()).copied().unwrap_or(c.accent.stops[5])
+        theme.tokens.colors.presence.series(index)
     }
     fn hit(&self, point: Point) -> Option<ChordSelection> {
         self.node_geometry
@@ -563,7 +554,7 @@ impl Widget for ChordChart {
                 .max(self.rect.y0 + 8.0);
             let tip = RoundedRect::from_rect(
                 Rect::new(x, y, x + width, y + 64.0),
-                f64::from(theme.tokens.radii.md),
+                f64::from(theme.tokens.radii.control),
             );
             scene.fill(
                 Fill::NonZero,

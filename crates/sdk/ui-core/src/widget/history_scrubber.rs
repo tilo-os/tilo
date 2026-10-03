@@ -819,7 +819,11 @@ impl HistoryScrubber {
             // Unnamed segments step up the strip's own ramp; the declared
             // white veneers they replace were one fixed colour per theme.
             let fill = if named {
-                colors.accent[if contains_handle { 4 } else { 6 }]
+                if contains_handle {
+                    colors.intent.inverted
+                } else {
+                    colors.intent.selection
+                }
             } else if contains_handle {
                 wash(colors.surfaces.raised, WASH_MID)
             } else if i % 2 == 0 {
@@ -866,7 +870,7 @@ impl HistoryScrubber {
                 &Stroke::new(if named { 1.5 } else { 1.0 }),
                 transform,
                 if named {
-                    colors.accent[4]
+                    colors.intent.inverted_hover
                 } else {
                     wash(colors.surfaces.raised, WASH_MID)
                 },
@@ -882,7 +886,7 @@ impl HistoryScrubber {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.accent[4],
+                    colors.intent.inverted_hover,
                     None,
                     &Circle::new(Point::new(bx, band.y0 - 4.0), 2.5),
                 );
@@ -901,7 +905,7 @@ impl HistoryScrubber {
         hovered: bool,
         primary: bool,
     ) {
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(rect, radius);
         let colors = &theme.tokens.colors;
         // Primary: accent, ink chosen against it; the accent face is its own
@@ -909,12 +913,12 @@ impl HistoryScrubber {
         // Neutral: the Button Neutral rest — the strip's raised fill under a
         // derived edge — and one step up the strip's ramp on hover.
         let (fill, border, text_color) = if primary {
-            let fill = colors.accent[if hovered { 4 } else { 5 }];
-            (
-                fill,
-                None,
-                colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
-            )
+            let fill = if hovered {
+                colors.intent.inverted_hover
+            } else {
+                colors.intent.inverted
+            };
+            (fill, None, colors.intent.on_inverted)
         } else if hovered {
             let fill = wash(colors.surfaces.raised, WASH_MID);
             (
@@ -1013,7 +1017,7 @@ impl HistoryScrubber {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &active_shape,
             );
@@ -1037,7 +1041,7 @@ impl HistoryScrubber {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.inverted,
             None,
             &live_dot,
         );
@@ -1085,7 +1089,7 @@ impl HistoryScrubber {
             scene,
             transform,
             pop,
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
             theme.tokens.colors.surfaces.overlay,
         );
         let Some(entry) = self.current_entry() else {
@@ -1281,7 +1285,7 @@ impl Widget for HistoryScrubber {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.raised,
         );
 

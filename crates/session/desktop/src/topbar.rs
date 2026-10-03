@@ -2206,7 +2206,7 @@ impl TopBarChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5],
+                colors.intent.inverted,
                 None,
                 &context_rule,
             );
@@ -2234,7 +2234,7 @@ impl TopBarChrome {
             gear_rect,
             Self::WORKSPACE_SETTINGS_ICON,
             if workspace_lens_open {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_dim
             },
@@ -2307,7 +2307,7 @@ impl TopBarChrome {
             // An inactive page dot is dim ink from the semantic tier, never
             // a ramp slot (HIG §9.2).
             let color = if active {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_dim
             };
@@ -2503,7 +2503,7 @@ impl TopBarChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha(0.22),
+                theme.tokens.colors.text_primary.with_alpha(0.22),
                 None,
                 &RoundedRect::from_rect(
                     Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
@@ -2527,7 +2527,7 @@ impl TopBarChrome {
                     scene,
                     &label,
                     theme.tokens.typography.scale.xs,
-                    theme.tokens.colors.accent[5],
+                    theme.tokens.colors.intent.inverted,
                     at(transform, (x, y)),
                     None,
                 );
@@ -3401,7 +3401,7 @@ impl TopBarChrome {
                 .collaborator_colors
                 .get(i)
                 .copied()
-                .unwrap_or(colors.accent[5]);
+                .unwrap_or(colors.intent.inverted);
             ui::widget::Avatar::draw_ringed_at(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
@@ -3465,7 +3465,7 @@ impl TopBarChrome {
         let color = if controllers > 0 {
             colors.semantic.warning
         } else {
-            colors.accent[5]
+            colors.intent.inverted
         };
         let size = tokens.typography.scale.xs;
         let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
@@ -3569,7 +3569,7 @@ impl TopBarChrome {
             transform,
             colors.surfaces.raised,
             None,
-            &RoundedRect::from_rect(pill, f64::from(tokens.radii.sm)),
+            &RoundedRect::from_rect(pill, f64::from(tokens.radii.detail)),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -3904,7 +3904,7 @@ impl TopBarChrome {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.inverted,
             None,
             &vello::kurbo::Circle::new(center, radius),
         );
@@ -6560,7 +6560,7 @@ mod tests {
                 }
             }
             // The accent means live state, not "this is a CPU reading".
-            let accent = theme.tokens.colors.accent[5];
+            let accent = theme.tokens.colors.intent.inverted;
             for (k, col) in kinds.iter().zip(&c) {
                 assert_ne!(
                     col.to_rgba8().to_u32(),
@@ -6621,7 +6621,7 @@ mod tests {
             );
             assert_ne!(
                 fill.to_rgba8().to_u32(),
-                theme.tokens.colors.accent[5].to_rgba8().to_u32(),
+                theme.tokens.colors.intent.inverted.to_rgba8().to_u32(),
                 "{name}: sparkline reuses the accent"
             );
         }

@@ -36,62 +36,54 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-/// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
-/// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
-/// the id alone: two hosts painting the same room see different peer sets
-/// (everyone but themselves), so a colour derived from who's present
-/// couldn't agree across machines.
+/// Stable identity colour for a collaborator. `me`/`alice`/`bob`/`charlie`
+/// are pinned to fixed slots; everything else hashes onto [`PEER_PALETTE`].
+/// A pure function of the id alone: two hosts painting the same room see
+/// different peer sets (everyone but themselves), so a colour derived from
+/// who's present couldn't agree across machines.
+///
+/// This is the identity as it travels; paint it through
+/// `theme.tokens.colors.presence.of_rgb(..)`, which carries the hue at the
+/// active theme's presence lightness and chroma.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    match user_id {
-        "me" => (0x63, 0x66, 0xf1),      // indigo-500
-        "alice" => (0xec, 0x48, 0x99),   // pink-500
-        "bob" => (0xf9, 0x73, 0x16),     // orange-500
-        "charlie" => (0x10, 0xb9, 0x81), // emerald-500
+    let slot = match user_id {
+        "me" => 8,      // blue
+        "alice" => 11,  // pink
+        "bob" => 1,     // orange
+        "charlie" => 4, // green
         _ => {
             // FNV-1a 64-bit: cheap, deterministic, no RNG state.
             let mut hasher = fnv::FnvHasher::default();
             std::hash::Hasher::write(&mut hasher, user_id.as_bytes());
             let h = std::hash::Hasher::finish(&hasher);
-            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero; the result is
-            // always < 24, so it always fits `usize`.
+            // `PEER_PALETTE.len()` (12) is a nonzero compile-time constant,
+            // so the remainder can never divide by zero and always fits.
             let idx = h.checked_rem(PEER_PALETTE.len() as u64).unwrap_or(0);
-            let idx = usize::try_from(idx).unwrap_or(0);
-            PEER_PALETTE.get(idx).copied().unwrap_or_default()
+            usize::try_from(idx).unwrap_or(0)
         }
-    }
+    };
+    PEER_PALETTE.get(slot).copied().unwrap_or_default()
 }
 
-/// Every colour a peer can be drawn in: a closed ring of 24, not a hash over
-/// all 360 hues — uniform sampling once put `dave`, `erin` and `sara` at
-/// hues 87/89/88, three people in one indistinguishable green. Twelve hues
-/// spaced ≥26° apart, plus twelve more offset and lifted in lightness so
-/// neighbours differ in brightness too.
-pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
-    (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
-    (0xdf, 0xdc, 0x3a),
-    (0x87, 0xdf, 0x3a),
-    (0x3a, 0xdf, 0x4a),
-    (0x10, 0xb9, 0x81), // emerald-500 — pinned for "charlie"
-    (0x3a, 0xce, 0xdf),
-    (0x3a, 0x84, 0xdf),
-    (0x63, 0x66, 0xf1), // indigo-500 — pinned for "me"
-    (0x89, 0x3a, 0xdf),
-    (0xdf, 0x3a, 0xdf),
-    (0xec, 0x48, 0x99), // pink-500 — pinned for "alice"
-    (0xdf, 0x3a, 0x42),
-    (0xf4, 0xcd, 0x71),
-    (0xd1, 0xf4, 0x71),
-    (0x89, 0xf4, 0x71),
-    (0x71, 0xf4, 0xa3),
-    (0x71, 0xf4, 0xe4),
-    (0x71, 0xc8, 0xf4),
-    (0x71, 0x90, 0xf4),
-    (0x90, 0x71, 0xf4),
-    (0xd3, 0x71, 0xf4),
-    (0xf4, 0x71, 0xd3),
-    (0xf4, 0x71, 0x94),
-    (0xf4, 0x89, 0x71),
+/// Every colour a peer can be drawn in: the design language's twelve
+/// presence hues (`tokens::colors::PRESENCE_HUES`, 30° apart) at the dark
+/// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
+/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
+/// more important than another; a closed ring rather than a hash over all
+/// 360 hues, so two people never land a few degrees apart.
+pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
+    (0xf7, 0x85, 0x7d), // 25°  red
+    (0xed, 0x91, 0x4c), // 55°  orange — pinned for "bob"
+    (0xd3, 0xa3, 0x29), // 85°  amber
+    (0xa8, 0xb5, 0x40), // 115° olive
+    (0x6e, 0xc2, 0x72), // 145° green — pinned for "charlie"
+    (0x00, 0xc7, 0xa6), // 175° teal
+    (0x00, 0xc1, 0xd1), // 205° cyan
+    (0x38, 0xb8, 0xf6), // 235° sky
+    (0x81, 0xa8, 0xff), // 265° blue — pinned for "me"
+    (0xb2, 0x98, 0xf9), // 295° violet
+    (0xd7, 0x8a, 0xdb), // 325° magenta
+    (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
 ];
 
 /// Give everyone in a room a colour nobody else in it is wearing.
@@ -169,12 +161,26 @@ mod color_tests {
 
     #[test]
     fn user_colours_are_pinned_or_hashed_onto_a_distinct_ring() {
-        // phase: pinned_ids_match_concept_palette
+        // phase: pinned_ids_take_their_slots
         {
-            assert_eq!(user_color("me"), (0x63, 0x66, 0xf1));
-            assert_eq!(user_color("alice"), (0xec, 0x48, 0x99));
-            assert_eq!(user_color("bob"), (0xf9, 0x73, 0x16));
-            assert_eq!(user_color("charlie"), (0x10, 0xb9, 0x81));
+            assert_eq!(user_color("me"), PEER_PALETTE[8]);
+            assert_eq!(user_color("alice"), PEER_PALETTE[11]);
+            assert_eq!(user_color("bob"), PEER_PALETTE[1]);
+            assert_eq!(user_color("charlie"), PEER_PALETTE[4]);
+        }
+        // phase: the_ring_is_the_dark_presence_palette
+        {
+            let palette = crate::tokens::Colors::dark().presence;
+            for (slot, rgb) in PEER_PALETTE.iter().enumerate() {
+                let painted = palette.get(slot);
+                for (a, b) in [
+                    (rgb.0, painted.to_rgba8().r),
+                    (rgb.1, painted.to_rgba8().g),
+                    (rgb.2, painted.to_rgba8().b),
+                ] {
+                    assert!(a.abs_diff(b) <= 1, "slot {slot}: {rgb:?} vs {painted:?}");
+                }
+            }
         }
         // phase: unknown_ids_fall_through_to_stable_hash
         {
@@ -255,17 +261,17 @@ mod color_tests {
     #[test]
     fn a_room_assigns_distinct_agreed_stable_colours() {
         // phase: a_room_never_puts_two_people_in_one_colour
-        // The case the ring alone can't fix: `carol` hashes onto exactly the
+        // The case the ring alone can't fix: `judy` hashes onto exactly the
         // pink `alice` is pinned to, so one of them has to move.
         {
             assert_eq!(
-                user_color("carol"),
+                user_color("judy"),
                 user_color("alice"),
                 "this test is guarding a real collision; if the hash moved, \
              pick another colliding pair rather than deleting the test",
             );
 
-            let room = ["alice", "bob", "carol", "danah", "erin", "dana"];
+            let room = ["alice", "bob", "judy", "danah", "erin", "dana"];
             let assigned = assign_peer_colors(&room, &[]);
             assert_eq!(assigned.len(), room.len());
             for (i, a) in room.iter().enumerate() {
@@ -285,7 +291,7 @@ mod color_tests {
         }
         // phase: every_machine_in_a_room_agrees_on_who_is_what_colour
         {
-            let room = ["alice", "bob", "carol"];
+            let room = ["alice", "bob", "judy"];
             for me in room {
                 let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
                 mine.push(me);
@@ -300,11 +306,11 @@ mod color_tests {
         // A colour the roster handed out explicitly is not available to be
         // computed onto, or an invited peer and a live one could collide.
         {
-            let taken = user_color("carol"); // == alice's pink
-            let assigned = assign_peer_colors(&["carol"], &[taken]);
+            let taken = user_color("judy"); // == alice's pink
+            let assigned = assign_peer_colors(&["judy"], &[taken]);
             assert_ne!(
-                assigned["carol"], taken,
-                "carol took a colour the roster had already spoken for",
+                assigned["judy"], taken,
+                "judy took a colour the roster had already spoken for",
             );
         }
         // phase: a_late_arrival_leaves_the_others_alone

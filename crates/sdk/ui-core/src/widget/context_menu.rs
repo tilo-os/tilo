@@ -776,7 +776,7 @@ impl Widget for ContextMenu {
         // point-placed one keeps its origin and reference width but grows
         // its rows (and, past the reference width, its width) to the text.
         self.layout_within(text_renderer, theme);
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(self.rect, radius);
         // The near-black overlay tier, so the menu reads as an opaque
         // raised sheet, never bleeding the content beneath.
@@ -848,11 +848,12 @@ impl Widget for ContextMenu {
                             self.rect.x1 - inset,
                             y + row_height - 1.0,
                         );
-                        let hl_shape = RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm));
+                        let hl_shape =
+                            RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.detail));
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
-                            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                            theme.tokens.colors.intent.inverted,
                             None,
                             &hl_shape,
                         );
@@ -863,14 +864,11 @@ impl Widget for ContextMenu {
                             .colors
                             .on_surface_at(
                                 theme.tokens.colors.surfaces.overlay,
-                                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                                crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
                             )
                             .ink_dim
                     } else if armed {
-                        theme
-                            .tokens
-                            .colors
-                            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                        theme.tokens.colors.intent.on_inverted
                     } else if *destructive {
                         theme.tokens.colors.semantic.danger
                     } else {

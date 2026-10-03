@@ -122,7 +122,7 @@ impl SelectionHandles {
     /// Draw the frame and its handles; `to_screen` maps content to screen.
     pub fn draw(&self, scene: &mut Scene, to_screen: Affine, zoom: f64, theme: &Theme) {
         let zoom = zoom.max(1e-6);
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let surface = theme.tokens.colors.surfaces.base;
         let line = Stroke::new(1.5 / zoom);
         scene.stroke(&line, to_screen, accent, None, &self.bounds);

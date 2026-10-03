@@ -603,7 +603,7 @@ impl Widget for NumberInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let disabled = !self.effectively_enabled();
         if disabled {
             scene.push_layer(

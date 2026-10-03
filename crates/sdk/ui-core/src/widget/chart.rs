@@ -1087,7 +1087,7 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let data = vec![1.0_f32, 3.0, 2.0, 5.0, 4.0];
-            let series = vec![Series::new(data, theme.accent_primary)];
+            let series = vec![Series::new(data, theme.tokens.colors.intent.inverted)];
 
             let mut plain = Scene::new();
             Chart::draw_at(
@@ -1135,7 +1135,10 @@ mod tests {
             let grid_tags = count_color_tags(&grid_only);
             assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
 
-            let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
+            let series = vec![Series::new(
+                vec![1.0, 2.0, 3.0],
+                theme.tokens.colors.intent.inverted,
+            )];
             let mut with_line = Scene::new();
             Chart::draw_at(
                 &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
@@ -1162,7 +1165,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 64.0, 20.0),
                 &[5.0],
                 5.0,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
             );
             assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
 
@@ -1173,7 +1176,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 64.0, 20.0),
                 &[5.0, 3.0, 7.0],
                 7.0,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
             );
             assert!(count_color_tags(&many) >= 2, "area + line both paint");
         }

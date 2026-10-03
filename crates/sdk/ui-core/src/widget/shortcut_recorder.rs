@@ -158,7 +158,7 @@ impl Widget for ShortcutRecorder {
                 if self.invalid {
                     theme.tokens.colors.semantic.danger
                 } else {
-                    theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                    theme.tokens.colors.intent.inverted
                 },
                 None,
                 &RoundedRect::from_rect(chord, 7.0),

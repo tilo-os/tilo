@@ -48,7 +48,7 @@ use crate::floating_surface::Material;
 use crate::theme::Theme;
 
 /// Opacity of the panel ground over the blurred backdrop.
-pub const FLOATING_TINT_ALPHA: f32 = 0.72;
+pub const FLOATING_TINT_ALPHA: f32 = crate::tokens::colors::MATERIAL_ALPHA;
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
@@ -83,7 +83,7 @@ pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
     matches!(material, Material::Floating)
         && !theme.reduce_transparency
         && !theme.forced_colors
-        && theme.tokens.colors.surfaces.glass_blur_px > 0.0
+        && theme.tokens.colors.surfaces.material_blur_px > 0.0
 }
 
 /// Fill `shape` with `material`: under an active [`BackdropRecording`] the
@@ -256,7 +256,7 @@ fn record(
         recording.surfaces.push(RecordedBackdrop {
             image: image.clone(),
             bounds,
-            blur_px: f64::from(theme.tokens.colors.surfaces.glass_blur_px),
+            blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
             layer,
             below: scene.clone(),
             ground,

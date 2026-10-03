@@ -381,18 +381,7 @@ impl SunburstChart {
 
     fn palette(theme: &Theme, family: usize, depth: usize) -> Color {
         let colors = &theme.tokens.colors;
-        let bases = [
-            colors.accent.stops[5],
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.semantic.info,
-            colors.accent.stops[8],
-            colors.semantic.danger,
-        ];
-        let base = bases
-            .get(family % bases.len())
-            .copied()
-            .unwrap_or(theme.accent_primary);
+        let base = colors.presence.series(family);
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
@@ -567,7 +556,7 @@ impl Widget for SunburstChart {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,

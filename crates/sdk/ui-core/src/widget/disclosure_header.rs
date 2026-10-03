@@ -187,7 +187,7 @@ impl<'a> DisclosureHeaderFace<'a> {
             scene,
             &shown,
             TEXT_SIZE,
-            colors.accent[5],
+            colors.intent.inverted,
             transform.pre_translate(Vec2::new(self.rect.x1 - f64::from(summary_w), summary_y)),
             None,
         );

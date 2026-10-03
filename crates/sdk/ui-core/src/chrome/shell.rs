@@ -73,8 +73,9 @@ impl ChromeRole {
         let radii = &theme.tokens.radii;
         match self {
             ChromeRole::Bar => 0.0,
-            ChromeRole::Panel | ChromeRole::Object => f64::from(radii.xl),
-            ChromeRole::Control => f64::from(radii.lg),
+            ChromeRole::Panel => f64::from(radii.panel),
+            ChromeRole::Object => f64::from(radii.tile),
+            ChromeRole::Control => f64::from(radii.control),
             ChromeRole::Selector => (height / 2.0).max(0.0),
         }
     }
@@ -88,7 +89,7 @@ impl ChromeRole {
         let colors = &theme.tokens.colors;
         match self {
             ChromeRole::Bar | ChromeRole::Panel => panel_ground(theme),
-            ChromeRole::Object => colors.surfaces.window_card,
+            ChromeRole::Object => colors.surfaces.content,
             // Body is state: see `selection_tier`.
             ChromeRole::Control | ChromeRole::Selector => Color::TRANSPARENT,
         }
@@ -289,7 +290,7 @@ pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let ground = colors.surfaces.base;
     let lifted = state.active || state.pressed;
-    let film = theme.material_film();
+    let film = colors.glass_film();
     let alpha = if lifted {
         GLASS_ACTIVE_ALPHA
     } else if state.hover {
@@ -484,7 +485,7 @@ pub fn panel_ground(theme: &Theme) -> Color {
     let colors = &theme.tokens.colors;
     let base = colors.surfaces.base;
     let declared = colors.surfaces.overlay;
-    let grounds = [base, colors.surfaces.window_card];
+    let grounds = [base, colors.surfaces.content];
     let clears = |c: Color| {
         grounds
             .iter()
@@ -537,7 +538,7 @@ pub fn panel_shadow(
     if intensity <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let e = &theme.tokens.elevation.e4;
+    let e = &theme.tokens.elevation.floating;
     // The visible falloff ends about 2.5 standard deviations out; the ring
     // is given a little more than that so nothing is clipped mid-ramp.
     let reach = crate::surface::std_dev_for(e.blur) * 3.0 + f64::from(e.offset_y);
@@ -927,7 +928,7 @@ mod tests {
         // Case `selection_never_uses_the_accent`.
         {
             for (name, theme) in themes() {
-                let accent = theme.tokens.colors.accent[5];
+                let accent = theme.tokens.colors.intent.inverted;
                 for state in [
                     SelectionState::active(true),
                     SelectionState::new(false, true, false),
@@ -989,10 +990,10 @@ mod tests {
             let radii = &theme.tokens.radii;
             let on_scale = [
                 0.0,
-                f64::from(radii.sm),
-                f64::from(radii.md),
-                f64::from(radii.lg),
-                f64::from(radii.xl),
+                f64::from(radii.detail),
+                f64::from(radii.control),
+                f64::from(radii.tile),
+                f64::from(radii.panel),
             ];
             for role in [
                 ChromeRole::Bar,

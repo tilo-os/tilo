@@ -43,7 +43,6 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
 use crate::presence::PresenceCtx;
 use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -935,7 +934,7 @@ impl Widget for RichTextEditor {
         _presence: &PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &body);
@@ -976,7 +975,7 @@ impl Widget for RichTextEditor {
         if self.preedit.is_empty() {
             let r = self.core.range();
             if r.start < r.end {
-                let sel = theme.accent_primary.with_alpha_factor(0.30);
+                let sel = theme.tokens.colors.intent.selection_tint;
                 for (x0, y0, x1, y1) in layout.selection_rects(r.start, r.end) {
                     let rect =
                         Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
@@ -1012,7 +1011,13 @@ impl Widget for RichTextEditor {
                 f64::from(cx) + theme.caret_width,
                 f64::from(top + h),
             );
-            scene.fill(Fill::NonZero, t, theme.accent_primary, None, &caret);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.intent.you,
+                None,
+                &caret,
+            );
         }
         self.redraw = false;
     }

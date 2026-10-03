@@ -2007,7 +2007,13 @@ impl CaptureStudio {
             tooltip_x0 + tooltip_width,
             anchor.y1 + 36.0,
         );
-        surface::shadow(scene, transform, tooltip, 14.0, &theme.tokens.elevation.e2);
+        surface::shadow(
+            scene,
+            transform,
+            tooltip,
+            14.0,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2684,7 +2690,7 @@ impl CaptureStudio {
     fn selection_color(&self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self.mode {
-            CaptureMode::Screenshot => c.accent[4],
+            CaptureMode::Screenshot => c.intent.inverted_hover,
             CaptureMode::Recording => c.semantic.danger,
             CaptureMode::Pip => c.semantic.info,
         }
@@ -2897,7 +2903,13 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let width = 430.0_f64.min(bounds.width() - 40.0);
         let card = Rect::from_center_size(bounds.center(), (width, 132.0));
-        surface::shadow(scene, transform, card, 18.0, &theme.tokens.elevation.e4);
+        surface::shadow(
+            scene,
+            transform,
+            card,
+            18.0,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2989,7 +3001,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let active = seconds > 0;
         let fill = if active {
-            colors.accent[5]
+            colors.intent.inverted
         } else if hovered {
             colors.lift(0.72)
         } else {
@@ -3089,14 +3101,18 @@ impl CaptureStudio {
             scene.fill(
                 Fill::NonZero,
                 t,
-                if hovered { c.accent[4] } else { c.text_primary },
+                if hovered {
+                    c.intent.inverted_hover
+                } else {
+                    c.text_primary
+                },
                 None,
                 &RoundedRect::from_rect(handle, radius),
             );
             scene.stroke(
                 &Stroke::new(1.5),
                 t,
-                c.accent[5],
+                c.intent.inverted,
                 None,
                 &RoundedRect::from_rect(handle, radius),
             );
@@ -3137,7 +3153,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let accent = match armed.intent.mode {
             CaptureMode::Recording => colors.semantic.danger,
-            CaptureMode::Screenshot => colors.accent[4],
+            CaptureMode::Screenshot => colors.intent.inverted_hover,
             CaptureMode::Pip => colors.semantic.info,
         };
         surface::shadow(
@@ -3145,7 +3161,7 @@ impl CaptureStudio {
             transform,
             pill,
             pill.height() / 2.0,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -3353,7 +3369,13 @@ impl CaptureStudio {
         let pill = self.recording_indicator_rects_at(0.0).0;
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3576,7 +3598,13 @@ impl CaptureStudio {
         let (pill, pause, stop) = self.recording_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3950,7 +3978,7 @@ impl CaptureStudio {
             &theme
                 .tokens
                 .elevation
-                .e3
+                .floating
                 .with_alpha_scaled(background_alpha),
         );
         scene.fill(
@@ -4110,7 +4138,7 @@ impl CaptureStudio {
             transform,
             pill,
             radius,
-            &theme.tokens.elevation.e3.with_alpha_scaled(alpha),
+            &theme.tokens.elevation.floating.with_alpha_scaled(alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -4128,7 +4156,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.accent[4].with_alpha_factor(0.30 * alpha),
+            colors.intent.inverted_hover.with_alpha_factor(0.30 * alpha),
             None,
             &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
         );
@@ -4166,7 +4194,10 @@ impl CaptureStudio {
             &Stroke::new(1.0),
             transform,
             if preview_hovered {
-                colors.accent[4].with_alpha_factor(0.72 * content_alpha)
+                colors
+                    .intent
+                    .inverted_hover
+                    .with_alpha_factor(0.72 * content_alpha)
             } else {
                 crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
                     .with_alpha_factor(alpha)
@@ -4253,7 +4284,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if send_active {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4273,9 +4307,15 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if self.screenshot_pin_pending {
-                    colors.accent[4].with_alpha_factor(0.28 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.28 * content_alpha)
                 } else if pin_hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4288,7 +4328,10 @@ impl CaptureStudio {
                 pin.inset(-6.0),
                 Icon::Pin,
                 if self.screenshot_pin_pending {
-                    colors.accent[4].with_alpha_factor(content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(content_alpha)
                 } else {
                     colors.text_dim.with_alpha_factor(content_alpha)
                 },
@@ -4299,7 +4342,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if copy_hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4319,7 +4365,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4372,7 +4421,13 @@ impl CaptureStudio {
         let (pill, save, stop) = self.replay_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4639,7 +4694,7 @@ impl Widget for CaptureStudio {
         let c = &theme.tokens.colors;
         let selection_color = self.selection_color(theme);
         let active_control_fill = match self.mode {
-            CaptureMode::Screenshot => c.accent[5],
+            CaptureMode::Screenshot => c.intent.inverted,
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
             CaptureMode::Pip => c.semantic.info.with_alpha_factor(0.32),
         };
@@ -4690,7 +4745,7 @@ impl Widget for CaptureStudio {
                         t,
                         selection_color.with_alpha_factor(if selected { 0.10 } else { 0.05 }),
                         None,
-                        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.xl)),
+                        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.tile)),
                     );
                 }
                 let stroke_width = if selected {
@@ -4714,7 +4769,7 @@ impl Widget for CaptureStudio {
                     None,
                     &RoundedRect::from_rect(
                         rect.inflate(half, half),
-                        f64::from(theme.tokens.radii.xl) + half,
+                        f64::from(theme.tokens.radii.tile) + half,
                     ),
                 );
                 if !selected || Self::target_has_useful_aperture(target, self.status_rect()) {
@@ -4838,7 +4893,7 @@ impl Widget for CaptureStudio {
         }
         let top = self.top_bar();
         for group in [self.mode_group_rect(), self.source_group_rect()] {
-            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.e4);
+            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.floating);
             // Raised group under an edge derived from it (HIG §9.5): over the
             // scrim the fill alone had no closed edge on the light preset.
             surface::card(s, top_t, group, 14.0, c.surfaces.raised);
@@ -4852,7 +4907,7 @@ impl Widget for CaptureStudio {
             self.mode == CaptureMode::Screenshot,
             m0.contains(self.cursor),
             Icon::Camera,
-            c.accent[5],
+            c.intent.inverted,
         );
         Self::symbol_button(
             s,
@@ -5071,7 +5126,7 @@ impl Widget for CaptureStudio {
             );
         }
         let bottom = self.bottom_bar();
-        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.e4);
+        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.floating);
         // Raised bar under an edge derived from it (HIG §9.5).
         surface::card(s, bottom_t, bottom, 14.0, c.surfaces.raised);
         if matches!(self.source, SourceMode::Window | SourceMode::Multi) {

@@ -24,7 +24,6 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
@@ -349,7 +348,7 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.control);
         let fill = tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -650,11 +649,11 @@ impl DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
                     &shape,
                 );
@@ -670,7 +669,7 @@ impl DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -682,9 +681,7 @@ impl DatePicker {
 
             let day_str = date.day().to_string();
             let color = if is_selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens.colors.intent.on_inverted
             } else if is_in_view_month {
                 text_color
             } else {

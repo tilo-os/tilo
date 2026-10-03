@@ -32,7 +32,6 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
@@ -711,7 +710,7 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
         let disabled = !self.effectively_enabled();
@@ -759,7 +758,7 @@ impl Widget for Dropdown {
             transform,
             bc,
             None,
-            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md)),
+            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.control)),
         );
 
         if self.open {
@@ -778,7 +777,7 @@ impl Widget for Dropdown {
                     self.rect.y1,
                 ),
                 &TextStyle::new(FONT),
-                QueryInk::accented(theme.text_primary, theme.text_dim, theme.accent_primary),
+                QueryInk::of(&theme.tokens.colors),
             );
         } else {
             let (label, color) = if self.selected.is_empty() {
@@ -844,7 +843,7 @@ impl Widget for Dropdown {
         }
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
-        let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.control));
 
         // The open list is a Panel (HIG §9.1 / §9.5): panel ground and
         // panel edge, so it separates from the raised field it drops from.
@@ -860,7 +859,7 @@ impl Widget for Dropdown {
             transform,
             crate::chrome::panel_border(theme),
             None,
-            &crate::surface::edge_outline(list, f64::from(theme.tokens.radii.md)),
+            &crate::surface::edge_outline(list, f64::from(theme.tokens.radii.control)),
         );
 
         // Clip rows to the rounded list box.
@@ -896,21 +895,27 @@ impl Widget for Dropdown {
                     .get(opt_idx)
                     .is_some_and(|value| *value == self.selected);
                 if vi == self.highlight {
-                    scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &row);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.intent.inverted,
+                        None,
+                        &row,
+                    );
                 } else if is_selected {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        theme.accent_primary.with_alpha_factor(0.18),
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.overlay, 0.5),
                         None,
                         &row,
                     );
                 }
                 let color = if vi == self.highlight {
-                    theme
-                        .tokens
-                        .colors
-                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.text_primary
                 };

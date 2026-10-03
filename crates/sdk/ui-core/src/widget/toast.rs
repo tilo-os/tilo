@@ -461,12 +461,12 @@ pub fn paint_card(
         return hit;
     }
     hit.card_rect = rect;
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
     let shape = RoundedRect::from_rect(rect, radius);
 
     // Drop shadow from the elevation token (not ad-hoc literals), following
     // the card's own radius and fading with the card.
-    let mut elev = theme.tokens.elevation.e3;
+    let mut elev = theme.tokens.elevation.floating;
     elev.color = elev.color.with_alpha_factor(a);
     crate::surface::shadow(scene, transform, rect, radius, &elev);
 
@@ -504,7 +504,7 @@ pub fn paint_card(
         transform,
         kind_color(card.kind, theme).with_alpha(a),
         None,
-        &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm)),
+        &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.detail)),
     );
 
     // Dismiss (X) button — a ghost `Button` face, top-right.

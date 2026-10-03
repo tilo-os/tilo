@@ -373,7 +373,7 @@ impl QuickSettingsVpnPane {
                 &status,
                 status_size,
                 if profile.active {
-                    colors.accent[5]
+                    colors.intent.inverted
                 } else {
                     colors.text_dim
                 },
