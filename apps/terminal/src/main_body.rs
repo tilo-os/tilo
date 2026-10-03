@@ -7567,9 +7567,11 @@ fn ush_backend_on(
     program: &[String],
 ) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     use std::os::fd::AsRawFd;
+    // The session runs in the default environment; which target a tab opens is
+    // the supervisor's to build, never this app's.
     let mut request = serde_json::json!({
         "op": "open-session",
-        "profile": "ush",
+        "target": tilo_environment::Target::default_environment(),
         "cols": 80,
         "rows": 24,
         "term": "xterm-256color",
