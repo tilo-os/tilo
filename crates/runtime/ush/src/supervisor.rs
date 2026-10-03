@@ -170,14 +170,17 @@ impl Session {
             .records()
             .resolve(self.opts.environment.as_deref(), &*self.images)?;
         let mut images = Vec::new();
+        let runtime = environment.runtime_id().map_err(anyhow::Error::msg)?;
         let tools = environment
             .tool_ids_topmost_first()
             .map_err(anyhow::Error::msg)?;
         for (id, tool) in tools.iter().zip(environment.tools.iter().rev()) {
+            self.images
+                .check_tool(id, &runtime)
+                .map_err(anyhow::Error::msg)?;
             let tree = self.images.tree(id).map_err(anyhow::Error::msg)?;
             images.push((format!("tool {id} ({})", tool.packages.join(", ")), tree));
         }
-        let runtime = environment.runtime_id().map_err(anyhow::Error::msg)?;
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((format!("runtime {runtime}"), tree));
         Ok(Resolved {
@@ -898,6 +901,13 @@ mod tests {
                 .then_some(tree)
                 .ok_or_else(|| format!("{id} is not here"))
         }
+        fn check_tool(&self, tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
+            if *tool == PackageId::from_bytes([9; 32]) {
+                Err("tool was built for another runtime".into())
+            } else {
+                Ok(())
+            }
+        }
         fn current_runtime(&self) -> Result<PackageId, String> {
             Ok(PackageId::from_bytes([1; 32]))
         }
@@ -1004,6 +1014,26 @@ mod tests {
             .unwrap();
         let err = session.resolve().unwrap_err().to_string();
         assert!(err.contains("is not here"), "{err}");
+
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::REMOVE_TOOL.with(PackageId::from_bytes([7; 32]).to_string()),
+            )
+            .unwrap();
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    PackageId::from_bytes([9; 32]).to_string(),
+                    vec!["elsewhere".into()],
+                )),
+            )
+            .unwrap();
+        let err = session.resolve().unwrap_err().to_string();
+        assert!(err.contains("another runtime"), "{err}");
 
         let mut named = session_in(dir.path());
         named.opts.environment = Some("work".into());

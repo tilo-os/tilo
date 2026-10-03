@@ -193,7 +193,9 @@ tilo …  app …  store …  system …      brokered to the host session
 
 `$TILO_USH_HOME` moves the store (and, with it, the records);
 `$TILO_USH_RECORDS` moves the records alone. The supervisor hands both to the
-sessions it starts.
+sessions it starts. Images live in the package store; tests point
+`$TILO_USH_IMAGES` at fixture trees instead (`<hex id>/` directories and a
+`current-runtime` file).
 
 ## Known limits
 
@@ -203,10 +205,10 @@ sessions it starts.
   empty namespace and a name-matched SOCKS5 gate — and wiring it to a shell,
   whose tools do not all honour a proxy, is its own change. Until then a guest
   reaches the network the machine reaches.
-- **Images come from the package store.** Until the image kinds land there, the
-  supervisor reads materialised trees from `~/.local/share/ush/images`
-  (`$TILO_USH_IMAGES`), named by hex id, with the current runtime's id in
-  `current-runtime`.
+- **Images are not fetched from the registry yet.** The supervisor
+  materialises images through the package store (`materialized_tree`), from
+  the system app store and the user's store; a tool image built on another
+  device reaches this one once the store is given a registry fetcher.
 
 ## Verifying it yourself
 

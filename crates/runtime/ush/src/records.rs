@@ -203,6 +203,9 @@ mod tests {
         fn tree(&self, _id: &PackageId) -> Result<PathBuf, String> {
             Err("no trees in this test".into())
         }
+        fn check_tool(&self, _tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
+            Ok(())
+        }
         fn current_runtime(&self) -> Result<PackageId, String> {
             self.0.ok_or_else(|| "no env-runtime is installed".into())
         }
