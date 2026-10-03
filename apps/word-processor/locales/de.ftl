@@ -103,7 +103,7 @@ menu-copy = Kopieren
 menu-paste = Einfügen
 menu-select-all = Alles auswählen
 
-## Templates (New ▾ menu)
+## Templates (the New menu)
 template-blank = Leer
 template-letter = Brief
 template-report = Bericht
