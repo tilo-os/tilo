@@ -288,6 +288,23 @@ def app_process(pid: int) -> int:
     return pid
 
 
+def process_command(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()[:160]
+    except OSError:
+        return "(exited)"
+
+
+def app_log(app_name: str) -> str:
+    """The session journal's recent lines about the launch, for a failed open."""
+    lines = command(
+        "journalctl", "--user", "-b", "--no-pager", "-o", "cat", "-n", "400", check=False,
+    ).splitlines()
+    needles = ("launch", "launcher", "file-explorer", app_name.lower(), "accesskit", "at-spi", "atspi")
+    relevant = [line for line in lines if any(n in line.lower() for n in needles)]
+    return " | ".join(relevant[-25:]) or "(nothing)"
+
+
 def is_app_connection(client: AtspiClient) -> bool:
     """Whether a connection that appeared after the launch is an application:
     it exports an application node. Clients such as gdbus or busctl do not.
@@ -345,14 +362,19 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
             time.sleep(POLL_SECONDS * 4)
         break
     seen = []
-    for bus in sorted(set(bus_pids(address)) - before):
+    for bus, pid in sorted(bus_pids(address).items()):
+        if bus in before:
+            continue
+        process = app_process(pid)
         try:
-            seen.append(AtspiClient(address, bus).property(ROOT_PATH, "Name").strip())
-        except GateError:
-            seen.append(f"{bus} (no application node)")
+            name = AtspiClient(address, bus).property(ROOT_PATH, "Name").strip()
+        except GateError as error:
+            name = f"no application node: {error}"
+        seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
     raise GateError(
         f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
-        f"new connections: {', '.join(seen) or 'none'}"
+        f"new connections: {'; '.join(seen) or 'none'}; "
+        f"its session log: {app_log(app_name)}"
     )
 
 
