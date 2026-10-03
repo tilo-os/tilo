@@ -20,7 +20,7 @@ impl Mode {
             Mode::Graph3d => "Graph 3D",
         }
     }
-    /// Condensed label for a narrow topbar where the full `label` won't fit.
+    /// Condensed label for a narrow header where the full `label` won't fit.
     pub fn short_label(self) -> &'static str {
         match self {
             Mode::Calc => "Calc",
