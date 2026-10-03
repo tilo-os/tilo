@@ -7,7 +7,7 @@ use super::{
 impl NativeDocumentReads for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().requires_native_owner(room))
+            .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;

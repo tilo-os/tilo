@@ -141,6 +141,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.child(id, wrap)
     }
 
+    /// Who this view is for: the participant reading and editing through
+    /// it, the same id an action they invoke reads as its author
+    /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the
+    /// authors the resource records with it ("your message", "you reacted")
+    /// instead of keeping the reader in the resource state, which is the
+    /// same for everyone. `None` in a view of a past version.
+    pub fn me(&self) -> Option<&str> {
+        self.dispatch.me()
+    }
+
     /// Whether this participant may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
     /// or disable something else while the participant may only view, bind to

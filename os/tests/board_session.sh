@@ -250,6 +250,7 @@ grep -Fq 'install-board-layer.sh /run/tilo-board' "$repo/os/Containerfile.board"
 for path in os/dev/install-board-layer.sh \
     os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf \
     os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf \
+    os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee \
     os/usr/lib/systemd/system/tilo-board-headless-session@.service \
     os/usr/libexec/tilo-board-session-prepare os/usr/libexec/tilo-seat-session \
     os/usr/libexec/tilo-display-present; do

@@ -6,6 +6,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
+use ui::framework::ResourceSurface;
 use ui::tilo_actions::{ControlInvocation, InvocationId, InvocationUpdate, Resource};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ResourceOperation, ResourceOperationStart, Widget};
@@ -36,11 +37,27 @@ pub fn app_root_with_launch(
 /// package work; this retained widget drains only completed snapshots.
 pub struct LiveStore {
     inner: StoreApp,
-    worker: StoreWorker,
+    search_index: crate::search_provider::StoreSearchIndex,
+    /// `None` only while hosted read-only (a History preview of a past
+    /// version), which shows the document without driving device package work.
+    worker: Option<StoreWorker>,
 }
 
 impl LiveStore {
     fn new(opened_ref: Option<FlatpakRef>, store_target: Option<String>) -> Self {
+        let mut store = Self::without_worker(store_target);
+        store.start_worker(opened_ref);
+        store
+    }
+
+    /// The Store surface a framework view mounts. Its worker starts when the
+    /// host attaches it for editing.
+    #[must_use]
+    pub fn surface() -> Self {
+        Self::without_worker(None)
+    }
+
+    fn without_worker(store_target: Option<String>) -> Self {
         let search_index = crate::search_provider::StoreSearchIndex::default();
         let mut inner = StoreApp::new()
             .with_image_store(crate::images::image_store())
@@ -48,12 +65,49 @@ impl LiveStore {
         if let Some(id) = store_target {
             inner.open_catalogue_item(id);
         }
-        // First presented frame is the catalogue chrome ("Loading apps…"),
-        // not a cleared swapchain. The worker is already in flight.
-        inner.set_worker_busy(true);
         Self {
             inner,
-            worker: StoreWorker::spawn(opened_ref, search_index),
+            search_index,
+            worker: None,
+        }
+    }
+
+    fn start_worker(&mut self, opened_ref: Option<FlatpakRef>) {
+        if self.worker.is_some() {
+            return;
+        }
+        // First presented frame is the catalogue chrome ("Loading apps…"),
+        // not a cleared swapchain. The worker is already in flight.
+        self.inner.set_worker_busy(true);
+        self.worker = Some(StoreWorker::spawn(opened_ref, self.search_index.clone()));
+        #[cfg(test)]
+        WORKERS_STARTED.with(|started| started.set(started.get() + 1));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Workers started on this thread, so a test can see a host spawn one.
+    pub(crate) static WORKERS_STARTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl ResourceSurface<crate::resource::Store> for LiveStore {
+    fn present(&mut self, state: &std::rc::Rc<crate::resource::StoreState>) {
+        self.inner.present(state);
+    }
+
+    fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::Store>) {
+        let read_only = cx.read_only();
+        self.inner.attach(cx);
+        if !read_only {
+            self.start_worker(None);
+        }
+    }
+
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.inner.read_only_changed(read_only);
+        if !read_only {
+            self.start_worker(None);
         }
     }
 }
@@ -93,8 +147,12 @@ impl Widget for LiveStore {
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let Some(worker) = self.worker.as_mut() else {
+            self.inner.sync(state, path);
+            return;
+        };
         let (state, path) = ui::doc::document(state, path);
-        while let Some(snap) = self.worker.try_snapshot() {
+        while let Some(snap) = worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner
                     .complete_lifecycle_invocation(invocation, snap.operation_error.clone());
@@ -125,8 +183,7 @@ impl Widget for LiveStore {
                 .find(|item| item.id == id)
                 .cloned()
             {
-                if !self
-                    .worker
+                if !worker
                     .request_with_invocation(Request::Act(Box::new(item), action), Some(invocation))
                 {
                     self.inner.complete_lifecycle_invocation(
@@ -142,9 +199,7 @@ impl Widget for LiveStore {
             }
         }
         if let Some(invocation) = self.inner.take_lifecycle_refresh()
-            && !self
-                .worker
-                .request_with_invocation(Request::Refresh, Some(invocation))
+            && !worker.request_with_invocation(Request::Refresh, Some(invocation))
         {
             self.inner.complete_lifecycle_invocation(
                 invocation,
@@ -152,10 +207,10 @@ impl Widget for LiveStore {
             );
         }
         if let Some(query) = self.inner.take_search_requested() {
-            self.worker.request(Request::Search(query));
+            worker.request(Request::Search(query));
         }
         if let Some(id) = self.inner.take_detail_requested() {
-            self.worker.request(Request::Detail(id));
+            worker.request(Request::Detail(id));
         }
         for (intent, invocation) in self.inner.take_lifecycle_remote() {
             let request = match intent {
@@ -163,10 +218,7 @@ impl Widget for LiveStore {
                 RemoteIntent::Add { name, url } => Request::RemoteAdd { name, url },
                 RemoteIntent::Remove(name) => Request::RemoteRemove(name),
             };
-            if !self
-                .worker
-                .request_with_invocation(request, Some(invocation))
-            {
+            if !worker.request_with_invocation(request, Some(invocation)) {
                 self.inner.complete_lifecycle_invocation(
                     invocation,
                     Some("store worker is unavailable".into()),
@@ -199,17 +251,14 @@ impl Widget for LiveStore {
                     reason,
                 },
             };
-            if !self
-                .worker
-                .request_with_invocation(request, Some(invocation))
-            {
+            if !worker.request_with_invocation(request, Some(invocation)) {
                 self.inner.complete_lifecycle_invocation(
                     invocation,
                     Some("Store worker is unavailable; the report draft was not submitted".into()),
                 );
             }
         }
-        self.inner.set_worker_busy(self.worker.has_pending());
+        self.inner.set_worker_busy(worker.has_pending());
     }
 
     fn build_layout(
@@ -301,13 +350,30 @@ impl Widget for LiveStore {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.worker.has_pending() || self.inner.needs_animation_frame()
+        self.worker.as_ref().is_some_and(StoreWorker::has_pending)
+            || self.inner.needs_animation_frame()
     }
 }
 
 impl ui::resources::PublishesResources for LiveStore {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.inner.resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.inner.resource(doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for LiveStore {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        ui::undo::CommittedActions::take_committed_action(&mut self.inner)
+    }
+}
+
+impl ui::search::capability::SearchSource for LiveStore {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.inner.search_providers()
     }
 }
 

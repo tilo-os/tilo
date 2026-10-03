@@ -81,6 +81,26 @@
 //!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
+//!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
+//!   inside an action: the same id, pinned with the action so every replica
+//!   reads it. The resource state stays the same for everyone; a view
+//!   compares the authors it records with `me`, and an action signs what it
+//!   writes with its author rather than carrying one in its payload.
+//! * **A brand-new record** starts with the resource's
+//!   [`initialize`](tilo_resource::Resource::initialize), its genesis: the
+//!   same change on every device, so two people creating the same record
+//!   converge on one. What depends on who creates it or where (the creator
+//!   as owner, a first-run import of existing settings) is
+//!   [`ResourceApp::seed`]: actions applied once after the genesis, by the
+//!   creator, that are nobody's undo step.
+//! * **Which changes are undo steps** is declared by the action
+//!   ([`tilo_actions::Action::change_kind`], `#[action(external)]`): content
+//!   from outside — fetched rows, a process's output — syncs to everyone but
+//!   no undo takes it back. Values applied immediately that continue one
+//!   another ([`Resource::coalesces`](tilo_resource::Resource::coalesces)) are
+//!   one step — a word typed, a slider dragged — until the surface
+//!   [settles](Dispatcher::settle) the gesture.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
 //!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
 //!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
@@ -113,7 +133,7 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{ResourceApp, definition};
+pub use app::{ResourceApp, SeedCx, definition};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;

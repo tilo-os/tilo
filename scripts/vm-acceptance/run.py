@@ -29,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, report  # noqa: E402
-from acceptance.checks import apps, basics, provenance, resources, search, ui, window  # noqa: E402,F401
+from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
+                               ui, window)
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
@@ -40,8 +41,10 @@ BUDGETS = {
     "idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_user_cpu_pct": 3.0,
     "idle_apps_shell_cpu_pct": 1.5, "idle_apps_frames": 2, "idle_apps_user_cpu_pct": 5.0,
     "idle_loop_ticks_per_s": 2.0,
-    # Memory, PSS.
-    "shell_pss_mb": 700, "process_pss_mb": 300, "session_pss_mb": 2500,
+    # Memory. An app is budgeted by its own cgroup (memory.current, and its anon share);
+    # processes and the compositor by anonymous RSS, the memory they hold privately.
+    "app_memory_mb": 400, "app_anon_mb": 250,
+    "shell_anon_mb": 500, "process_anon_mb": 300, "session_memory_mb": 2500,
     # Frames at 60 Hz.
     "work_ms_p95": 16.7, "work_ms_p99": 33.4,
     "paint_period_ms_p95": 33.4, "paint_gap_ms_max": 100.0, "animation_min_frames": 8,
@@ -53,6 +56,7 @@ ORDER = ["P01", "P02", "R01", "R02", "R03", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
+         "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "P03"]
 
@@ -169,7 +173,8 @@ def main() -> int:
     src.add_argument("--vm", help="an existing VM from vms.toml")
     ap.add_argument("--commit", help="the commit the disk must be built from (sha or ref)")
     ap.add_argument("--slot", default="acceptance")
-    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1")
+    # The second output is fractionally scaled, so apps are checked at a fractional scale too.
+    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
     ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
     ap.add_argument("--idle-seconds", type=int, default=30)
