@@ -88,11 +88,11 @@ function fakeRuntime({phase = 'ready'} = {}) {
     encodeLivePreview: (record, seq, ops) => new TextEncoder().encode(JSON.stringify({kind: 'preview', record: JSON.parse(record), seq: Number(seq), ops: JSON.parse(ops)})),
     encodeLivePreviewEnd: record => new TextEncoder().encode(JSON.stringify({kind: 'previewEnd', record: JSON.parse(record)})),
     WasmPeer: {
-      start(config, custody, namespace, record, save, post) {
+      start(config, custody, namespace, record, save, post, channelVault) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), custody, namespace, record, save, post, disposed: false, reconnects: 0,
+          config: JSON.parse(config), custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -137,6 +137,11 @@ function fakeRuntime({phase = 'ready'} = {}) {
 }
 
 const custody = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32), sign: async () => new Uint8Array(64)};
+function vaultMemory() {
+  const rows = new Map();
+  return {rows, get: async key => rows.get(key), put: async (key, value) => { rows.set(key, value); }};
+}
+
 const options = (runtime, store, extra = {}) => ({
   origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', room: ROOM,
   custody, store, runtime, liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }, ...extra,
@@ -290,9 +295,18 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
     },
     async mountDesktop(target, mountOptions) { mounts.push(mountOptions); return {target}; },
   };
-  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop}));
+  const vaultStorage = vaultMemory();
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop, vaultStorage}));
   assert.equal(opened.length, 1);
   assert.equal(runtime.peer.namespace, JSON.stringify({profile: 'work', device: 'laptop'}));
+  const vault = runtime.peer.channelVault;
+  assert.equal(vault.length, 32, 'the runtime gets the unsealed channel vault');
+  assert.equal(vaultStorage.rows.size, 1);
+  for (const [, stored] of vaultStorage.rows) assert.equal(stored.wrapKey.extractable, false);
+  for (const [, bytes] of values) {
+    assert.ok(!Buffer.from(bytes).toString('hex').includes(Buffer.from(vault).toString('hex')),
+      'the profile storage never holds the vault');
+  }
   assert.equal(runtime.peer.save, undefined, 'the outbox is saved by the runtime into the profile');
   assert.equal(runtime.peer.config.displayName, 'Ada');
   assert.ok(values.has('work/laptop/certificate'), 'the certificate is kept in the profile');
@@ -308,8 +322,9 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await peer.dispose();
   assert.equal(opened[0].released, 1);
 
-  const again = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
+  const again = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop, vaultStorage}));
   assert.equal(runtime.calls.certify.length, 1, 'the profile certificate is reused');
+  assert.deepEqual(runtime.peer.channelVault, vault, 'the same vault opens the stored channel state');
   await again.dispose();
 });
 
@@ -438,7 +453,7 @@ test('retry-saving commits the store again, then every mount, and clears the sto
     async flush() { storage.flushed++; if (flushFails) throw new Error('AbortError: commit aborted'); },
     async release() {}};
   desktop.openProfileStorage = async () => storage;
-  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop, vaultStorage: vaultMemory()}));
   const mount = await peer.mountDesktop('target');
 
   storageListener({persistence: 'failed', pendingWrites: 2, error: 'QuotaExceededError: the quota has been exceeded'});
