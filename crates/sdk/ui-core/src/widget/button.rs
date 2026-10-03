@@ -48,6 +48,9 @@ pub struct Button {
     /// What the button does, which decides its whole look (see
     /// [`ButtonRole`]).
     role: ButtonRole,
+    /// `Some` for a toggle button; `Some(true)` paints the lift and is
+    /// announced as pressed.
+    toggled: Option<bool>,
     on_click_path: Option<String>, // Path in CRDT to mutate
     /// Optional string to write instead of the default counter/boolean pulse.
     /// This lets command-bus users share the standard button implementation.
@@ -139,6 +142,7 @@ impl Button {
             icon: None,
             fill_width: false,
             role: ButtonRole::Secondary,
+            toggled: None,
             on_click_path: on_click_path.map(std::string::ToString::to_string),
             click_value: None,
             shortcut: None,
@@ -345,6 +349,28 @@ impl Button {
             self.role = role;
             self.dirty = true;
         }
+    }
+
+    /// Make this a toggle button: while `on` it stands on a lift of its
+    /// ground (a selected toolbar glyph, HIG §9.3) and is announced as a
+    /// pressed toggle. Use it on a [`ButtonRole::Plain`] glyph.
+    #[must_use]
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.set_toggled(on);
+        self
+    }
+
+    /// Turn a toggle button on or off (the host syncing from its model).
+    pub fn set_toggled(&mut self, on: bool) {
+        if self.toggled != Some(on) {
+            self.toggled = Some(on);
+            self.dirty = true;
+        }
+    }
+
+    /// Whether this is a toggle button that is on.
+    pub fn is_toggled(&self) -> bool {
+        self.toggled == Some(true)
     }
 
     /// Show the keyboard shortcut that does the same thing, after the label,
@@ -836,6 +862,8 @@ struct FacePaint<'a> {
     rect: Rect,
     role: ButtonRole,
     confirms: bool,
+    /// A toggle that is on: the face stands on the selection lift.
+    on: bool,
     interact: ButtonInteract,
     content: FaceContent<'a>,
     metrics: &'a FaceMetrics,
@@ -844,10 +872,22 @@ struct FacePaint<'a> {
 impl FacePaint<'_> {
     fn paint(&self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
-        let (fill, edge, ink) = resolve_face_colors(theme, self.role, self.confirms, self.interact);
+        let disabled = self.interact.disabled;
+        let on = self.on && !disabled;
+        // An "on" toggle is a lift and stays one under the pointer; a press
+        // still answers.
+        let interact = ButtonInteract {
+            hovered: self.interact.hovered && !on,
+            ..self.interact
+        };
+        let (fill, edge, ink) = resolve_face_colors(theme, self.role, self.confirms, interact);
+        let fill = if on && !interact.pressed {
+            theme.tokens.colors.intent.selection
+        } else {
+            fill
+        };
         let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(self.rect, radius);
-        let disabled = self.interact.disabled;
         // Disabled is the rest face under one group alpha (HIG §9.5), the
         // same signal every other control gives.
         if disabled {
@@ -911,6 +951,7 @@ pub struct ButtonFace<'a> {
     icon: Option<crate::icons::Icon>,
     role: ButtonRole,
     confirms: bool,
+    on: bool,
     interact: ButtonInteract,
     control_size: ControlSize,
     shortcut: Option<crate::platform::Shortcut>,
@@ -925,6 +966,7 @@ impl<'a> ButtonFace<'a> {
             icon: None,
             role: ButtonRole::Secondary,
             confirms: false,
+            on: false,
             interact: ButtonInteract::default(),
             control_size: ControlSize::Regular,
             shortcut: None,
@@ -966,6 +1008,12 @@ impl<'a> ButtonFace<'a> {
     #[must_use]
     pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+    /// A toggle that is on: the face stands on the selection lift.
+    #[must_use]
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.on = on;
         self
     }
     #[must_use]
@@ -1079,6 +1127,7 @@ impl Button {
             rect: face.rect,
             role: face.role,
             confirms: face.confirms,
+            on: face.on,
             interact: face.interact,
             content: FaceContent {
                 icon: face.icon,
@@ -1348,6 +1397,7 @@ impl Widget for Button {
             rect: self.rect,
             role: self.role,
             confirms: false,
+            on: self.is_toggled(),
             interact: ButtonInteract {
                 hovered: self.is_hovered,
                 pressed: self.is_pressed,
@@ -1546,13 +1596,19 @@ impl Widget for Button {
         } else {
             Some(label)
         };
-        let mut node = AccessNode::new(Role::Button)
+        let role = if self.toggled.is_some() {
+            Role::ToggleButton
+        } else {
+            Role::Button
+        };
+        let mut node = AccessNode::new(role)
             .with_semantic_key(&self.id)
             .with_optional_name(name)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 disabled: !self.is_enabled(),
+                checked: self.toggled,
                 ..Default::default()
             });
         if self.action.is_none() && self.on_click_path.is_some() {
