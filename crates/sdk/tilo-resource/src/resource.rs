@@ -359,7 +359,7 @@ fn in_words(identifier: &str) -> String {
 
 /// The history name of an encoded [`APPLY`]: its action's
 /// [`action_label`].
-fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
+pub(crate) fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
     if encoded.type_id != R::ACTION_TYPE {
         return None;
     }
@@ -370,7 +370,7 @@ fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
 /// The history name of an encoded [`GROUP`](crate::GROUP) whose members are
 /// all one kind of edit (a selection's moves are "Edit marks"); a mixed group
 /// keeps the group's own label.
-fn group_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
+pub(crate) fn group_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
     if encoded.type_id != crate::group::group_type::<R>() {
         return None;
     }
@@ -595,7 +595,18 @@ fn group_spec<R: Resource>() -> ActionSpec {
 /// stays published on the record, with its id parameter, for scripts and
 /// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
-    let children = R::children(state);
+    publish_parts::<R>(id, label, Some(state))
+}
+
+/// [`publish`], or without a state only what does not depend on one: the
+/// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
+/// operations.
+pub(crate) fn publish_parts<R: Resource>(
+    id: &str,
+    label: &str,
+    state: Option<&R::State>,
+) -> tilo_actions::Resource {
+    let children = state.map(R::children).unwrap_or_default();
     let on_items: std::collections::HashSet<&str> = children
         .iter()
         .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
@@ -610,12 +621,12 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
             spec
         });
     }
-    for spec in R::bound_actions(state) {
+    for spec in state.map(R::bound_actions).unwrap_or_default() {
         // Document actions and state-dependent views or effects. Static views
         // and effects stay on `local_operations`.
         resource = resource.with_action(spec);
     }
-    for view in R::views(state) {
+    for view in state.map(R::views).unwrap_or_default() {
         resource = resource.with_view(view);
     }
     for spec in R::local_operations() {
