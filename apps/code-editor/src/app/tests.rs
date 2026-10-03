@@ -1821,7 +1821,11 @@ fn searching_the_project_and_the_palette_shortcuts_open_the_platform_search() {
 
 fn three_action_sheet(app: &mut CodeApp) -> Vec<vello::kurbo::Rect> {
     let _frame = render(app, (1280, 800));
-    let actions = app.dialog_actions.clone();
+    let actions = app
+        .dialog_layout
+        .as_ref()
+        .map(|layout| layout.actions.clone())
+        .unwrap_or_default();
     assert_eq!(actions.len(), 3, "a question has three answers");
     for (i, a) in actions.iter().enumerate() {
         assert!(a.area() > 0.0, "action {i} is laid out");

@@ -5,13 +5,12 @@
 //! the framework's: the sidebar stands on `Region::Sidebar` (painted by
 //! [`SidebarDrawer::paint_panel`]), everything else on the content ground.
 
-use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{EmptyState, EmptyStateContent, Widget};
+use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -69,19 +68,10 @@ impl CodeApp {
         // The explorer fills the body. Placing it each frame also follows a
         // drawer that is sliding in. With no project there is nothing to
         // list, and the body offers to open one.
-        self.sidebar_empty_action = Rect::ZERO;
         if !self.has_project() {
-            self.sidebar_empty_action = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, &local),
-                body,
-                &EmptyStateContent {
-                    icon: Some(Icon::FolderOpen),
-                    action_label: Some("Open folder"),
-                    ..EmptyStateContent::new("No folder open")
-                },
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
+            self.sidebar_empty.apply_layout_external(body);
+            self.sidebar_empty
+                .draw(scene, transform, text_renderer, &local, presence);
             return;
         }
         if self.sidebar.get_rect() != body {
