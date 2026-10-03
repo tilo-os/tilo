@@ -345,7 +345,7 @@ impl Resource for ArtworkResource {
             decl::<SetArtwork>(
                 "set-artwork",
                 "Set artwork",
-                "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen) and colour.",
+                "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
                 CanvasAction::SetArtwork,
             ),
             decl::<SaveMedium>(
