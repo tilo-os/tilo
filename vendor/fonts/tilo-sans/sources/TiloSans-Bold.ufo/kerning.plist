@@ -1166,7 +1166,7 @@
     <key>E-cy</key>
     <dict>
       <key>public.kern2.KO_I.ss13</key>
-      <integer>-30</integer>
+      <integer>-38</integer>
     </dict>
     <key>Ecircumflexacute</key>
     <dict>
@@ -5094,38 +5094,26 @@
     </dict>
     <key>Yi-cy.ss13</key>
     <dict>
-      <key>Ze-cy</key>
-      <integer>-4</integer>
       <key>acute</key>
-      <integer>12</integer>
+      <integer>10</integer>
       <key>asciicircum</key>
-      <integer>-24</integer>
+      <integer>-42</integer>
       <key>at</key>
-      <integer>-32</integer>
-      <key>cent</key>
-      <integer>-4</integer>
-      <key>dollar</key>
-      <integer>-4</integer>
+      <integer>-50</integer>
       <key>grave</key>
-      <integer>14</integer>
+      <integer>8</integer>
       <key>greater</key>
       <integer>6</integer>
       <key>multiply</key>
-      <integer>-16</integer>
+      <integer>-38</integer>
       <key>numbersign</key>
-      <integer>-16</integer>
+      <integer>-52</integer>
       <key>ogonek</key>
       <integer>4</integer>
-      <key>public.kern2.KO_five</key>
-      <integer>-4</integer>
       <key>public.kern2.KO_four</key>
       <integer>-4</integer>
-      <key>public.kern2.KO_nine</key>
-      <integer>8</integer>
       <key>public.kern2.KO_one</key>
-      <integer>26</integer>
-      <key>three</key>
-      <integer>-4</integer>
+      <integer>10</integer>
     </dict>
     <key>Ytilde</key>
     <dict>
@@ -9110,7 +9098,7 @@
       <key>parenright</key>
       <integer>11</integer>
       <key>public.kern2.KO_I.ss13</key>
-      <integer>24</integer>
+      <integer>12</integer>
       <key>quotedbl</key>
       <integer>-27</integer>
       <key>quotedblright</key>
@@ -10973,8 +10961,6 @@
       <key>Iotadieresis.ss01.ss13</key>
       <integer>18</integer>
       <key>Iotadieresis.ss13</key>
-      <integer>18</integer>
-      <key>Yi-cy.ss13</key>
       <integer>18</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>12</integer>
@@ -15480,6 +15466,8 @@
       <integer>-14</integer>
       <key>public.kern2.KO_e__top</key>
       <integer>-14</integer>
+      <key>public.kern2.KO_ef-cy</key>
+      <integer>-2</integer>
       <key>public.kern2.KO_eight</key>
       <integer>-6</integer>
       <key>public.kern2.KO_endash</key>
@@ -15564,6 +15552,8 @@
       <integer>-56</integer>
       <key>public.kern2.KO_w</key>
       <integer>-56</integer>
+      <key>public.kern2.KO_ya-cy</key>
+      <integer>-4</integer>
       <key>public.kern2.KO_zero</key>
       <integer>-46</integer>
       <key>quotedblbase</key>
@@ -15590,8 +15580,6 @@
       <integer>2</integer>
       <key>upArrow</key>
       <integer>-56</integer>
-      <key>ya-cy</key>
-      <integer>-4</integer>
     </dict>
     <key>public.kern1.KO_Iacute</key>
     <dict>
@@ -23440,6 +23428,8 @@
       <integer>-33</integer>
       <key>public.kern2.KO_El-cy</key>
       <integer>-8</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>-2</integer>
       <key>public.kern2.KO_J</key>
       <integer>-10</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -28770,8 +28760,6 @@
     <dict>
       <key>Iotadieresis.ss01.ss13</key>
       <integer>16</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>16</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>12</integer>
       <key>public.kern2.KO_asterisk</key>
@@ -29035,7 +29023,7 @@
       <key>I-cy.ss13</key>
       <integer>12</integer>
       <key>Yi-cy.ss13</key>
-      <integer>12</integer>
+      <integer>8</integer>
       <key>public.kern2.KO_A</key>
       <integer>-66</integer>
       <key>public.kern2.KO_A__stack</key>
@@ -36851,8 +36839,6 @@
       <integer>36</integer>
       <key>Iotadieresis.ss13</key>
       <integer>36</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>30</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>18</integer>
     </dict>
@@ -38152,6 +38138,8 @@
       <integer>45</integer>
       <key>one</key>
       <integer>0</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>10</integer>
       <key>public.kern2.KO_be-cy</key>
       <integer>6</integer>
       <key>public.kern2.KO_zhe-cy</key>

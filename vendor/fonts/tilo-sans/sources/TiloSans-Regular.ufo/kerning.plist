@@ -4900,7 +4900,7 @@
       <key>dollar</key>
       <integer>-2</integer>
       <key>grave</key>
-      <integer>32</integer>
+      <integer>26</integer>
       <key>ogonek</key>
       <integer>24</integer>
       <key>public.kern2.KO_S</key>
@@ -5649,8 +5649,6 @@
     <key>acute</key>
     <dict>
       <key>I-cy.ss13</key>
-      <integer>40</integer>
-      <key>Yi-cy.ss13</key>
       <integer>40</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>24</integer>
@@ -7456,11 +7454,6 @@
       <integer>-16</integer>
       <key>y</key>
       <integer>-14</integer>
-    </dict>
-    <key>ef-cy</key>
-    <dict>
-      <key>public.kern2.KO_I.ss13</key>
-      <integer>6</integer>
     </dict>
     <key>ehookabove</key>
     <dict>
@@ -14985,6 +14978,8 @@
       <integer>-20</integer>
       <key>public.kern2.KO_e__top</key>
       <integer>-22</integer>
+      <key>public.kern2.KO_ef-cy</key>
+      <integer>-4</integer>
       <key>public.kern2.KO_eight</key>
       <integer>-6</integer>
       <key>public.kern2.KO_endash</key>
@@ -22713,6 +22708,8 @@
       <integer>-5</integer>
       <key>public.kern2.KO_El-cy</key>
       <integer>-6</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>6</integer>
       <key>public.kern2.KO_J</key>
       <integer>-22</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -26505,8 +26502,6 @@
       <integer>-16</integer>
       <key>backslash</key>
       <integer>-16</integer>
-      <key>be-cy</key>
-      <integer>-8</integer>
       <key>braceleft</key>
       <integer>-16</integer>
       <key>braceright</key>
@@ -27105,9 +27100,9 @@
     <key>public.kern1.KO_o</key>
     <dict>
       <key>I-cy.ss13</key>
-      <integer>6</integer>
+      <integer>2</integer>
       <key>Yi-cy.ss13</key>
-      <integer>6</integer>
+      <integer>2</integer>
       <key>public.kern2.KO_A</key>
       <integer>-26</integer>
       <key>public.kern2.KO_A__stack</key>
@@ -28158,7 +28153,7 @@
       <key>I-cy.ss13</key>
       <integer>40</integer>
       <key>Yi-cy.ss13</key>
-      <integer>34</integer>
+      <integer>20</integer>
       <key>public.kern2.KO_A</key>
       <integer>-57</integer>
       <key>public.kern2.KO_A__stack</key>

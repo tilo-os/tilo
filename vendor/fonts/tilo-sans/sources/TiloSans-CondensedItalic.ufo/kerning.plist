@@ -7349,7 +7349,7 @@
     <key>e-cy</key>
     <dict>
       <key>public.kern2.KO_I.ss13</key>
-      <integer>12</integer>
+      <integer>14</integer>
     </dict>
     <key>eacute</key>
     <dict>
@@ -7596,11 +7596,6 @@
       <integer>-11</integer>
       <key>y</key>
       <integer>-9</integer>
-    </dict>
-    <key>ef-cy</key>
-    <dict>
-      <key>public.kern2.KO_I.ss13</key>
-      <integer>4</integer>
     </dict>
     <key>ehookabove</key>
     <dict>
@@ -15101,6 +15096,8 @@
       <integer>2</integer>
       <key>public.kern2.KO_T</key>
       <integer>8</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>6</integer>
       <key>public.kern2.KO_Z</key>
       <integer>8</integer>
       <key>public.kern2.KO_d</key>
@@ -15108,7 +15105,9 @@
       <key>public.kern2.KO_e</key>
       <integer>-24</integer>
       <key>public.kern2.KO_e__top</key>
-      <integer>-22</integer>
+      <integer>-24</integer>
+      <key>public.kern2.KO_ef-cy</key>
+      <integer>-24</integer>
       <key>public.kern2.KO_eight</key>
       <integer>4</integer>
       <key>public.kern2.KO_endash</key>
@@ -15169,6 +15168,8 @@
       <integer>-30</integer>
       <key>public.kern2.KO_w</key>
       <integer>-30</integer>
+      <key>public.kern2.KO_ya-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_zero</key>
       <integer>-10</integer>
       <key>rightArrow</key>
@@ -15179,8 +15180,6 @@
       <integer>14</integer>
       <key>upArrow</key>
       <integer>-30</integer>
-      <key>ya-cy</key>
-      <integer>-16</integer>
     </dict>
     <key>public.kern1.KO_Iacute</key>
     <dict>
@@ -22589,6 +22588,8 @@
       <integer>-5</integer>
       <key>public.kern2.KO_A__top</key>
       <integer>-5</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>4</integer>
       <key>public.kern2.KO_J</key>
       <integer>-20</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -26709,6 +26710,8 @@
       <integer>18</integer>
       <key>zeta</key>
       <integer>4</integer>
+      <key>zhe-cy</key>
+      <integer>10</integer>
     </dict>
     <key>public.kern1.KO_less_hyphen.dlig</key>
     <dict>
@@ -27908,6 +27911,10 @@
     </dict>
     <key>public.kern1.KO_p</key>
     <dict>
+      <key>I-cy.ss13</key>
+      <integer>22</integer>
+      <key>Yi-cy.ss13</key>
+      <integer>22</integer>
       <key>public.kern2.KO_A</key>
       <integer>-4</integer>
       <key>public.kern2.KO_A__stack</key>

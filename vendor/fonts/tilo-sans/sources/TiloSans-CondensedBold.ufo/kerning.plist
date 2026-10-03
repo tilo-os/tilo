@@ -5029,25 +5029,7 @@
     </dict>
     <key>Yi-cy.ss13</key>
     <dict>
-      <key>downArrow</key>
-      <integer>-2</integer>
-      <key>exclamdown</key>
-      <integer>12</integer>
-      <key>exclamdown.ss01</key>
-      <integer>4</integer>
-      <key>grave</key>
-      <integer>14</integer>
-      <key>greater</key>
-      <integer>8</integer>
-      <key>public.kern2.KO_exclam</key>
-      <integer>24</integer>
-      <key>public.kern2.KO_exclam.ss01</key>
-      <integer>22</integer>
       <key>public.kern2.KO_four</key>
-      <integer>-6</integer>
-      <key>public.kern2.KO_one</key>
-      <integer>20</integer>
-      <key>upArrow</key>
       <integer>-6</integer>
     </dict>
     <key>Ytilde</key>
@@ -8302,8 +8284,6 @@
       <integer>-61</integer>
       <key>Yhookabove</key>
       <integer>-61</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>12</integer>
       <key>Ytilde</key>
       <integer>-61</integer>
       <key>public.kern2.KO_I.ss13</key>
@@ -8451,8 +8431,6 @@
       <integer>-71</integer>
       <key>Yhookabove</key>
       <integer>-71</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>4</integer>
       <key>Ytilde</key>
       <integer>-71</integer>
       <key>exclamdown.ss01</key>
@@ -15258,6 +15236,8 @@
       <integer>-26</integer>
       <key>public.kern2.KO_w</key>
       <integer>-26</integer>
+      <key>public.kern2.KO_ya-cy</key>
+      <integer>2</integer>
       <key>public.kern2.KO_zero</key>
       <integer>-26</integer>
       <key>rightArrow</key>
@@ -15270,8 +15250,6 @@
       <integer>8</integer>
       <key>upArrow</key>
       <integer>-14</integer>
-      <key>ya-cy</key>
-      <integer>2</integer>
     </dict>
     <key>public.kern1.KO_Iacute</key>
     <dict>
@@ -23580,8 +23558,6 @@
     <dict>
       <key>Iotadieresis.ss01.ss13</key>
       <integer>22</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>24</integer>
       <key>public.kern2.KO_A</key>
       <integer>-13</integer>
       <key>public.kern2.KO_A__stack</key>
@@ -27964,8 +27940,6 @@
     <dict>
       <key>Iotadieresis.ss01.ss13</key>
       <integer>22</integer>
-      <key>Yi-cy.ss13</key>
-      <integer>22</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>18</integer>
       <key>public.kern2.KO_asterisk</key>
@@ -28219,7 +28193,7 @@
       <key>I-cy.ss13</key>
       <integer>20</integer>
       <key>Yi-cy.ss13</key>
-      <integer>20</integer>
+      <integer>18</integer>
       <key>public.kern2.KO_A</key>
       <integer>-48</integer>
       <key>public.kern2.KO_A__stack</key>
@@ -37214,6 +37188,8 @@
       <integer>53</integer>
       <key>one</key>
       <integer>13</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>18</integer>
       <key>public.kern2.KO_be-cy</key>
       <integer>17</integer>
       <key>seven</key>
