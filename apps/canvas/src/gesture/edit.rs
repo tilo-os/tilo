@@ -13,7 +13,7 @@ use crate::model::{Artwork, Mark, valid_id};
 
 /// Whether `mark` can be picked: its layer is shown.
 fn pickable(art: &Artwork, mark: &Mark) -> bool {
-    art.layer(&mark.layer).is_some_and(|layer| layer.visible)
+    art.layer(&mark.layer).is_some_and(|layer| layer.visible) && !mark.erases()
 }
 
 /// `ids` and every other member of the groups they are in, in stacking
@@ -203,7 +203,8 @@ pub fn new_mark(mark: &Mark) -> NewMark {
         stroke: style.stroke.clone(),
         stroke_width: Some(style.stroke_width),
         opacity: style.opacity,
-        brush: style.brush,
+        brush: style.brush.clone(),
+        brush_size: style.brush_size,
         angle: style.angle,
         wet: style.wet.then_some(true),
         params: (!style.params.is_empty()).then(|| style.params.clone()),

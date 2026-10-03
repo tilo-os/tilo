@@ -195,7 +195,7 @@ impl TextSession {
         if empty {
             return Some(CanvasAction::RemoveMarks(RemoveMarks {
                 ids: vec![self.id.clone()],
-                layer: None,
+                ..RemoveMarks::default()
             }));
         }
         (before.shape != self.shape).then(|| {
