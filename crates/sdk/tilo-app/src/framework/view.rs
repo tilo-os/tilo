@@ -130,6 +130,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.clone()
     }
 
+    /// The dispatcher of the resource nested in this one at `id`, whose
+    /// edits are this resource's action `wrap(edit)`: a rich-text body, a
+    /// draft, a SQL buffer. See [`Dispatcher::child`].
+    pub fn child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: impl Fn(C::Action) -> R::Action + 'static,
+    ) -> Dispatcher<C> {
+        self.dispatch.child(id, wrap)
+    }
+
     /// Whether this participant may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
     /// or disable something else while the participant may only view, bind to

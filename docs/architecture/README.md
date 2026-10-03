@@ -34,10 +34,20 @@ private `AutoCommit` the widget mutates, no app-local action vocabulary that is 
 
 ### Nested resources
 
-A resource can contain another resource. A rich-text body inside Notes, Chat or Mail is a
-child resource (start with rich text), not a hand-rolled map that calls document mutations
-directly. `children()` and `publish()` expose the child so it has the same actions,
-permissions and history as a root resource.
+A resource can contain another resource. A rich-text body inside Notes, Chat or Mail, a
+draft's SQL in a database client, a report's note: each is a child resource, not a
+hand-rolled map that calls document mutations directly and not a text field splicing the
+document. The child is a resource type of its own (`RichText`, `PlainText`) stored at a
+place in the parent's document; the parent has one action that carries a child action and
+names where it applies (`EditBody { page, edit }`).
+
+`children()` publishes the child with `publish_child`, so it has its own actions, typed
+edits and views, each building the parent's action. Views and surfaces edit it through a
+child dispatcher (`cx.child::<RichText>(id, wrap)`) that does the same wrapping. So the child
+is addressed, permissioned, undone a word at a time and named in history like a root
+resource, while what syncs and replays is the parent's action. Text controls bind through
+the dispatcher (`RichTextField`, `TextControl` over a `TextInput` or `CodeEditor`): every
+keystroke is a splice action, never a direct document write.
 
 ### Three action surfaces (kept separate)
 
