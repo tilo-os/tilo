@@ -1,4 +1,0 @@
-# The copy ratchet for apps-hex-editor: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/hex-editor/src/view.rs middle_dot_join 1
