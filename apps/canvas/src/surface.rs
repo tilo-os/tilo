@@ -24,8 +24,8 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, ResourceOperation, ResourceOperationStart, SelectionHandle,
-    SelectionHandles, Widget,
+    AppModel, EventCtx, ModelPath, PenSample, ResourceOperation, ResourceOperationStart,
+    SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -117,17 +117,6 @@ enum Drag {
     Area,
 }
 
-/// What a pen on a tablet reports with the pointer it moves.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Stylus {
-    /// `0..=1`.
-    pub pressure: f64,
-    /// How far the pen leans, in degrees along x and y.
-    pub tilt: (f64, f64),
-    /// The pen's eraser end is down.
-    pub eraser: bool,
-}
-
 /// A path's points being edited: its outline in the mark's own coordinates.
 struct PointEdit {
     id: String,
@@ -186,9 +175,7 @@ pub struct CanvasSurface {
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
     /// when a mouse moved it.
-    stylus: Option<Stylus>,
-    /// A pen sample arrived that the next move or press goes with.
-    stylus_fresh: bool,
+    stylus: Option<PenSample>,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
     /// The theme's sizes as of the last layout, for handles hit-tested
     /// between frames.
@@ -238,7 +225,6 @@ impl CanvasSurface {
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
-            stylus_fresh: false,
             results: HashMap::new(),
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
@@ -626,7 +612,7 @@ impl CanvasSurface {
                 crossed,
             };
         }
-        let pressure = self.stylus.map(|stylus| stylus.pressure);
+        let pressure = self.pressure();
         Drag::Stroke {
             draft: BrushDraft::new(at, pressure),
             id: edit::fresh_id(&self.art, "s", &[]),
@@ -811,6 +797,7 @@ impl CanvasSurface {
         let at = self.content_point(screen);
         let zoom = self.zoom();
         let seconds = ui::time::now().duration_since(self.epoch).as_secs_f64();
+        let pressure = self.pressure();
         match &mut self.drag {
             Some(Drag::Pan) => {
                 self.moved_by_hand |= self.viewport.update_pan(screen);
@@ -824,7 +811,7 @@ impl CanvasSurface {
                 *now = at;
             }
             Some(Drag::Stroke { draft, .. }) => {
-                draft.push(at, seconds, zoom, self.stylus.map(|stylus| stylus.pressure));
+                draft.push(at, seconds, zoom, pressure);
             }
             Some(Drag::Sweep { path, crossed }) => {
                 let from = path.last().copied().unwrap_or(at);
@@ -969,18 +956,13 @@ impl CanvasSurface {
         }
     }
 
-    /// A pen reported `stylus` for the pointer's next move or press.
-    pub fn pen(&mut self, stylus: Stylus) {
-        self.stylus = Some(stylus);
-        self.stylus_fresh = true;
-    }
-
-    /// A move or press arrived: it is the pen's when a pen sample came just
-    /// before it, else a mouse's.
-    fn follow_stylus(&mut self) {
-        if !std::mem::take(&mut self.stylus_fresh) {
-            self.stylus = None;
-        }
+    /// The pressure the pen behind the pointer reports, when it reports
+    /// one: a pen without a pressure sensor, like a mouse, leaves the hand's
+    /// speed to stand in for it.
+    fn pressure(&self) -> Option<f64> {
+        self.stylus
+            .map(|pen| pen.pressure)
+            .filter(|pressure| *pressure > 0.0)
     }
 
     fn release(&mut self) {
@@ -2458,7 +2440,7 @@ impl Widget for CanvasSurface {
                 self.update_drag();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.follow_stylus();
+                self.stylus = ctx.pen();
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.drag.is_some() {
@@ -2468,7 +2450,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if self.rect.contains(self.cursor) => {
-                    self.follow_stylus();
+                    self.stylus = ctx.pen();
                     if !self.focused {
                         self.pressed_into_focus = true;
                     }
