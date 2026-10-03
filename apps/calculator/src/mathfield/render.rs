@@ -5,8 +5,6 @@
 use ui::paint::PaintCtx;
 use vello::kurbo::{Point, Rect};
 
-use crate::draw;
-
 use super::edit::Sel;
 use super::layout::{Gap, Layout};
 use super::model::Slot;
@@ -42,8 +40,7 @@ pub fn draw_selection(
     }
     if let (Some(a), Some(b)) = (x0, x1) {
         let band = Rect::new(origin.x + a, origin.y + top, origin.x + b, origin.y + bot);
-        let col = draw::with_alpha(ctx.theme.tokens.colors.accent[5], 90);
-        ctx.fill_rect(band, col);
+        ctx.fill_rect(band, ctx.theme.tokens.colors.intent.selection_tint);
     }
 }
 
@@ -51,7 +48,7 @@ pub fn draw_selection(
 pub fn draw_caret(ctx: &mut PaintCtx<'_>, origin: Point, gap: &Gap) {
     let x = origin.x + gap.x;
     let bar = Rect::new(x - 1.0, origin.y + gap.top, x + 1.0, origin.y + gap.bottom);
-    ctx.fill_rect(bar, ctx.theme.tokens.colors.accent[5]);
+    ctx.fill_rect(bar, ctx.theme.tokens.colors.intent.you);
 }
 
 /// Build the `(index, gap)` list for the caret's current row so the renderer

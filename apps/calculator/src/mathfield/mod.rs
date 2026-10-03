@@ -27,6 +27,20 @@ use winit::keyboard::{Key as WKey, NamedKey};
 use edit::Editor;
 use layout::Layout;
 
+/// The size a formula is set at in `theme`: the `Title` role's resolved size,
+/// less whatever scale the shared renderer already applies to every
+/// renderer-relative size (the math layout sizes its glyphs that way), so the
+/// formula ends up at the theme's size and is never scaled twice.
+pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    let size = theme.tokens.typography.size(ui::tokens::TextRole::Title);
+    let renderer = tr.text_scale();
+    if renderer.is_finite() && renderer > f32::EPSILON {
+        size / renderer
+    } else {
+        size
+    }
+}
+
 /// A controller wrapping one editable formula. The graph screens own one of
 /// these per function row and feed it the linear string from the model.
 pub struct MathField {
@@ -106,9 +120,15 @@ impl MathField {
         self
     }
 
-    /// Apply the active UI text scale before measuring or rendering this
-    /// structured field. Changing it invalidates the cached glyph geometry via
-    /// the effective-size layout signature below.
+    /// Set the size the formula is set at, resolved from the theme (which
+    /// already carries the text scale). Changing it invalidates the cached
+    /// glyph geometry via the effective-size layout signature below.
+    pub fn set_size(&mut self, size: f32) {
+        self.base_size = size;
+    }
+
+    /// Apply an extra text-scale multiplier before measuring or rendering
+    /// this structured field.
     pub fn set_text_scale(&mut self, scale: f32) {
         self.text_scale = scale.clamp(0.5, 4.0);
     }
@@ -191,7 +211,7 @@ impl MathField {
     }
 
     /// Left padding between the field edge and the content.
-    const PAD_X: f64 = 4.0;
+    const PAD_X: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
     /// Origin (top-left) where content is drawn. Horizontally the content is
     /// left-padded and shifted by the horizontal scroll; vertically it is
@@ -354,7 +374,7 @@ impl MathField {
         }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         for (bar, col) in bars {
-            scene.fill(Fill::NonZero, t, col, None, &bar);
+            ui::paint::fill_rect(scene, t, bar, col);
         }
         scene.pop_layer();
     }
@@ -543,7 +563,7 @@ impl MathField {
 /// Smallest inner (content-viewport) height a formula card uses. A short,
 /// single-line formula (`x + 1`, `sin(x)`) sits in a card of this height so the
 /// common case looks unchanged.
-pub const CARD_MIN_H: f64 = 30.0;
+pub const CARD_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 
 /// Largest inner height a formula card grows to. It is generous on purpose: a
 /// single fraction (`(x²+1)/(x−3)` ≈ 67 px) and a stacked `√` over superscripts
@@ -552,7 +572,7 @@ pub const CARD_MIN_H: f64 = 30.0;
 /// fraction-over-fraction and deeper nesting) exceeds this height, at which point
 /// the card stops growing and the formula becomes vertically scrollable within
 /// it — never clipped behind the card edge.
-pub const CARD_MAX_H: f64 = 96.0;
+pub const CARD_MAX_H: f64 = 2.0 * ui::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// The inner (content-viewport) height a card should use for a formula whose
 /// laid-out content is `content_h` tall: grow to fit, clamped to

@@ -7,17 +7,18 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
     CALCULATOR_ACTION_TYPE, CALCULATOR_OPERATION_TYPE, CalculatorAction, CalculatorOperation,
-    GraphKind, add_graph_action, clear_history_ids_action, delete_graph_action,
-    delete_history_entry_action, encode, set_graph_expr_action, toggle_graph_visible_action,
+    GraphKind, add_graph_action, clear_history_ids_action, commit_history_action,
+    delete_graph_action, delete_history_entry_action, encode, set_graph_expr_action,
+    toggle_graph_visible_action,
 };
 use crate::app::CalculatorApp;
 use crate::doc::{self, FUNCS, HISTORY, SURFACES};
-use crate::model::{HistoryEntry, PlotFn};
+use crate::model::{self, HistoryEntry, PlotFn};
 
 /// Durable calculator document state: history and saved graphs.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -352,6 +353,56 @@ impl ResourceApp for CalculatorShell {
     fn view(cx: &mut ViewCx<Calculator>) -> Element {
         cx.surface(CalculatorApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "calculator",
+            "calculator-error",
+            "calculator-narrow",
+            "calculator-drawer",
+            "graph-2d",
+            "graph-2d-long-formula",
+            "graph-2d-narrow",
+            "graph-2d-drawer",
+            "graph-3d",
+            "graph-3d-narrow",
+        ]
+    }
+
+    /// A narrow scenario captures at a phone-sized window, where each panel
+    /// is a floating drawer.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        (name.ends_with("-narrow") || name.ends_with("-drawer")).then_some((520, 820))
+    }
+
+    /// A capture shows a lived-in calculator: the calculations, curves and
+    /// surfaces a person has built up, applied through the same actions
+    /// every control dispatches.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Calculator>> {
+        let long_formula = ["sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)"];
+        let curves: &[&str] = if name == Some("graph-2d-long-formula") {
+            &long_formula
+        } else {
+            &model::DEMO_CURVES
+        };
+        // History is newest first, and a commit lands at the front.
+        let history = model::DEMO_HISTORY
+            .iter()
+            .rev()
+            .map(|(expr, result)| commit_history_action(expr, result));
+        let graphs = curves
+            .iter()
+            .map(|expr| add_graph_action(GraphKind::Curve2d, expr))
+            .chain(
+                model::DEMO_SURFACES
+                    .iter()
+                    .map(|expr| add_graph_action(GraphKind::Surface3d, expr)),
+            );
+        history
+            .chain(graphs)
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
+    }
 }
 
 /// Where the calculator's edits go: framework dispatcher when hosted, or the
@@ -417,6 +468,10 @@ impl ResourceSurface<Calculator> for CalculatorApp {
     fn attach(&mut self, cx: SurfaceCx<Calculator>) {
         self.attach_framework(cx.dispatcher());
     }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +499,43 @@ mod tests {
         assert!(
             entry.actions.iter().any(|action| action.id == "open"),
             "a hosted history entry stays the published row"
+        );
+    }
+}
+
+#[cfg(test)]
+mod scenario_tests {
+    use super::*;
+
+    /// Every scenario stages a lived-in calculator through the document's own
+    /// actions, and each narrow one captures at a phone-sized window.
+    #[test]
+    fn scenarios_stage_lived_in_content_and_declare_narrow_viewports() {
+        let history = model::DEMO_HISTORY.len();
+        let surfaces = model::DEMO_SURFACES.len();
+        let full = history + model::DEMO_CURVES.len() + surfaces;
+        for name in CalculatorShell::scenarios() {
+            let expected = if *name == "graph-2d-long-formula" {
+                history + 1 + surfaces
+            } else {
+                full
+            };
+            assert_eq!(
+                CalculatorShell::scenario(Some(name)).len(),
+                expected,
+                "scenario {name}"
+            );
+            let narrow = name.ends_with("-narrow") || name.ends_with("-drawer");
+            assert_eq!(
+                CalculatorShell::scenario_viewport(name).is_some(),
+                narrow,
+                "viewport of {name}"
+            );
+        }
+        assert_eq!(
+            CalculatorShell::scenario(None).len(),
+            full,
+            "a plain capture is lived in too"
         );
     }
 }
