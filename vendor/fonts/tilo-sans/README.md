@@ -230,6 +230,33 @@ Glyph order, production names and GDEF classes for new glyphs are filled in by
 wrong can be overridden with `com.schriftgestaltung.Glyphs.category` /
 `.subCategory` in the glyph's `lib`.
 
+## Greek
+
+Modern monotonic Greek, upright and italic, all masters: Α–Ω, α–ω with ς, the
+tonos and dialytika letters (Ά Έ Ή Ί Ό Ύ Ώ Ϊ Ϋ, ά έ ή ί ό ύ ώ ϊ ϋ ΐ ΰ), tonos
+΄, dialytika-tonos ΅, ano teleia ·, the Greek question mark ; and the numeral
+signs ʹ ͵ (`numeral-greek`, `lowernumeral-greek`).
+
+* Capitals that are Latin shapes (Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ) and ο are
+  components of the Latin glyphs; Ά Έ … are the tonos plus the letter, moved
+  right to make room. Everything else is drawn from the same master's Latin
+  parts: η from n, μ from u, κ from k, ι and τ from t, α from the single-storey
+  a with t's tail, ρ σ θ φ from the o bowl, γ ν from v, λ from y turned, Γ Δ Λ Π
+  Ξ from F, A, H and E's stems and bars. The free shapes (β δ ε ζ ξ ς υ ψ ω Φ Ψ
+  Ω) follow Instrument's rules: o's curve tension, vertical/horizontal stroke
+  contrast, terminals cut horizontally on curves and vertically on horizontal
+  strokes.
+* The tonos is the acute stood up (steeper, a little taller, same weight). Over
+  a capital it sits in front of the letter at cap height. In ΐ ΰ ΅ it stands
+  between the dots, which are set apart to clear it.
+* Kerning: each Greek glyph joins the Latin kerning classes of the Latin
+  shape its sides match (Γ's arm kerns like T's, Δ Λ like A, ρ like p on its
+  right and o on its left, …). The kern writer splits pairs per script, so
+  Greek and Latin never kern against each other.
+* Features: `languagesystem grek dflt`; `features/greek.fea` maps the Greek
+  question mark to the case form under `case`. Dropping the tonos in all-caps
+  text is left to the text layer.
+
 ## Editing
 
 UFO is a plain-text format: any UFO editor works (Fontra, RoboFont, FontForge,
