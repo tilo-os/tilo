@@ -226,7 +226,7 @@ completeness does not exempt a screen from these requirements.
   and disabled are all distinct; a control that does nothing yet is a defect
   (§ functionality), and a control that *looks* dead is a craft defect.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
-  (§ toolkit) so light/dark and OS accent both look intentional; no hard-coded
+  (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
   text.
 
@@ -391,8 +391,8 @@ widget already gets right:
   painted rect has no role, name, or state, so it does not exist to a screen
   reader.
 - **Theming** — shared widgets read every color and metric from the `Theme`
-  (hover/press/focus/disabled included), so light/dark, high-contrast, and OS
-  accent all track automatically. A hand-rolled control with `Color::rgb(...)`
+  (hover/press/focus/disabled included), so light/dark, high-contrast, the
+  workspace temperature and the person's own colour all track automatically. A hand-rolled control with `Color::rgb(...)`
   literals breaks all three (see §7's "Theme-driven" clause).
 
 This generalises §3 (text editing) to **all** interactive primitives. Concretely:
@@ -431,17 +431,9 @@ does not call it. The one automated check that implemented the rule
 string that appears nowhere. Two more spellings were invisible for the same
 reason:
 
-- **`Color::WHITE` / `Color::BLACK`** — most are a defensible ink on an accent
-  fill or a scrim; the defect is that nothing was looking, so nobody ever had to
-  say which.
-- **`surface_white_*` / `border_white_*`** — the values are no longer literally
-  white: `Colors::themed` washes them toward the contrasting extreme, so they
-  flip to black on a light palette (the fix landed after every unselected filter
-  chip lost its pill at 1.01:1 on light). What survives is the reason §9.5
-  deprecates them anyway — the *name* still says white, which is how a reader
-  picks one while reasoning about the wrong colour, and the tier is a
-  **declared** alpha that never measures itself against the ground it lands on.
-  `Colors::lift()` and `Colors::hairline_on()` do measure.
+- **`Color::WHITE` / `Color::BLACK`** — a label on an inverted fill is
+  `intent.on_inverted`, and the inverted fill is near-white on a dark
+  material, so a hard-coded white label there is invisible.
 
 `design_token_audit.rs` now covers all three, ratcheted against
 `crates/sdk/ui-core/tests/design_token_baseline.txt`: a file may never gain one, and a file that
@@ -476,64 +468,86 @@ The rule that prevents the drift returning is the same one §8 applies to apps:
 
 Every chrome surface is exactly one of six **roles**. Pick the role first; the
 role fixes radius, surface, border, elevation and motion together, so two
-surfaces of the same role are automatically consistent.
+surfaces of the same role are automatically consistent. The values come from
+`docs/design-language.md` ("Shape", "Colour", "Material").
 
 | Role | What it is | Radius | Surface | Border | Elevation |
 |---|---|---|---|---|---|
 | **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
-| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | `e1`, downward only |
-| **Panel** | a floating surface that opens over content (quick settings, palette, popovers, sheets) | `radii.xl` (24) | `chrome::shell::panel_ground` (opaque) | full hairline | `e4` |
-| **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.lg` (12) | selection tiers (§9.3) | per tier | none |
-| **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | `radii.full` | selection tiers (§9.3) | per tier | none |
-| **Object** | a thing that holds app content (window card, tile) | `radii.xl` (24) | `surfaces.window_card` | `Colors::window_edge()` | `e3`; `e4` while dragged |
+| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | none |
+| **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | `chrome::shell::panel_ground` (opaque) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
+| **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.control` (8) | selection tiers (§9.3) | per tier | none |
+| **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | half its height | selection tiers (§9.3) | per tier | none |
+| **Object** | a window tile | `radii.tile` (14) | `surfaces.content` | `Colors::window_edge()` | none; `elevation.floating` only while dragged |
 
-Two consequences worth stating outright, because both were being violated:
+The radius scale is semantic (`tokens::Radii`):
 
-- **`radii.sm` (4) and `radii.md` (8) are not for interactive bodies.** They are
-  for details drawn *inside* a control — a progress track, a badge, a sparkline
-  clip. A pressable thing is `radii.lg` if it is a Control and `radii.full` if
-  it is a Selector, never a 4 px rectangle.
-- **16 px is not on the scale.** The radius scale is 4 / 8 / 12 / 24 / full and
-  deliberately omits 16 (see `tokens::radii`). A literal `16.0` in a chrome
-  draw path is off-scale by construction.
+| Field | Value | For |
+|---|---|---|
+| `tile` | 14 | a window tile |
+| `panel` | 18 | a floating panel (menu, popover, palette, sheet, quick settings) |
+| `control` | 8 | a button, field, segmented track, a tile inside a panel |
+| `item` | 6 | an item inside a control or list: a selected row, a segment thumb |
+| `detail` | 4 | a detail inside a control: progress track, badge, sparkline clip; also the floor |
+| `full` | pill | chips, presence pills, tags, avatars — pill-shaped by meaning |
+
+**Radii are concentric.** Something inset inside a rounded container takes
+`radii.concentric(outer, inset)` — the container's radius minus the inset,
+never below `radii.detail` — rather than a token of its own, so its corners
+run parallel to the container's. The palette's query field and its selected
+row are concentric with the palette card; the panel's inner light edge is
+concentric with the panel. Buttons and tabs are not pills, and a radius
+literal in a chrome draw path is a defect.
 
 ### 9.2 Surfaces come from the semantic tier, never from a ramp slot
 
-Chrome reads `colors.surfaces.*`, which every theme defines for itself. It does
-**not** reach into `colors.neutral[n]`. A ramp slot is a colour; a surface token
-is a *promise about contrast* that each theme keeps in its own way, and only the
-latter survives a theme the author never saw.
+Chrome reads `colors.surfaces.*`. It does **not** reach into
+`colors.neutral[n]`. A ramp slot is a colour; a surface token is a *promise
+about contrast* that every material keeps, at every temperature.
 
-- Bar and Panel: `surfaces.overlay`.
-- Ground: `surfaces.base`. Object: `surfaces.window_card`.
-- Scrim behind a modal Panel: `surfaces.scrim`, faded in with the panel.
+The neutral material is defined in OKLCH and shares one hue
+(`colors.neutral_hue`, chroma at most 0.010), so a theme or a workspace can
+shift its temperature without moving contrast (`Theme::with_neutral_hue`;
+each workspace takes the hue of its wallpaper, `ui::workspace_hue`).
 
-One shared constant, `CHROME_SURFACE_ALPHA`, sets the opacity of every Bar and
-Panel, so the whole chrome is one material. Per-surface alpha literals are what
-made quick settings read as a different substance from the bar it hangs off.
+| Surface | Dark L | Light L | Use |
+|---|---|---|---|
+| `surfaces.base` | 0.16 | 0.90 | Ground: the desktop behind tiles |
+| `surfaces.content` | 0.215 | 0.995 | Object: every app's window ground, owned by the framework |
+| `surfaces.sidebar` | 0.195 | 0.965 | the navigation region of a window |
+| `surfaces.inspector` | 0.235 | 0.975 | the detail / inspector region of a window |
+| `surfaces.raised` | 0.265 | 1.0 | fields, wells and objects inside content |
+| `surfaces.overlay` | 0.285 | 1.0 | Bar and Panel |
+| `surfaces.scrim` | — | — | behind a modal Panel, faded in with it |
 
-**That material is opaque.** Translucency is
-only worth its cost when the backdrop is blurred, and this renderer cannot blur
-a backdrop — vello can blur a *shape*, which is what a drop shadow is made of,
+The ink tiers `text_primary` / `text_dim` / `text_tertiary` are defined on
+`surfaces.content` (dark L 0.96 / 0.76 / 0.62, light 0.18 / 0.43 / 0.56).
+`tokens::contrast::FLOORS` holds every pairing to WCAG AA for its role (AAA on
+the high-contrast material) and is swept at every hue in tests.
+
+**The material is opaque.** Floating chrome is meant to be a *blurred*
+material — the compositor blurs what is behind the panel and tints it with
+`surfaces.overlay` at 72 % (`surfaces.material`) — and without a backdrop blur
+it falls back to opaque `surfaces.overlay`. This renderer cannot blur a
+backdrop (vello can blur a *shape*, which is what a drop shadow is made of,
 but there is no backdrop filter short of rendering the scene to a texture and
-convolving it. Unblurred, a translucent panel simply adds a fraction of whatever
-is behind it to itself: not glass, but a loss of contrast that changes with what
-the user happens to have open. Measured at the old 0.80, one quick-settings
-panel's own body ran `#ffffff` over a document and `#f7f7f7` over the desktop —
-one flat surface reading as two, with a seam across the middle of it.
+convolving it), so chrome paints the opaque form. Unblurred translucency is
+never correct: it is not glass, but a loss of contrast that changes with what
+the user happens to have open.
 
 **A Panel separates itself by value and by edge.** `panel_ground` walks the
-declared overlay tier away from *both* the desktop and the window card until it
-clears each of them, because a Panel floats over app content and a Bar does not,
-and the two are one material. `panel_border` supplies the edge. Get those right
-and elevation is a finishing touch; get them wrong and the shadow is asked to do
-their job, which is how it ends up too big to look like a shadow.
+overlay tier away from *both* the desktop and the window ground until it
+clears each of them, because a Panel floats over app content and a Bar does
+not, and the two are one material. `panel_border` supplies the edge.
 
 ### 9.3 Selection is a lift, and only a lift
 
-Every "which one is chosen" state in the shell — active tab, active workspace,
-active strip, selected row, chosen scope chip, current power profile — uses the
-**same four tiers**:
+A selected row, tab or segment is a **lift**: one surface step of the ground
+it sits on, with primary ink, and no hue. On the window ground that is
+`colors.intent.selection` (hover `selection_hover`); on any other ground
+`colors.lift_on(ground, 1.0)` (hover `0.5`). In chrome, every "which one is
+chosen" state — active tab, active workspace, active strip, selected row,
+chosen scope chip, current power profile — uses the **same four tiers**:
 
 | State | Fill | Border | Inner glow | Scale |
 |---|---|---|---|---|
@@ -542,108 +556,99 @@ active strip, selected row, chosen scope chip, current power profile — uses th
 | **active** | `colors.lift(1.0)` | `hairline_on(ground, 26)` | `hairline_on(ground, 51)` | 1.0 |
 | pressed | as active | as active | as active | 0.97 |
 
-This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
-was `pub(crate)` and therefore unreachable from the shell — which is precisely
-why the shell grew its own incompatible answers). Call it; do not restate it.
-This includes toolkit list selection: `TreeView`, `Table`, `DataTable` and
-`Sidebar` rows are a lift, never an accent wash.
+This is `ui::chrome::selection_tier`; call it, do not restate it. Toolkit list
+selection (`TreeView`, `Table`, `DataTable`, `Sidebar` rows) is a lift too.
+On a ground other than the desktop use `chrome::selection_tier_on(theme,
+state, ground)`, which keeps the base lift where it registers and otherwise
+walks `LIFT_ALPHA_STEPS` until the active fill clears the ground by
+`HAIRLINE_MIN_DELTA`.
 
-**One caveat the tier cannot absorb for you.** `Colors::lift` interpolates from
-`surfaces.base` toward `surfaces.raised`, and where those two are close it
-falls back to a derived step against the ground. That fallback is by design and
-is what the default dark palette already uses. But it is *weak*, and on the
-high-contrast palette — where `base` and `raised` are both pure black — it is
-weaker than a fixed floor. A control that gives its unselected state a floor of
-its own (because it has no row around it to supply context, as the strip ribbon
-does) can therefore end up painting the **selected** state less prominently
-than the unselected one. If a control needs its own floor, derive all of its
-states from one ordered ramp against the ground and assert the ordering per
-theme; do not mix a floor with the tier.
+**The armed row of a menu is inverted, not lifted.** The row Enter or a click
+will activate in a menu, popover, dropdown, slash menu or palette result list
+is an inverted control (`intent.inverted` fill, `intent.on_inverted` label):
+a lift was measured too weak to find (ΔL* 11.6 read as "no highlighting").
 
-Why lift rather than an accent fill:
+**One caveat the tier cannot absorb for you.** `Colors::lift` interpolates
+from `surfaces.base` toward `surfaces.raised`; on the high-contrast material,
+where those two are both black, it falls back to a derived step against the
+ground. If a control needs its own floor, derive all of its states from one
+ordered ramp against the ground and assert the ordering per theme; do not mix
+a floor with the tier.
 
-- `Colors::lift` measures its move against the chrome's *own ground* by relative
-  luminance, so it lifts correctly on dark, light and high-contrast without a
-  per-theme branch. A fixed white wash only lifts over a dark ground, and a
-  fixed accent fill collides with whatever the accent is being used for.
-- It leaves the **accent free to mean one thing**: see §9.4.
-- Hover and active are the same *kind* of change at two strengths, so the
-  control reads as one continuous affordance rather than two unrelated looks.
-
-An active thing never gets *more* prominent on hover. The contrast gain belongs
-to the inactive things brightening toward the active tier.
+An active thing never gets *more* prominent on hover. The contrast gain
+belongs to the inactive things brightening toward the active tier.
 
 **Elevation and selection are different vocabularies and must not be mixed:**
 
 > **A shadow means "off the surface". A lift means "chosen on the surface".**
 
-A selected pill casts no shadow — it is not floating, it is picked. A dragged
-object casts `e4` — it is lifted and will land somewhere. Rows of
-idle pills each laying down a soft shadow is what made the tab strip read as
-muddy rather than as chrome.
+A selected pill casts no shadow. A dragged object casts `elevation.floating`
+— it is lifted and will land somewhere.
 
-**A shadow is the shape of the thing casting it, and comes from a token.** One
-painter, `surface::shadow(scene, transform, rect, radius, token)`: it blurs the
-surface's *own rounded outline*, so a shadow is equally dense the whole way
-round and its corners follow the surface's corners. Pass the radius. A surface
-that hands its shadow a square field gets a box around a rounded panel, with
-corners several times lighter than the flat edges — "boxy and uneven" is what
-that looks like from the outside.
+**Only floating things cast a shadow, and they all cast the same one.**
+`elevation.floating` is one soft, wide shadow (blur 32, offset a quarter of
+that); on a dark material the floating surface also strokes
+`elevation.floating_edge`, a 1 px light edge just inside its outline
+(`ui::surface::floating_edge`, painted for you by `ui::surface::panel`).
+Window tiles, bars, cards and selected controls have no shadow: a tile is
+separated by the ground and its window edge.
 
-The token is the whole description: `offset_y`, `blur`, and a `color` whose
-**alpha is the strength and is honoured**. Do not hand a shadow a bare `Color` —
-a caller given a colour and no offset or blur has to invent the other two, which
-is how four surfaces in this toolkit each grew a different shadow, three of them
-a solid rounded rect nudged down a few pixels and called soft. `offset_y` stays
-a quarter of `blur` across the ramp; a larger ratio slides the falloff onto the
-bottom edge and the surface stops looking lifted and starts looking like it has
-a dark bar under it.
+**A shadow is the shape of the thing casting it, and comes from the token.**
+One painter, `surface::shadow(scene, transform, rect, radius, token)`: it
+blurs the surface's *own rounded outline*, so a shadow is equally dense the
+whole way round and its corners follow the surface's corners. Pass the
+radius. Do not hand a shadow a bare `Color`. `soft_shadow` is the older
+sprite painter for effects with no outline to follow — the wheel disc's
+bloom, a glow around a dragged card — and is not for drop shadows.
 
-`soft_shadow` is the older sprite painter and is **not** for drop shadows any
-more. It survives for effects with no outline to follow — the wheel disc's
-bloom, a glow around a dragged card.
+### 9.4 There is no accent: intents and your colour
 
-### 9.4 Accent means live, not selected
+The interface is a quiet, near-colourless material; **colour means that
+someone is there or that something is happening.** Nothing in the theme is a
+brand hue, and an app cannot supply one. Every former accent use is one of
+these intents (`colors.intent`):
 
-`colors.accent` is reserved for **state the user did not choose and should
-notice**: recording, screen-sharing, a peer joining, a live collaborative
-session, an unread count, a sync in flight. Selection is a lift (§9.3); focus is
-`border_focus`; danger/warning/success are `colors.semantic.*`.
+| Intent | Token | For |
+|---|---|---|
+| inverted | `intent.inverted` / `inverted_hover` + `intent.on_inverted` | a primary action, a switch that is on, a checked box, a slider's filled track, a progress fill, a menu's armed row |
+| selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item (§9.3) |
+| your colour | `intent.you` (= `border_focus`) | the focus ring, the text caret, selection handles, a drop or insertion indicator |
+| selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
+| status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
+| presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a participant's cursor, selection, avatar and attribution; chart and tag series |
 
-This is the rule that kills per-surface palettes. A CPU label is not "green" —
-if a metric strip needs to distinguish its columns, it distinguishes them with
-`semantic.success` / `semantic.info` / `semantic.warning`, which every theme
-defines and high-contrast redefines. Literal `0x4a,0xde,0x80` is Tailwind
-green-400 wearing a costume, and it ignores the user's theme completely.
+Links are primary ink with an underline. An "active" icon is primary ink, an
+inactive one secondary ink.
 
-Per-peer identity colours are the single sanctioned exception: they come from
-`ui::presence::user_color`, are derived from the peer id, and are *identity*,
-not decoration.
+**Your colour** is the local person's presence colour — the colour their
+cursor has for collaborators (`Theme::with_your_colour`; the shell sets it
+from the person's identity, a standalone app from the host accent).
+
+**The presence palette** is twelve hues at one OKLCH lightness and chroma
+(dark L 0.74 C 0.14, light L 0.58 C 0.15), so no participant looks more
+important than another. Identities travel as colours
+(`ui::presence::user_color`, `PEER_PALETTE`); paint them through
+`colors.presence.of(..)`, which carries their hue at the active material's
+lightness and chroma.
 
 ### 9.5 Borders are derived, never declared
 
 Chrome borders call `Colors::hairline_on(ground, alpha)`, which picks white or
-black by whichever actually moves against that ground. A declared
-`border_standard` stroked onto a translucent Panel does not track the surface
-under it and disappears on one theme or glares on another.
+black by whichever actually moves against that ground. A hairline appears
+only where two equal surfaces meet; groups are separated by space and type
+weight, not boxes, and a card exists only for an *object* (something you can
+open, move, share or drag).
 
 - hairline on a control: alpha 26 (`/10`)
 - inner glow on an active control: alpha 51 (`/20`)
 - separator inside a Panel: alpha 26, inset from the panel edge by
   `spacing.s3`, never running full-bleed into the corner radius
 
-`surface_white_5` / `surface_white_10` / `border_white_10` were literal white at
-low alpha in **every** theme, including light ones where a white veneer over a
-white panel is invisible — the faint tier measured 1.01:1 on light, which is why
-every unselected filter chip there read as bare text. `Colors::themed` now
-washes them toward the contrasting extreme instead, so they flip to black on a
-light palette and a tier means the same thing on both sides of the line.
-
-They stay **deprecated in chrome** regardless, for the half that derivation
-cannot fix: the name says white while the value is a veneer, and the strength is
-*declared* rather than measured against the ground the surface actually lands
-on. `lift` and `hairline_on` take that measurement, so a hairline stays a
-hairline on a palette their author never saw. Reach for those.
+The state veneers are `overlay_subtle` / `overlay_medium` / `overlay_strong`
+and `overlay_border_subtle` / `overlay_border_strong`: directional washes that
+lighten a dark ground and darken a light one. The declared strength is
+still a declaration, so chrome prefers `lift` and `hairline_on`, which measure
+against the ground the surface actually lands on.
 
 #### Rest edges (toolkit and shell)
 
@@ -652,24 +657,24 @@ edge or a clear contrast step** against the surface it sits on, at 1× in dark
 and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
 inset 1 px stroke (`ui::surface::card`, `pill`, or the same geometry inline);
 chosen states use `selection_tier` (Controls) or `glass_selector` (Selectors);
-focus stays `border_focus`; disabled is the rest face under
+focus is `border_focus` (your colour); disabled is the rest face under
 `widget::DISABLED_ALPHA`, so rest and disabled never look the same.
 
 | Control | Rest fill | Rest edge |
 |---|---|---|
 | Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
-| Card / Container / ContentCard | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
+| Card / Container / ContentCard (objects only) | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`; separators `separator(.., s3, ..)`, never full-bleed |
+| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed |
 | Tooltip | as today | `edge_on(fill)` |
-| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment `glass_selector` |
-| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected accent, no edge |
-| Toggle | off `lift(1.0)`, on `accent_primary` | `edge_on(track)`; one knob colour for both states |
-| Slider | unfilled `lift(1.0)`, filled `accent_primary` | `edge_on(unfilled)`; thumb contrasts against both halves |
-| Checkbox | unchecked `surfaces.raised` | `edge_on(raised)` |
+| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment a lift of the track |
+| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected is a lift, no edge |
+| Toggle | off `lift(1.0)`, on `intent.inverted` | `edge_on(track)`; the knob is the glyph of its track: `on_inverted` on, `text_dim` off |
+| Slider | unfilled `lift(1.0)`, filled `intent.inverted` | `edge_on(unfilled)`; thumb contrasts against both halves |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted` | `edge_on(raised)` |
 | Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
-| TreeView / Sidebar / VirtualList rows | transparent | none; selection is `selection_tier` |
-| Divider | — | `border_standard` only on `surfaces.base`; `Divider::on(surface)` elsewhere |
+| TreeView / Sidebar / VirtualList rows | transparent | none; selection is a lift |
+| Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
 | App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
@@ -680,23 +685,13 @@ their count against `tests/chrome_declared_border_baseline.txt`.
 
 **One painter per row of that table.** `ui::surface::card(fill)` is the edged
 opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
-fill + `panel_border`) so no app spells the pair; `ui::surface::card_on(fill,
-ground)` is for a translucent wash (an accent tint, a hover film) — the edge
-derives from what the eye sees, the wash composited over its ground, because a
-hairline judged by a 16 % wash's own RGB flips polarity on light and vanishes.
-`edge_on` assumes an opaque fill. All three snap their rect to whole logical
-pixels and `separator` lands on one device-pixel row (`separator_rect`): a 1 px
-edge on a fractional coordinate is two half-covered rows that fall under
+fill + `panel_border` + `floating_edge`) so no app spells the set;
+`ui::surface::card_on(fill, ground)` is for a translucent wash — the edge
+derives from what the eye sees, the wash composited over its ground. `edge_on`
+assumes an opaque fill. All three snap their rect to whole logical pixels and
+`separator` lands on one device-pixel row (`separator_rect`): a 1 px edge on a
+fractional coordinate is two half-covered rows that fall under
 `HAIRLINE_MIN_DELTA` even when the colour registers.
-
-**Selection lifts from the ground it sits on.** `chrome::selection_tier` measures
-its lift against `surfaces.base`; a row on `panel_ground`, a raised sidebar or a
-card is within rounding distance of that lift on dark and high-contrast (Δ
-0.008 / 0.002). Use `chrome::selection_tier_on(theme, state, ground)` there — it
-keeps the base lift where it registers and otherwise walks `LIFT_ALPHA_STEPS`
-until the active fill clears the ground by `HAIRLINE_MIN_DELTA`, with hover
-halfway between. The same rule for one control never yields a different fill
-depending on which panel hosts it, because the ground is the input.
 
 ### 9.6 Type and density
 
@@ -903,9 +898,8 @@ Grep a chrome diff for these; each hit is a role you skipped:
   to have typed lately (see §8: grepping only for `Color::rgb` is how these
   accumulated under a green check)
 - `Color::WHITE` / `Color::BLACK` — a colour is a colour even when it has a
-  name; the theme has an on-accent ink and a scrim token
-- `surface_white_` / `border_white_` (any suffix) — a declared strength, never
-  measured against its ground (§9.5)
+  name; the theme has an on-inverted ink and a scrim token
+- an accent of any spelling — there is none; pick the intent (§9.4)
 - `colors.neutral[` in chrome (use `surfaces.*`)
 - `.border_standard` / `.border_strong` / `overlay_border_strong` stroked on a
   raised or overlay surface — a declared edge (§9.5); ratcheted by
