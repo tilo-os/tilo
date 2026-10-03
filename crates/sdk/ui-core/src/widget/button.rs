@@ -758,9 +758,11 @@ impl FaceContent<'_> {
             (label_w + metrics.hint_gap + hint_w <= room).then_some((hint.as_str(), hint_w))
         });
         let label_room = hint.map_or(room, |(_, hint_w)| room - metrics.hint_gap - hint_w);
-        let label = ctx
-            .text
-            .elide_to_width_style(self.label, px_f32(label_room.max(1.0)), style);
+        // Half a pixel of slack: a face sized to its measured label never
+        // elides it over shaping round-off.
+        let label =
+            ctx.text
+                .elide_to_width_style(self.label, px_f32(label_room.max(1.0) + 0.5), style);
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
         let cluster = lead + f64::from(label_w) + hint_w;

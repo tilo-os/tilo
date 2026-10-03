@@ -339,7 +339,7 @@ impl Slider {
         let track_radius = track_rect.height() / 2.0;
         // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
         // slot) with an edge derived from itself; the filled half is accent.
-        let unfilled = theme.tokens.colors.lift(1.0);
+        let unfilled = theme.tokens.colors.intent.selection;
         let filled = theme.tokens.colors.intent.inverted;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
@@ -384,7 +384,11 @@ impl Slider {
         // one it is the primary ink, which already clears both.
         let colors = &theme.tokens.colors;
         let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-        let (fill_color, border_color) = if colors.lifts_bright() {
+        let (fill_color, border_color) = if crate::widget::toggle::light_material(colors) {
+            let ring =
+                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
+            (colors.surfaces.raised, ring)
+        } else {
             let fill =
                 crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_primary, floor);
             let edge = if face.dragging || face.hovered {
@@ -393,10 +397,6 @@ impl Slider {
                 crate::surface::edge_on(fill)
             };
             (fill, edge)
-        } else {
-            let ring =
-                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
-            (colors.surfaces.raised, ring)
         };
         let border_width = 1.5;
         // Pressed halo: nested hairlines outside the knob, derived against
@@ -839,11 +839,11 @@ mod tests {
         let colors = &theme.tokens.colors;
         let raised = colors.surfaces.raised;
         let ring = crate::widget::toggle::ink_across(
-            &[colors.intent.inverted, colors.lift(1.0)],
+            &[colors.intent.inverted, colors.intent.selection],
             colors.text_tertiary,
             crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
-        for ground in [colors.intent.inverted, colors.lift(1.0)] {
+        for ground in [colors.intent.inverted, colors.intent.selection] {
             assert!(
                 crate::a11y::contrast_ratio(ring, ground)
                     >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
