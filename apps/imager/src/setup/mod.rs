@@ -57,7 +57,7 @@ pub(crate) fn page(header: Column) -> Column {
 
 /// A page's width: the wizard's readable column inside the page gutter.
 pub(crate) fn readable_page_width() -> f32 {
-    crate::app::READABLE_WIDTH as f32 + 2.0 * crate::rhythm::px::PAGE_GUTTER
+    crate::page::readable_page_width()
 }
 
 /// `widget` in the column beside a page's scrolling body, ending where the
