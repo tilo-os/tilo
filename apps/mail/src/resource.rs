@@ -9,9 +9,10 @@
 //! beside [`tilo_resource::publish`].
 
 use automerge::AutoCommit;
+use tilo_document::RichText;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, EncodedAction, Resource as PublishedResource};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -97,13 +98,8 @@ impl Resource for Mail {
 
     fn children(state: &MailboxState) -> Vec<tilo_actions::Resource> {
         let mut children = publish_document_children(state);
-        // Each composer draft body is a nested rich-text resource.
         if state.has_draft_body {
-            children.push(tilo_actions::Resource::new(
-                "mail.draft:current/body",
-                tilo_document::RichText::KIND,
-                "Draft body",
-            ));
+            children.push(publish_draft_body());
         }
         children
     }
@@ -121,6 +117,22 @@ impl Resource for Mail {
         });
         folders.chain(custom).collect()
     }
+}
+
+/// Where the draft body is published, beside the draft it belongs to.
+const DRAFT_BODY_ID: &str = "mail.draft:current/body";
+
+/// The draft body as a rich-text resource of its own: its edits are
+/// [`MailAction::EditDraftBody`], so an agent edits it through its address
+/// exactly as the composer does.
+fn publish_draft_body() -> PublishedResource {
+    publish_child::<RichText, Mail>(DRAFT_BODY_ID, "Draft body", None, MailAction::EditDraftBody)
+}
+
+/// The dispatcher the composer edits the draft body through, at the address
+/// [`publish_draft_body`] publishes.
+pub(crate) fn draft_body_dispatcher(dispatcher: &Dispatcher<Mail>) -> Dispatcher<RichText> {
+    dispatcher.child::<RichText>(DRAFT_BODY_ID, MailAction::EditDraftBody)
 }
 
 /// Hosted-only extras that are not document state: an in-flight send and a
@@ -378,5 +390,147 @@ mod tests {
             before,
             "empty present must not clear unpublished local mail"
         );
+    }
+
+    mod draft_body {
+        use tilo_document::RichTextAction;
+        use ui::framework::testing::TestApp;
+        use ui::tilo_resource::Invoke;
+        use vello::kurbo::Rect;
+
+        use super::super::{DRAFT_BODY_ID, MailShell};
+        use crate::doc::MailDoc;
+        use tilo_document::RichText;
+        use ui::tilo_resource::Resource as _;
+
+        /// The draft body's paragraphs as stored.
+        fn body(app: &TestApp<MailShell>) -> Vec<String> {
+            app.read_document(|doc| {
+                MailDoc::draft_body(doc)
+                    .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
+                    .map(|blocks| blocks.into_iter().map(|block| block.text).collect())
+                    .unwrap_or_default()
+            })
+        }
+
+        /// The draft body as the HTML part it is sent as.
+        fn html(app: &TestApp<MailShell>) -> String {
+            app.read_document(|doc| {
+                let root = MailDoc::draft_body(doc).unwrap();
+                tilo_doc_codecs::export_html::render_html_fragment_under(
+                    doc,
+                    &root,
+                    &tilo_content::NoContent,
+                )
+                .unwrap_or_default()
+            })
+        }
+
+        /// Where the composer shows its control `target` (`body`, `bold`).
+        fn control(app: &mut TestApp<MailShell>, target: &str) -> Rect {
+            fn find(node: &serde_json::Value, target: &str) -> Option<serde_json::Value> {
+                match node {
+                    serde_json::Value::Object(fields) => {
+                        if fields.get("action_target").and_then(|t| t.as_str()) == Some(target) {
+                            return fields.get("bounds").cloned();
+                        }
+                        fields.values().find_map(|value| find(value, target))
+                    }
+                    serde_json::Value::Array(items) => {
+                        items.iter().find_map(|value| find(value, target))
+                    }
+                    _ => None,
+                }
+            }
+            let inspection: serde_json::Value =
+                serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+            let bounds = find(&inspection, &format!("mail.compose:{target}"))
+                .unwrap_or_else(|| panic!("the composer shows {target}: {inspection}"));
+            let edge = |name: &str| bounds[name].as_f64().unwrap();
+            Rect::new(edge("x0"), edge("y0"), edge("x1"), edge("y1"))
+        }
+
+        /// Mail with the composer open and the caret in its body.
+        fn composing() -> TestApp<MailShell> {
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = TestApp::<MailShell>::new().unwrap();
+            app.call("compose", serde_json::json!({})).unwrap();
+            let body = control(&mut app, "body");
+            app.harness().click_at(body.x0 + 20.0, body.y0 + 16.0);
+            app
+        }
+
+        #[test]
+        fn typing_in_the_draft_body_edits_it_through_mail_a_word_a_step() {
+            let mut app = composing();
+            app.harness().type_text("Hi there");
+            assert_eq!(body(&app), ["Hi there"]);
+            let edits = app
+                .versions()
+                .into_iter()
+                .filter_map(|version| version.context)
+                .filter(|context| {
+                    context
+                        .resource
+                        .as_ref()
+                        .is_some_and(|resource| resource.id == DRAFT_BODY_ID)
+                })
+                .count();
+            assert!(edits > 0, "history names the draft body as what was edited");
+            assert!(app.undo());
+            assert_eq!(body(&app), ["Hi "]);
+        }
+
+        #[test]
+        fn formatting_marks_what_is_typed_next() {
+            let mut app = composing();
+            let bold = control(&mut app, "bold");
+            app.harness().click_at(bold.center().x, bold.center().y);
+            app.harness().type_text("Hi");
+            assert_eq!(body(&app), ["Hi"]);
+            let html = html(&app);
+            assert!(html.contains("<strong>Hi</strong>"), "got: {html}");
+        }
+
+        #[test]
+        fn the_link_prompt_links_the_typed_address() {
+            let mut app = composing();
+            let link = control(&mut app, "link");
+            app.harness().click_at(link.center().x, link.center().y);
+            // The prompt starts with the scheme; the address goes after it.
+            app.harness().key("End");
+            app.harness().type_text("example.test/docs");
+            app.harness().key("Enter");
+            let html = html(&app);
+            assert!(
+                html.contains("href=\"https://example.test/docs\""),
+                "got: {html}"
+            );
+        }
+
+        #[test]
+        fn an_agent_edits_the_draft_body_through_its_own_address() {
+            let mut app = composing();
+            let surface = app.agent_surface();
+            assert!(
+                surface.as_array().unwrap().iter().any(|row| {
+                    row["resource"] == DRAFT_BODY_ID && row["resource_kind"] == RichText::KIND
+                }),
+                "the draft body is published as rich text: {surface}"
+            );
+            app.invoke_child::<RichText>(
+                DRAFT_BODY_ID,
+                Invoke::<RichText>::apply(&RichTextAction::ReplaceBody {
+                    markdown: "from an agent".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body(&app), ["from an agent"]);
+            let shown = app.harness().inspection_json().unwrap();
+            assert!(shown.contains("from an agent"), "the composer shows it");
+            assert!(app.undo());
+            assert_eq!(body(&app), [""]);
+        }
     }
 }
