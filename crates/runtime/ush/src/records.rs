@@ -147,8 +147,16 @@ impl Records {
         if key != DEFAULT_RECORD {
             return Err(RecordError::Missing(key.to_owned()));
         }
-        let runtime = images.current_runtime().map_err(RecordError::NoRuntime)?;
-        let env = self.create(key, &Environment::new(DEFAULT_NAME, &runtime))?;
+        let (release, runtime) = images.current_runtime().map_err(RecordError::NoRuntime)?;
+        let env = self.create(
+            key,
+            &Environment::new(
+                DEFAULT_NAME,
+                &release,
+                tilo_environment::host_arch(),
+                &runtime,
+            ),
+        )?;
         Ok((key.to_owned(), env))
     }
 
@@ -206,8 +214,10 @@ mod tests {
         fn check_tool(&self, _tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
             Ok(())
         }
-        fn current_runtime(&self) -> Result<PackageId, String> {
-            self.0.ok_or_else(|| "no env-runtime is installed".into())
+        fn current_runtime(&self) -> Result<(String, PackageId), String> {
+            self.0
+                .map(|id| ("2026.10".to_owned(), id))
+                .ok_or_else(|| "no env-runtime is installed".into())
         }
     }
 
@@ -225,7 +235,11 @@ mod tests {
 
         let (key, env) = records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
         assert_eq!(key, DEFAULT_RECORD);
-        assert_eq!(env.runtime_id().unwrap(), image(1));
+        assert_eq!(
+            env.runtime_image(tilo_environment::host_arch()).unwrap(),
+            image(1)
+        );
+        assert_eq!(env.runtime.release, "2026.10");
         assert_eq!(env.name, DEFAULT_NAME);
         assert!(
             records
@@ -244,7 +258,10 @@ mod tests {
 
         // A second resolve reads the record, not the current runtime.
         let (_, again) = records.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-        assert_eq!(again.runtime_id().unwrap(), image(1));
+        assert_eq!(
+            again.runtime_image(tilo_environment::host_arch()).unwrap(),
+            image(1)
+        );
 
         assert!(matches!(
             records.resolve(Some("work"), &OneRuntime(Some(image(1)))),
@@ -265,7 +282,11 @@ mod tests {
         let env = records
             .apply(
                 DEFAULT_RECORD,
-                Environment::ADD_TOOL.with((image(2).to_string(), vec!["pandoc".into()])),
+                Environment::ADD_TOOL.with((
+                    vec!["pandoc".into()],
+                    tilo_environment::host_arch().to_owned(),
+                    image(2).to_string(),
+                )),
             )
             .unwrap();
         assert_eq!(env.tools.len(), 1);

@@ -219,15 +219,21 @@ fn fixture_environment(store: &Store, granted: &Path) {
     records
         .create(
             DEFAULT_RECORD,
-            &Environment::new("Fixture", &PackageId::from_bytes(RUNTIME)),
+            &Environment::new(
+                "Fixture",
+                "2026.10",
+                tilo_environment::host_arch(),
+                &PackageId::from_bytes(RUNTIME),
+            ),
         )
         .unwrap();
     records
         .apply(
             DEFAULT_RECORD,
             Environment::ADD_TOOL.with((
-                PackageId::from_bytes(TOOL).to_string(),
                 vec!["fixture-tool".into()],
+                tilo_environment::host_arch().to_owned(),
+                PackageId::from_bytes(TOOL).to_string(),
             )),
         )
         .unwrap();
