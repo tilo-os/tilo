@@ -164,10 +164,23 @@ impl Component {
 
     /// `cargo` arguments (after the program name) that build this
     /// component for a dev layer. Both builders run exactly these.
+    ///
+    /// A `release` layer links the way dev images link their own release
+    /// binaries (`TILO_RUST_LTO=off` in os/Containerfile): no LTO, sixteen
+    /// codegen units. The workspace profile's fat LTO with one unit
+    /// re-optimises the whole program on every change, which made a warm
+    /// shell build take over fifteen minutes. Passed as `--config` rather
+    /// than environment so a cargo drop-in that builds elsewhere sees it.
     pub fn cargo_args(&self, extra: &[String]) -> Vec<String> {
         let mut args: Vec<String> = ["build", "--locked", "--profile", &self.profile]
             .map(str::to_owned)
             .to_vec();
+        if self.profile == "release" {
+            for setting in RELEASE_LAYER_LINKING {
+                args.push("--config".into());
+                args.push(setting.into());
+            }
+        }
         for package in &self.packages {
             args.push("-p".into());
             args.push(package.clone());
@@ -194,6 +207,12 @@ impl Component {
         .to_vec()
     }
 }
+
+/// Cargo settings a `release` layer builds with; see [`Component::cargo_args`].
+pub const RELEASE_LAYER_LINKING: [&str; 2] = [
+    r#"profile.release.lto="off""#,
+    "profile.release.codegen-units=16",
+];
 
 /// The manifest installer, relative to the repository root.
 pub const INSTALLER: &str = "os/scripts/install-components.py";
@@ -382,7 +401,7 @@ mod tests {
         ).unwrap();
         assert_eq!(
             manifest.get("pair").unwrap().cargo_args(&[]).join(" "),
-            "build --locked --profile release -p a -p b --bin a-cli --bin b-cli"
+            "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p a -p b --bin a-cli --bin b-cli"
         );
     }
 
@@ -513,7 +532,7 @@ mod tests {
             assert_eq!(extra, ["browser/dev-overrides", "helper/dev-overrides"]);
             assert_eq!(
                 browser.cargo_args(&extra).join(" "),
-                "build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides,helper/dev-overrides"
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/wpe,browser/dev-overrides,helper/dev-overrides"
             );
             assert_eq!(
                 browser
@@ -538,7 +557,7 @@ mod tests {
             );
             assert_eq!(
                 shell.cargo_args(&extra).join(" "),
-                "build --locked --profile release -p shell --features dev-overrides,shell/dev-overrides"
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p shell --features dev-overrides,shell/dev-overrides"
             );
         }
 
