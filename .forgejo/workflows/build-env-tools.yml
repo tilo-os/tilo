@@ -203,13 +203,20 @@ jobs:
             echo "::notice::branch build: sealed with a throwaway key, published nowhere"
           fi
           unset TAPP_PUBLISHER_IDENTITY
-          # Overlay uppers cannot live on the container's own overlay root.
+          # Overlay uppers cannot live on the container's own overlay root,
+          # and the shared-memory tmpfs is too small for a toolchain: give
+          # the builds a loop-mounted ext4 of their own on the job's disk.
           state="$RUNNER_TEMP/env-tools-state"
           mkdir -p "$state"
-          if [[ $(stat -f -c %T "$state") == overlayfs ]]; then
-            state=/dev/shm/env-tools-state
-            mkdir -p "$state"
-          fi
+          df -hT "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          case $(stat -f -c %T "$state") in
+            overlayfs|tmpfs)
+              command -v mkfs.ext4 >/dev/null || dnf install -y e2fsprogs
+              truncate -s 40G "$RUNNER_TEMP/env-tools-state.img"
+              mkfs.ext4 -q "$RUNNER_TEMP/env-tools-state.img"
+              mount -o loop "$RUNNER_TEMP/env-tools-state.img" "$state"
+              ;;
+          esac
           echo "build state on $(stat -f -c %T "$state")"
           out="$PWD/env-tools/${{ matrix.arch }}"
           mkdir -p "$out"
