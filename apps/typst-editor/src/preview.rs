@@ -1113,7 +1113,9 @@ impl PreviewPane {
             // The page the preview is on is the lifted one.
             if i == current {
                 let lift = c.lift_on(c.surfaces.content, 1.0);
-                let plate = image.union(*label_rect).inset(-gap / 2.0);
+                // A positive inset grows the rect: the plate surrounds the
+                // thumbnail and its number with half a gap to spare.
+                let plate = image.union(*label_rect).inset(gap / 2.0);
                 ui::paint::fill_round(scene, transform, plate, item_radius, lift);
             }
             if let Some(thumb) = self.images.get_mut(i) {

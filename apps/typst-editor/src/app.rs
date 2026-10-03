@@ -43,7 +43,6 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -90,7 +89,7 @@ fn pdf_export_request(suggested: &str) -> PickRequest {
         .thread_name("typst-portal-pdf")
         .filter(FileFilter::new("PDF document").glob("*.pdf"))
 }
-use ui::widget::Widget;
+use ui::widget::{ResizeHandle, Widget};
 
 use crate::chrome::{Chrome, Command};
 use crate::compile::{self, CompileOutput, WorldParts};
@@ -112,12 +111,12 @@ enum CompactPane {
     Preview,
 }
 
-/// A document whose last line is long enough to soft-wrap several times,
-/// used only by the `--shots long-line` scenario to capture how the source
-/// editor wraps it with the caret at the end of the line. The long line is
-/// last (no trailing newline) so placing the caret at the document end lands
+/// A document whose last line is a paragraph long enough to soft-wrap several
+/// times, used only by the `--shots long-line` scenario to capture how the
+/// source editor wraps it with the caret at the end of the line. The long line
+/// is last (no trailing newline) so placing the caret at the document end lands
 /// it there.
-const LONG_LINE_DEMO: &str = "= A long line\n\n#let note = \"This is a single very long line of source text that runs well past the right edge of the editor pane, so the editor wraps it onto continuation lines and keeps the caret in view as you type toward the end.\"";
+const LONG_LINE_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.";
 
 /// A document the picker can switch to: either a bundled sample or a `.typ`
 /// file discovered on disk.
@@ -129,13 +128,12 @@ struct Document {
 }
 
 /// The sizes of the window's own chrome, measured in the theme at paint: the
-/// band holding the controls, the status bar, the pane divider's grab area
-/// and the width under which one pane shows at a time.
+/// band holding the controls, the status bar and the width under which one
+/// pane shows at a time.
 #[derive(Clone, Copy, PartialEq)]
 struct Frame {
     bar_h: f64,
     status_h: f64,
-    handle_w: f64,
     compact_w: f64,
 }
 
@@ -149,7 +147,6 @@ impl Frame {
             // The bar grows with the text, so its readouts are never clipped.
             status_h: ui::chrome::status_bar::height(theme)
                 .max(status_line_h + 2.0 * f64::from(theme.tokens.spacing.s2)),
-            handle_w: f64::from(theme.tokens.spacing.s3),
             compact_w: f64::from(metrics.compact_breakpoint),
         }
     }
@@ -160,7 +157,7 @@ impl Frame {
     reason = "each bool tracks an independent piece of ephemeral view/drag \
               state (which demo scenario is pending, which drag is live); \
               grouping them into an enum would not read more clearly at call \
-              sites like `self.dragging_divider`"
+              sites like `self.dragging_editor`"
 )]
 pub struct TypstApp {
     // --- compilation backend ---
@@ -250,7 +247,6 @@ pub struct TypstApp {
     // --- layout rects (filled by layout_in) ---
     rect: Rect,
     bar_rect: Rect,
-    divider_rect: Rect,
     editor_rect: Rect,
     preview_rect: Rect,
     diag_rect: Rect,
@@ -258,12 +254,12 @@ pub struct TypstApp {
 
     // --- interaction ---
     mouse: Point,
-    dragging_divider: bool,
     dragging_editor: bool,
     /// A preview interaction (text-selection drag or scrollbar drag) is live, so
     /// subsequent moves route back to the preview.
     dragging_preview: bool,
-    divider_hover: bool,
+    /// The library's pane splitter between the editor and the preview.
+    splitter: ResizeHandle,
     /// Set when a pointer *move* changed something visible (hover, live drag)
     /// so `needs_redraw` asks the host to repaint — moves are otherwise gated.
     dirty: bool,
@@ -378,16 +374,14 @@ impl TypstApp {
             compile_feedback: false,
             rect: Rect::ZERO,
             bar_rect: Rect::ZERO,
-            divider_rect: Rect::ZERO,
             editor_rect: Rect::ZERO,
             preview_rect: Rect::ZERO,
             diag_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
             mouse: Point::ZERO,
-            dragging_divider: false,
             dragging_editor: false,
             dragging_preview: false,
-            divider_hover: false,
+            splitter: ResizeHandle::new(),
             dirty: true,
             pointer_seen: false,
             framework_hosted: false,
@@ -1126,7 +1120,7 @@ impl TypstApp {
         self.compact = content_w / self.text_k.max(f64::from(f32::EPSILON)) < frame.compact_w;
 
         if self.compact {
-            self.divider_rect = Rect::ZERO;
+            self.splitter.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
             let (main, diag) = self.split_off_diagnostics(body);
             self.diag_rect = diag;
             match self.compact_view {
@@ -1143,8 +1137,9 @@ impl TypstApp {
             let split_x = (r.x0 + content_w * self.split_ratio).round();
             let editor_col = Rect::new(r.x0, body.y0, split_x, body.y1);
             self.preview_rect = Rect::new(split_x, body.y0, r.x1, body.y1);
-            let half = frame.handle_w / 2.0;
-            self.divider_rect = Rect::new(split_x - half, body.y0, split_x + half, body.y1);
+            self.splitter.set_strip_usable_px(content_w);
+            self.splitter
+                .set_neighbour_rects(editor_col, self.preview_rect);
             let (main, diag) = self.split_off_diagnostics(editor_col);
             self.editor_rect = main;
             self.diag_rect = diag;
@@ -1196,7 +1191,17 @@ impl TypstApp {
         if !std::mem::take(&mut self.demo_stale) || self.preview.page_count() == 0 {
             return;
         }
-        let broken = format!("{}\n#undefined_value\n", self.read_source(doc));
+        // The broken line goes right under the first heading, so the squiggle
+        // and the gutter marker are on screen beside the preview's last good
+        // render.
+        let source = self.read_source(doc);
+        let mut lines: Vec<&str> = source.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("= "))
+            .map_or(lines.len(), |heading| heading + 1);
+        lines.splice(at..at, ["", "#undefined_value"]);
+        let broken = format!("{}\n", lines.join("\n"));
         self.apply_source_action(
             doc,
             &crate::resource::TypstDocAction::ReplaceSource {
@@ -1288,28 +1293,6 @@ impl TypstApp {
             plural(pages, "page", "pages"),
             self.preview.zoom() * 100.0
         )
-    }
-
-    /// The divider between the panes: the two grounds already tell them
-    /// apart, so a line shows only while the divider is being grabbed.
-    fn draw_divider(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
-        if !(self.dragging_divider || self.divider_hover) {
-            return;
-        }
-        let rule = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0));
-        let x = self.divider_rect.center().x;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.tokens.colors.intent.inverted,
-            None,
-            &Rect::new(
-                x - rule,
-                self.divider_rect.y0,
-                x + rule,
-                self.divider_rect.y1,
-            ),
-        );
     }
 
     /// The area the transient bubble floats in: the content above the status
@@ -1598,7 +1581,7 @@ impl Widget for TypstApp {
                 .draw(scene, t, tr, &theme.in_region(Region::Inspector));
         }
         if !self.compact {
-            self.draw_divider(scene, t, theme);
+            self.splitter.draw(scene, t, tr, theme, presence);
         }
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
@@ -1687,6 +1670,10 @@ impl Widget for TypstApp {
             self.run_command(command, ctx.state);
             self.dirty = true;
         }
+        let claimed = *ctx.handled && !already_handled;
+        if !self.compact && !claimed {
+            self.route_to_splitter(event, ctx);
+        }
         let moved = matches!(event, WindowEvent::CursorMoved { .. });
         if *ctx.handled && !already_handled && !moved {
             return;
@@ -1730,8 +1717,10 @@ impl Widget for TypstApp {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        (!self.compact && self.divider_rect.contains(point))
-            .then_some(winit::window::CursorIcon::ColResize)
+        if self.compact {
+            return None;
+        }
+        self.splitter.cursor_shape(point)
     }
 
     /// Source and preview are custom-painted panes rather than retained child
@@ -2148,7 +2137,6 @@ impl TypstApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.dragging_divider = false;
                 self.dragging_editor = false;
                 self.dragging_preview = false;
                 self.editor.on_mouse_up();
@@ -2190,6 +2178,23 @@ impl TypstApp {
         }
     }
 
+    /// Give the pane splitter the event and apply the split it asks for.
+    fn route_to_splitter(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let (hovered, dragging) = (self.splitter.is_hovered(), self.splitter.is_dragging());
+        self.splitter.handle_event(event, ctx);
+        if let Some((editor_w, _)) = self.splitter.take_pending() {
+            let width = self.rect.width().max(1.0);
+            self.split_ratio = (editor_w / width).clamp(0.18, 0.82);
+            self.layout_in(self.rect);
+        }
+        if (hovered, dragging) != (self.splitter.is_hovered(), self.splitter.is_dragging()) {
+            self.dirty = true;
+        }
+        if self.splitter.is_dragging() {
+            self.dirty = true;
+        }
+    }
+
     /// `CursorMoved`: hover/drag routing. Split out of `handle_pointer_event`
     /// to keep it within the line-count lint; preserves the original control
     /// flow exactly.
@@ -2204,20 +2209,12 @@ impl TypstApp {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.mouse = p;
         self.pointer_seen = true;
-        let prev_hover = self.divider_hover;
-        self.divider_hover = !self.compact && self.divider_rect.contains(p);
-        if self.divider_hover != prev_hover {
-            self.dirty = true;
-        }
         // The bubble pins open while the pointer rests on its corner: repaint
         // only while it shows so idle hover doesn't spin the loop.
         if self.status.is_visible(ui::time::now()) {
             self.dirty = true;
         }
-        if self.dragging_divider {
-            let content_w = self.rect.width().max(1.0);
-            self.split_ratio = ((p.x - self.rect.x0) / content_w).clamp(0.18, 0.82);
-            self.dirty = true;
+        if self.splitter.is_dragging() {
             *handled = true;
         } else if self.dragging_editor {
             let text = doc.text(src_id).unwrap_or_default();
@@ -2263,11 +2260,6 @@ impl TypstApp {
         // The band of controls owns its clicks; the controls themselves took
         // theirs before this point.
         if self.bar_rect.contains(p) {
-            *handled = true;
-            return;
-        }
-        if !self.compact && self.divider_rect.contains(p) {
-            self.dragging_divider = true;
             *handled = true;
             return;
         }

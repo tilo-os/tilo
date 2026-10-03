@@ -416,12 +416,12 @@ fn resize_reflows_between_split_and_compact() {
     assert!(!app.compact);
     assert!(app.editor_rect.area() > 0.0);
     assert!(app.preview_rect.area() > 0.0);
-    assert!(app.divider_rect.area() > 0.0);
+    assert!(app.splitter.get_rect().area() > 0.0);
 
     // Narrow → compact: a single pane, no divider.
     app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
     assert!(app.compact);
-    assert_eq!(app.divider_rect.area(), 0.0);
+    assert_eq!(app.splitter.get_rect().area(), 0.0);
     assert!(app.editor_rect.area() > 0.0, "editor pane shown");
     assert_eq!(app.preview_rect.area(), 0.0, "preview hidden in compact");
 
@@ -476,13 +476,13 @@ fn the_toolbar_offers_every_command_and_each_one_reaches_the_app() {
         names,
         [
             "Compile",
-            "Save",
-            "Open",
-            "Export PDF",
+            "Problems",
             "Zoom out",
             "Zoom in",
             "Fit width",
-            "Problems"
+            "Save",
+            "Open",
+            "Export PDF",
         ]
     );
     for (_, target) in &targets {
@@ -492,13 +492,13 @@ fn the_toolbar_offers_every_command_and_each_one_reaches_the_app() {
         app.chrome.take(),
         [
             Command::Compile,
-            Command::Save,
-            Command::Open,
-            Command::ExportPdf,
+            Command::ToggleProblems,
             Command::ZoomOut,
             Command::ZoomIn,
             Command::Fit,
-            Command::ToggleProblems
+            Command::Save,
+            Command::Open,
+            Command::ExportPdf,
         ]
     );
 }
@@ -648,6 +648,41 @@ fn a_narrow_toolbar_keeps_every_command_reachable_in_its_more_menu() {
         assert!(
             names.iter().any(|shown| shown == name),
             "{name} is reachable in a narrow window: {names:?}"
+        );
+    }
+}
+
+#[test]
+fn dragging_the_library_splitter_resizes_the_panes() {
+    let mut harness = mounted(1280, 720);
+    let (before, grab) = {
+        let app = harness.root::<TypstApp>();
+        (app.editor_rect.width(), app.splitter.get_rect().center())
+    };
+    harness.drag_at((grab.x, grab.y), (grab.x + 120.0, grab.y));
+    let _ = harness.render_rgba();
+    let app = harness.root::<TypstApp>();
+    assert!(
+        app.editor_rect.width() > before + 60.0,
+        "the editor grew from {before} to {}",
+        app.editor_rect.width()
+    );
+    assert!(app.split_ratio <= 0.82 && app.split_ratio >= 0.18);
+}
+
+#[test]
+fn the_zoom_pair_and_the_problems_toggle_survive_overflow_together() {
+    for width in (728..=1000).step_by(8) {
+        let harness = mounted(width, 720);
+        let names = harness.root::<TypstApp>().chrome.toolbar_names();
+        assert_eq!(
+            names.iter().any(|name| name == "Zoom out"),
+            names.iter().any(|name| name == "Zoom in"),
+            "zoom out and zoom in show or fold together at {width}px: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("Problems")),
+            "the Problems toggle shows at {width}px: {names:?}"
         );
     }
 }
