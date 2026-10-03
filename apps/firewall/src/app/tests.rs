@@ -91,14 +91,14 @@ fn populated_firewall_passes_native_certification() {
             .expect("the app opens headlessly");
         app.stage(scenario).expect("the scenario stages");
         let audit = app.harness().native_app_audit();
-        // The History button binds the host's History door, which the
-        // window publishes and the headless harness's resource tree does
+        // The window's History control binds the host's History door, which
+        // the window publishes and the headless harness's resource tree does
         // not carry; every other control must resolve.
         let issues: Vec<_> = audit
             .issues
             .iter()
             .filter(|issue| {
-                !(issue.control == "history-button" && issue.code == "stale-action-binding")
+                !(issue.control == "nav-shell-history" && issue.code == "stale-action-binding")
             })
             .collect();
         assert!(
@@ -195,7 +195,7 @@ fn the_zones_dock_when_wide_and_collapse_to_a_drawer_when_narrow() {
     assert!(!narrow.shell.is_sidebar_open());
 }
 
-/// Choosing a zone, a tab, a filter or a rule changes what the window shows and never the document.
+/// Choosing a zone, a tab or a rule changes what the window shows and never the document.
 #[test]
 fn presentation_changes_do_not_create_document_heads() {
     let (mut app, mut doc) = seeded();
@@ -203,7 +203,6 @@ fn presentation_changes_do_not_create_document_heads() {
     for intent in [
         Intent::SelectZone(ZoneKind::Home),
         Intent::SetTab(Tab::Services),
-        Intent::SetFilter(Filter::Allow),
         Intent::SetMatchService(false),
         Intent::SetProto(Proto::Udp),
     ] {
@@ -212,7 +211,6 @@ fn presentation_changes_do_not_create_document_heads() {
     app.drain(&mut doc);
     assert_eq!(app.selected_zone, ZoneKind::Home);
     assert_eq!(app.tab, Tab::Services);
-    assert_eq!(app.filter, Filter::Allow);
     assert!(!app.draft.service);
     assert_eq!(doc.get_heads(), heads);
 }
