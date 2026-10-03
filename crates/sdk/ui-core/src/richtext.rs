@@ -248,23 +248,21 @@ impl RichTextLayout {
             0.0
         };
         let shaping_text = offset_map.shape_text(text);
-        let mut buffer = Buffer::new(fs, Metrics::new(style.size, line_height));
+        let metrics = Metrics::new(style.size, line_height);
+        let mut buffer = Buffer::new(fs, metrics);
         let attrs = style.cosmic_attrs();
-        if browser_emoji && crate::text_render::browser_text_demands_emoji(&shaping_text) {
-            buffer.set_rich_text(
-                crate::text_render::browser_emoji_runs(&shaping_text, &attrs, true),
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        } else {
-            buffer.set_text(
-                &shaping_text,
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        }
+        let spans = crate::font_catalog::matched::plan(
+            fs.db(),
+            crate::text_render::browser_emoji_runs(&shaping_text, &attrs, browser_emoji),
+            metrics,
+            style.kind,
+        );
+        crate::font_catalog::matched::set_spans(
+            &mut buffer,
+            &spans,
+            &attrs,
+            style.align.to_cosmic(),
+        );
         let layout_width = max_width.map(|width| (width - discretionary_hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if max_width.is_some() {
@@ -413,25 +411,20 @@ impl RichTextLayout {
         let (built, backgrounds, baselines) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
-        if browser_emoji {
-            buffer.set_rich_text(
-                built.iter().flat_map(|(text, attrs)| {
-                    crate::text_render::browser_emoji_runs(text.as_ref(), attrs, true)
-                }),
-                &base,
-                Shaping::Advanced,
-                align.to_cosmic(),
-            );
-        } else {
-            buffer.set_rich_text(
-                built
-                    .iter()
-                    .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
-                &base,
-                Shaping::Advanced,
-                align.to_cosmic(),
-            );
-        }
+        let planned = crate::font_catalog::matched::plan(
+            fs.db(),
+            built.iter().flat_map(|(text, attrs)| {
+                crate::text_render::browser_emoji_runs(text.as_ref(), attrs, browser_emoji)
+            }),
+            Metrics::new(size, line_height),
+            style.kind,
+        );
+        buffer.set_rich_text(
+            planned.iter().map(|(text, attrs)| (*text, attrs.clone())),
+            &base,
+            Shaping::Advanced,
+            align.to_cosmic(),
+        );
         // cosmic-text 0.19's rich setter omits the final empty paragraph after
         // an LF, unlike its plain setter. Restore that line at this boundary so
         // attributed and plain layouts expose the same bytes and geometry.

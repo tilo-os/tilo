@@ -19,7 +19,7 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
     {
         let catalog = fixture();
         let fs = catalog.load().unwrap();
-        assert_eq!(fs.db().len(), 22); // 17 single faces plus five TTC faces.
+        assert_eq!(fs.db().len(), 26); // 21 single faces plus five TTC faces.
         let root = catalog.root().canonicalize().unwrap();
         for face in fs.db().faces() {
             match &face.source {
@@ -261,6 +261,8 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
         [
             "InstrumentSans[wdth,wght].ttf",
             "InstrumentSans-Italic[wdth,wght].ttf",
+            "Onest-Cyrillic[wght].ttf",
+            "Geologica-Greek[wght].ttf",
             "NotoSans[wght].ttf",
             "NotoSans-Italic[wght].ttf",
             "NotoSerif[wght].ttf",
@@ -273,9 +275,9 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        4_078_136
+        4_231_868
     );
-    assert_eq!(fonts.db().len(), 7);
+    assert_eq!(fonts.db().len(), 9);
 }
 
 #[test]
