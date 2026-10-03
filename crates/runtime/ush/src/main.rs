@@ -575,7 +575,12 @@ explain when the host does not offer them.\n";
             println!("no tools; `pkg install PKG` adds one.");
         }
         for tool in &tools {
-            println!("tool     {:<40} {}", tool.packages.join(" "), tool.id);
+            let id = if tool.id.is_empty() {
+                "not built for this architecture yet"
+            } else {
+                &tool.id
+            };
+            println!("tool     {:<40} {id}", tool.packages.join(" "));
         }
         Ok(0)
     }

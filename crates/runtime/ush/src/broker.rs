@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use collab_types::caps::Verb;
 use tilo_clock::unix_now;
-use tilo_environment::{Environment, ToolBuilder};
+use tilo_environment::{Environment, ToolBuilder, host_arch};
 
 use crate::audit::{AuditLog, AuditRecord};
 use crate::policy::Policy;
@@ -366,12 +366,12 @@ impl BrokerState {
             Request::ListTools => {
                 let env = self.environment.current();
                 Response::Tools {
-                    runtime: env.runtime.clone(),
+                    runtime: runtime_label(&env),
                     tools: env
                         .tools
                         .iter()
                         .map(|t| ToolEntry {
-                            id: t.id.clone(),
+                            id: t.images.get(host_arch()).cloned().unwrap_or_default(),
                             packages: t.packages.clone(),
                         })
                         .collect(),
@@ -516,9 +516,10 @@ impl BrokerState {
             });
         }
         let env = self.environment.current();
-        let (present, wanted): (Vec<String>, Vec<String>) = packages
-            .into_iter()
-            .partition(|p| env.tool_providing(p).is_some());
+        let (present, wanted): (Vec<String>, Vec<String>) = packages.into_iter().partition(|p| {
+            env.tool_providing(p)
+                .is_some_and(|tool| tool.images.contains_key(host_arch()))
+        });
         if wanted.is_empty() {
             return Err(Response::NeedsRestart {
                 detail: format!(
@@ -529,7 +530,7 @@ impl BrokerState {
             });
         }
         let runtime = env
-            .runtime_id()
+            .runtime_image(host_arch())
             .map_err(|reason| Response::Denied { reason })?;
         Ok(ToolPlan { runtime, wanted })
     }
@@ -550,7 +551,11 @@ impl BrokerState {
         match self.apply(
             "pkg-install",
             &subject,
-            Environment::ADD_TOOL.with((id.to_string(), plan.wanted.clone())),
+            Environment::ADD_TOOL.with((
+                plan.wanted.clone(),
+                host_arch().to_owned(),
+                id.to_string(),
+            )),
         ) {
             Ok(_) => Response::NeedsRestart {
                 detail: format!(
@@ -574,7 +579,7 @@ impl BrokerState {
                 self.log("pkg-remove", Some(package), false, Some(&reason));
                 return Response::Denied { reason };
             };
-            if !tools.iter().any(|t| t.id == tool.id) {
+            if !tools.iter().any(|t| t.packages == tool.packages) {
                 tools.push(tool);
             }
         }
@@ -611,12 +616,12 @@ impl BrokerState {
                 return Response::Denied { reason };
             }
         }
-        let ids: Vec<String> = tools.iter().map(|t| t.id.clone()).collect();
-        for id in ids {
+        let sets: Vec<Vec<String>> = tools.iter().map(|t| t.packages.clone()).collect();
+        for set in sets {
             if let Err(reason) = self.apply(
                 "pkg-remove",
                 &packages.join(","),
-                Environment::REMOVE_TOOL.with(id),
+                Environment::REMOVE_TOOL.with(set),
             ) {
                 return Response::Denied { reason };
             }
@@ -669,11 +674,19 @@ impl BrokerState {
             session: self.session_id.clone(),
             environment: env.name.clone(),
             record: self.environment.key.clone(),
-            runtime: env.runtime.clone(),
+            runtime: runtime_label(&env),
             tools: env
                 .tools
                 .iter()
-                .map(|t| format!("{} ({})", t.packages.join(", "), t.id))
+                .map(|t| {
+                    format!(
+                        "{} ({})",
+                        t.packages.join(", "),
+                        t.images
+                            .get(host_arch())
+                            .map_or("not built for this architecture yet", String::as_str)
+                    )
+                })
                 .collect(),
             seccomp: "enforcing: namespace and mount syscalls denied".into(),
             landlock: self.landlock.clone(),
@@ -700,6 +713,15 @@ impl BrokerState {
             rec = rec.because(d);
         }
         self.audit.append(&rec);
+    }
+}
+
+/// The runtime as `pkg list` and `guard status` show it: the release and
+/// this node's image.
+fn runtime_label(env: &Environment) -> String {
+    match env.runtime.images.get(host_arch()) {
+        Some(id) => format!("{} ({id})", env.runtime.release),
+        None => format!("{} (no image for {})", env.runtime.release, host_arch()),
     }
 }
 
@@ -1345,7 +1367,10 @@ mod tests {
     fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
         let records = Records::at(dir.join("records"));
         let built_from = records
-            .create(DEFAULT_RECORD, &Environment::new("Default", &image(1)))
+            .create(
+                DEFAULT_RECORD,
+                &Environment::new("Default", "2026.10", host_arch(), &image(1)),
+            )
             .unwrap();
         BrokerState {
             session_id: "s1".into(),
@@ -1791,7 +1816,7 @@ mod tests {
         };
         assert_eq!(status.environment, "Default");
         assert_eq!(status.record, DEFAULT_RECORD);
-        assert_eq!(status.runtime, image(1).to_string());
+        assert_eq!(status.runtime, format!("2026.10 ({})", image(1)));
         assert!(status.seccomp.starts_with("enforcing"));
     }
 
@@ -1846,7 +1871,10 @@ mod tests {
         assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
         let stored = s.environment.records.load(DEFAULT_RECORD).unwrap().unwrap();
         assert_eq!(stored.tools.len(), 1);
-        assert_eq!(stored.tools[0].id, image(2).to_string());
+        assert_eq!(
+            stored.tools[0].images.get(host_arch()),
+            Some(&image(2).to_string())
+        );
         assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
 
         // Already there: nothing is built.
@@ -1861,7 +1889,7 @@ mod tests {
         let Response::Tools { runtime, tools } = s.handle(Request::ListTools) else {
             panic!("expected tools");
         };
-        assert_eq!(runtime, image(1).to_string());
+        assert_eq!(runtime, format!("2026.10 ({})", image(1)));
         assert_eq!(tools[0].packages, vec!["pandoc".to_string()]);
 
         let audit = s.audit.read_all();

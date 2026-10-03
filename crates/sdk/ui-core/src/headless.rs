@@ -576,6 +576,9 @@ pub struct FrameHarness {
     control_failures: Vec<String>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
+    /// What each job started with [`FrameHarness::start_bound_job`] reported
+    /// so far, in order.
+    job_updates: HashMap<tilo_actions::InvocationId, Vec<tilo_actions::InvocationUpdate>>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -1365,6 +1368,7 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             bound_invocations: HashMap::new(),
+            job_updates: HashMap::new(),
             profiler: None,
             last_send_skipped_relayout: false,
             pointer_redraw_diagnostics: false,
@@ -5045,6 +5049,44 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
+    /// [`Self::invoke_bound_action`] (confirmed when `confirmed`) for an
+    /// operation that may run as a job: answers with the invocation whose
+    /// progress and result [`Self::job_updates`] then report, as the frames
+    /// poll it.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_bound_action`].
+    pub fn start_bound_job(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            crate::widget::ResourceOperationStart,
+        ),
+        tilo_actions::DoorError,
+    > {
+        self.pump_component_wakes();
+        let invocation = tilo_actions::InvocationId::new();
+        let started = self
+            .invoke_bound_action_as(address, arguments, confirmed, None, invocation)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.job_updates.insert(invocation, Vec::new());
+        }
+        Ok((invocation, started))
+    }
+
+    /// Every update the job `invocation` reported so far, oldest first.
+    pub fn job_updates(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> &[tilo_actions::InvocationUpdate] {
+        self.job_updates.get(&invocation).map_or(&[], Vec::as_slice)
+    }
+
     /// The resources the hosted component publishes, as its permissions let
     /// its bound actions be invoked. With `id`, only that resource: an app
     /// may resolve it lazily (a search hit, an open document), so it can be
@@ -5103,6 +5145,24 @@ impl FrameHarness {
         ambient: Option<&tilo_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
+        self.invoke_bound_action_as(
+            address,
+            arguments,
+            confirmed,
+            ambient,
+            tilo_actions::InvocationId::new(),
+        )
+    }
+
+    fn invoke_bound_action_as(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        ambient: Option<&tilo_actions::ActionContext>,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
         let snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
@@ -5114,7 +5174,6 @@ impl FrameHarness {
             Some(address.instance_id),
         )?
         .ok_or_else(|| tilo_actions::DoorError::Unknown(address.address.clone()))?;
-        let invocation = tilo_actions::InvocationId::new();
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -6023,7 +6082,12 @@ impl FrameHarness {
                 false,
             );
             match &update {
-                Ok(Some(update)) => self.record_control_failure(update),
+                Ok(Some(update)) => {
+                    self.record_control_failure(update);
+                    if let Some(updates) = self.job_updates.get_mut(&invocation) {
+                        updates.push(update.clone());
+                    }
+                }
                 Err(error) => self.control_failures.push(format!("{error:?}")),
                 Ok(None) => {}
             }

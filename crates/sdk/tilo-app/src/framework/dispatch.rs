@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation};
-use tilo_resource::{Doc, Invoke, Resource};
+use tilo_resource::{Doc, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 
@@ -58,6 +58,7 @@ pub struct Dispatcher<R: Resource> {
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
     read_only: LocalState<bool>,
+    refused: LocalState<Option<Refused>>,
     host: Rc<RefCell<ui_core::ActionHost>>,
     /// The last immediate action, to tell whether the next continues it.
     last: Rc<RefCell<Option<R::Action>>>,
@@ -80,6 +81,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
+            refused: self.refused.clone(),
             host: Rc::clone(&self.host),
             last: Rc::clone(&self.last),
             continuing: Rc::clone(&self.continuing),
@@ -104,6 +106,7 @@ impl<R: Resource> Dispatcher<R> {
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
+            refused: LocalState::new(None),
             host: Rc::default(),
             last: Rc::default(),
             continuing: Rc::default(),
@@ -144,9 +147,41 @@ impl<R: Resource> Dispatcher<R> {
         true
     }
 
+    /// The last edit or effect submitted here that was refused — denied
+    /// permission, unavailable, failed — and why, for a view to show. An
+    /// edit waiting for the user's confirmation is not refused.
+    pub fn refused(&self) -> LocalState<Option<Refused>> {
+        self.refused.clone()
+    }
+
+    fn view_only() -> String {
+        format!("this {} is open to view only", R::LABEL.to_lowercase())
+    }
+
+    /// Record that the door refused `action`, submitted here.
+    pub(crate) fn refuse(&self, action: &str, reason: String) {
+        self.refused.set(Some(Refused {
+            action: action.to_owned(),
+            reason,
+        }));
+    }
+
+    /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)
+    /// through the same door as a button bound to it: permission, the
+    /// effect's availability and a destructive effect's confirmation are
+    /// checked, then its handler runs. A participant who may only view still
+    /// invokes the effects declared `permission = "read"`.
+    pub fn effect<E: Effect>(&self, effect: &E) {
+        self.queue.borrow_mut().push_back(ControlInvocation {
+            address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+            arguments: effect.arguments(),
+        });
+    }
+
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`).
     pub fn invoke(&self, invoke: Invoke<R>) {
         if self.read_only() {
+            self.refuse(invoke.id, Self::view_only());
             return;
         }
         {
@@ -182,11 +217,12 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Submit one typed action value — an edit with no named declaration,
-    /// such as a drag's final geometry.
+    /// such as a drag's final geometry. The door applies it after the
+    /// event; if it refuses it, [`Self::refused`] says why.
     pub fn apply(&self, action: &R::Action) {
         match Invoke::<R>::apply(action) {
             Ok(invoke) => self.invoke(invoke),
-            Err(error) => tracing::warn!(%error, "action does not serialize; not submitted"),
+            Err(error) => self.refuse(tilo_resource::APPLY, error.to_string()),
         }
     }
 
@@ -265,10 +301,7 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
     ) -> Result<(), ActionError> {
         if self.read_only() {
-            return Err(ActionError::Refused(format!(
-                "this {} is open to view only",
-                R::LABEL.to_lowercase()
-            )));
+            return Err(ActionError::Refused(Self::view_only()));
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
@@ -349,6 +382,15 @@ impl<R: Resource> Dispatcher<R> {
     pub fn app_id(&self) -> &'static str {
         self.app_id
     }
+}
+
+/// An edit or effect the door refused ([`Dispatcher::refused`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// The id of the refused action or effect.
+    pub action: String,
+    /// Why, for a person.
+    pub reason: String,
 }
 
 /// An open [`Dispatcher::begin_group`]: every edit submitted until it drops

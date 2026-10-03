@@ -75,6 +75,22 @@ pub struct WebArgs {
     /// file; then start as usual.
     #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
     pub install_token_file: Option<PathBuf>,
+    /// The device key (hex) of the session beside this node: its root
+    /// certifies it with the node's certificate, as one of the person's
+    /// devices, and the certificate is written to `--session-cert-out`.
+    #[arg(
+        long = "session-device",
+        value_name = "HEX",
+        requires_all = ["install_token_file", "session_cert_out"]
+    )]
+    pub session_device: Option<String>,
+    /// Where the session's certificate is written (canonical encoding).
+    #[arg(
+        long = "session-cert-out",
+        value_name = "PATH",
+        requires = "session_device"
+    )]
+    pub session_cert_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -261,10 +277,21 @@ pub async fn await_certificate(
             "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
         })
     );
+    let session = match (&args.session_device, &args.session_cert_out) {
+        (Some(device), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
+            public_key: hex::decode(device.trim())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--session-device must be a 32-byte hex public key")?,
+            cert_out: cert_out.clone(),
+        }),
+        _ => None,
+    };
     let cert = tilo_relay::web::install::await_certificate(
         &web_config(args, listen, state_root),
         paths,
         &token,
+        session,
     )
     .await
     .context("wait for the device certificate")?;
