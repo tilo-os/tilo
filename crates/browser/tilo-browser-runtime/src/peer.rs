@@ -422,6 +422,18 @@ pub async fn issue_device_cert(
     serde_json::to_string(&cert).map_err(js_error)
 }
 
+/// The canonical encoding of a certificate (JSON in): what a native device
+/// keeps on disk.
+///
+/// # Errors
+///
+/// Throws for JSON that is not a certificate.
+#[wasm_bindgen(js_name = deviceCertCanonical)]
+pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
+    let cert: DeviceCert = serde_json::from_str(cert_json).map_err(js_error)?;
+    tilo_user_identity::canonical::canonical_bytes(&cert).map_err(js_error)
+}
+
 /// Certify this page's device key (`custody`) with the user root the page
 /// holds, for the host at `post`, whose certificate must be a host of that
 /// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.

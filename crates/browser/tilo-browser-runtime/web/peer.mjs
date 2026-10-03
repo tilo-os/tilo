@@ -22,13 +22,17 @@
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
-import {idbStorage} from './device-custody.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
+import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+
+export {
+  addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNodeCertificate, unlockIdentity,
+} from './root-identity.mjs';
 
 const CERTIFICATE = 'certificate';
 /** A member's cursor colour, from its device key: the same on every page. */
@@ -519,7 +523,10 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.onPairingCode  shown while an approver decides
  * @param options.identity       an unlocked root (`root-identity.mjs`): the
  *                               page certifies its own device with it, no
- *                               approver; `userPublicKey` defaults to its key
+ *                               approver; `userPublicKey` defaults to its key,
+ *                               `profile` to one per identity, `custody` to
+ *                               that profile's device key and `runtime` to
+ *                               the page host's
  */
 export async function connectPeer({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity,
@@ -530,6 +537,11 @@ export async function connectPeer({
   userPublicKey ??= identity?.userPublicKey;
   if (identity && userPublicKey !== identity.userPublicKey) {
     throw new TypeError('userPublicKey must be the unlocked identity\'s');
+  }
+  if (identity) {
+    if (!store) profile ??= `tilo-identity:${identity.userPublicKey}`;
+    custody ??= await openDeviceCustody({profile: profile ?? `tilo-identity:${identity.userPublicKey}`, storage: idbStorage()});
+    runtime ??= await (desktop ?? await import('./host.mjs')).loadRuntime?.();
   }
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');

@@ -227,6 +227,8 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
+        #[cfg(feature = "web")]
+        web_cli::await_certificate(&cfg.identity_root, &web, &cfg.state_root).await?;
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
         #[cfg(feature = "web")]
         let state_root = cfg.state_root.clone();

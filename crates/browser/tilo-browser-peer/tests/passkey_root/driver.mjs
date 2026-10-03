@@ -84,6 +84,21 @@ try {
     window.root = unlocked;
     return verifies;
   `), true, 'the passkey on the other authenticator unlocks alone');
+  // A login that already asserted the passkey with PRF unlocks without a
+  // second prompt.
+  assert.equal(await page(`
+    const wrap = window.created.envelope.wraps[2];
+    const assertion = await navigator.credentials.get({publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: 'localhost', userVerification: 'required',
+      allowCredentials: [{type: 'public-key', id: id.unbase64url(wrap.credential_id)}],
+      extensions: {prf: {eval: {first: id.unbase64url(wrap.prf_salt)}}},
+    }});
+    const unlocked = await id.unlockIdentity(window.created.envelope, {
+      prfOutput: assertion.getClientExtensionResults().prf.results.first, credentialId: assertion.rawId,
+    });
+    ${probe}
+    return verifies;
+  `), true, 'a PRF output from the page\'s own assertion unlocks');
   assert.equal(await page(`
     return id.unlockIdentity(window.created.envelope, {recoveryKey: '0000-0000-0000-0000-0000-0000-0000-0000'})
       .then(() => 'opened', error => error.code);
