@@ -38,6 +38,7 @@ use ui::widget::{
 use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
 use crate::api::{Request, Update, Worker};
 use crate::history_store::{HistoryEntryRecord, OwnerHistoryAction, OwnerHistoryStore};
+use crate::i18n::{arg, t, t_args};
 use crate::model::{Route, TubeModel};
 use crate::screens;
 use crate::widgets::SharedPlayer;
@@ -314,7 +315,10 @@ impl TubeApp {
             crate::actions::TubeOperation::Share { video_id } => {
                 let url = format!("https://youtu.be/{video_id}");
                 ui::clipboard_copy(&url);
-                self.model.push_notice(format!("Link copied: {url}"));
+                self.model.push_notice(t_args(
+                    "tube-notice-link-copied",
+                    &[arg("url", url.as_str())],
+                ));
             }
             crate::actions::TubeOperation::Navigate { route } => {
                 self.navigate_to(route);
@@ -323,7 +327,7 @@ impl TubeApp {
                 if self.model.video(&video_id).is_some() {
                     self.open_video(video_id);
                 } else {
-                    self.model.push_notice("That video is no longer available");
+                    self.model.push_notice(t("tube-notice-video-gone"));
                 }
             }
             crate::actions::TubeOperation::OpenChannel { channel_id } => {
@@ -331,8 +335,7 @@ impl TubeApp {
                     self.navigate_to(Route::Channel(channel_id.clone()));
                     self.request_live(Request::Channel(channel_id));
                 } else {
-                    self.model
-                        .push_notice("That creator is no longer available");
+                    self.model.push_notice(t("tube-notice-creator-gone"));
                 }
             }
             crate::actions::TubeOperation::OpenPlaylist { playlist_id } => {
@@ -340,16 +343,14 @@ impl TubeApp {
                     self.navigate_to(Route::Playlist(playlist_id.clone()));
                     self.request_live(Request::PlaylistPage(playlist_id));
                 } else {
-                    self.model
-                        .push_notice("That playlist is no longer available");
+                    self.model.push_notice(t("tube-notice-playlist-gone"));
                 }
             }
             crate::actions::TubeOperation::Download { .. } => {
                 // The resource action is published as unavailable, so a
                 // conforming host never reaches this arm. Keep the fallback
                 // honest if a stale/non-conforming caller invokes it anyway.
-                self.model
-                    .push_notice("Tube can't save videos for offline viewing");
+                self.model.push_notice(t("tube-notice-no-downloads"));
             }
             crate::actions::TubeOperation::RecordHistory { video_id } => {
                 let watched_at_ms = history_now_ms();
@@ -391,8 +392,7 @@ impl TubeApp {
             crate::actions::TubeOperation::PairDevice { invite } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.pair(invite) {
-                    self.model
-                        .push_notice("Device pairing is busy or unavailable");
+                    self.model.push_notice(t("tube-notice-pairing-busy"));
                 }
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = invite;
@@ -403,13 +403,13 @@ impl TubeApp {
                     .device_sync
                     .sync_now(crate::sync::lifecycle_state(&self.model))
                 {
-                    self.model.push_notice("Device sync is busy or unavailable");
+                    self.model.push_notice(t("tube-notice-sync-busy"));
                 }
             }
             crate::actions::TubeOperation::ApproveDevice { peer_id } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.approve(&peer_id) {
-                    self.model.push_notice("Could not queue device approval");
+                    self.model.push_notice(t("tube-notice-approval-failed"));
                 }
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = peer_id;
@@ -417,7 +417,7 @@ impl TubeApp {
             crate::actions::TubeOperation::RevokeDevice { peer_id } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.revoke(&peer_id) {
-                    self.model.push_notice("Could not queue device revocation");
+                    self.model.push_notice(t("tube-notice-revocation-failed"));
                 }
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = peer_id;
@@ -814,7 +814,17 @@ impl TubeApp {
         // mirrors its current route.  A deterministic screenshot must seed
         // both sides together; changing only the presentation model created a
         // state that a user or an agent could never actually navigate to.
-        self.nav = ui::NavStack::new(route.clone());
+        // A page reached by browsing (a video, a creator, a playlist) is
+        // opened from Home, so Back has somewhere to return to.
+        if matches!(
+            route,
+            Route::Watch(_) | Route::Channel(_) | Route::Playlist(_)
+        ) {
+            self.nav = ui::NavStack::new(Route::Home);
+            self.nav.push(route.clone());
+        } else {
+            self.nav = ui::NavStack::new(route.clone());
+        }
         self.model.route = route;
         self
     }
@@ -834,47 +844,22 @@ impl TubeApp {
         self
     }
 
-    /// Test/shots hook: open a watch page with the shared [`VideoPlayer`] already
-    /// playing a demo source, so a headless `--shots` still captures the real
-    /// player surface (a frame + the transport controls) without a network or a
-    /// live decoder. Uses the media engine's synthesized-frame backend, which
-    /// seeds a frame on `open` — the exact surface the live decode path paints.
+    /// Test/shots hook: the first video's watch page as playback starts,
+    /// opened from Home. Without a network there is no stream to decode, so
+    /// the player shows the video's art in its place, as it does in the live
+    /// app until the first frame arrives; a hermetic capture never shows a
+    /// synthesized picture as if it were the video. (The real decode path is
+    /// captured by `with_live_frame_for_shot` under `--live-shots`.)
     #[must_use]
-    pub fn with_playing_demo_for_test(mut self) -> Self {
+    pub fn with_playing_demo_for_test(self) -> Self {
         let id = self
             .model
             .videos
             .first()
             .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        self.model.route = Route::Watch(id.clone());
-        {
-            let mut p = self.player.borrow_mut();
-            // Pin the deterministic synthesized-frame backend for the shot: the
-            // `media` feature (real GStreamer decode) is compiled in by default,
-            // so `MediaEngine::new()` would otherwise build a real pipeline and
-            // contact the placeholder `demo.local` host. The synthesized engine
-            // seeds the same surface without a pipeline or network. (The real
-            // decode path is exercised by `with_live_frame_for_shot` under the
-            // separate `--live-shots` hook.)
-            p.set_engine(media::MediaEngine::new_synthesized());
-            p.open(media::Source::Remote {
-                url: "https://demo.local/clip.mp4".into(),
-            });
-            // Seed a colourful mid-stream frame for the still, then pump the
-            // engine so the frame lands in the surface. The offscreen renderer
-            // syncs the app exactly once — *before* this player is mounted in the
-            // tree — so without pumping here the single shot would draw an empty
-            // (never-pumped) surface. A live run pumps every frame, so this is
-            // shots-only.
-            p.seek_to_ms(45_000);
-            p.play();
-            p.reveal_controls();
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            p.sync(&mut doc, &root);
-        }
-        self.player_video = Some(id);
-        self
+        let mut app = self.with_route_shot(Route::Watch(id.clone()));
+        app.player_video = Some(id);
+        app
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable
@@ -1004,6 +989,8 @@ impl TubeApp {
             bus: &self.bus,
             imgs: crate::images::Imgs(self.images.as_ref()),
             invocations: &self.invocations,
+            content_width: self.content_width(theme),
+            can_go_back: self.nav.can_go_back(),
         }
     }
 
@@ -1059,17 +1046,21 @@ impl TubeApp {
         let mut list = NavList::new(vec![NavSection::untitled(
             "destinations",
             vec![
-                item(&Route::Home, "Home", Icon::Home),
-                item(&Route::Trending, "Trending", Icon::Flame),
-                item(&Route::Subscriptions, "Channels", Icon::GalleryVerticalEnd),
-                item(&Route::Queue, "Queue", Icon::ListVideo),
-                item(&Route::History, "History", Icon::History),
-                item(&Route::Settings, "Settings", Icon::Settings),
+                item(&Route::Home, &t("tube-nav-home"), Icon::Home),
+                item(&Route::Trending, &t("tube-nav-trending"), Icon::Flame),
+                item(
+                    &Route::Subscriptions,
+                    &t("tube-nav-channels"),
+                    Icon::GalleryVerticalEnd,
+                ),
+                item(&Route::Queue, &t("tube-nav-queue"), Icon::ListVideo),
+                item(&Route::History, &t("tube-nav-history"), Icon::History),
+                item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
             ],
         )])
         .rail()
         .with_id("tube_rail")
-        .with_accessible_name("Tube")
+        .with_accessible_name(t("tube-nav-name"))
         .on_select({
             let invocations = self.invocations.clone();
             move |id| {
@@ -1212,6 +1203,12 @@ impl TubeApp {
             return false;
         };
         if self.player_video.as_deref() != Some(id.as_str()) {
+            return false;
+        }
+        // Until a source is open the engine has no playhead to follow: an
+        // auto-skip from the zero position would seek nowhere and fire again
+        // on every frame.
+        if !self.player.borrow().has_media() {
             return false;
         }
         // Short borrow: read the engine's position/duration/playing, then drop
@@ -1362,8 +1359,10 @@ impl TubeApp {
             let to = to.clamp(0.0, d);
             self.model.playhead = to;
             self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
-            self.model
-                .push_notice(format!("Skipped to {}", crate::util::clock(to)));
+            self.model.push_notice(t_args(
+                "tube-notice-skipped-to",
+                &[arg("time", crate::util::clock(to))],
+            ));
         }
     }
 
@@ -1409,11 +1408,13 @@ impl TubeApp {
                 {
                     found = Some((
                         s.end,
-                        format!(
-                            "Skipped {} ({}–{})",
-                            s.category.label(),
-                            crate::util::clock(s.start),
-                            crate::util::clock(s.end)
+                        t_args(
+                            "tube-notice-skipped-segment",
+                            &[
+                                arg("segment", s.category.label()),
+                                arg("start", crate::util::clock(s.start)),
+                                arg("end", crate::util::clock(s.end)),
+                            ],
                         ),
                     ));
                     break;
@@ -1526,8 +1527,7 @@ impl TubeApp {
                     clear_id: format!("{}:clear:all:{cleared_at_ms}", self.model.history_owner),
                 }) {
                     self.model.history.clear();
-                    self.model
-                        .push_notice("Watch history cleared for this profile");
+                    self.model.push_notice(t("tube-notice-history-cleared"));
                 }
             }
             Action::Navigate(route) => {
@@ -1614,24 +1614,24 @@ impl TubeApp {
             }
             Action::PairDevice => {
                 if !self.queue_device_action("pair", None) {
-                    self.model.push_notice(
-                        "Paste a pairing invite first, or unlock the desktop's secret store",
-                    );
+                    self.model.push_notice(t("tube-notice-pair-first"));
                 }
             }
             Action::SyncDevices => {
                 if !self.queue_device_action("sync", None) {
-                    self.model.push_notice("Device sync is unavailable");
+                    self.model.push_notice(t("tube-notice-sync-unavailable"));
                 }
             }
             Action::ApproveDevice(id) => {
                 if !self.queue_device_action("approve", Some(&id)) {
-                    self.model.push_notice("Device approval is unavailable");
+                    self.model
+                        .push_notice(t("tube-notice-approval-unavailable"));
                 }
             }
             Action::RevokeDevice(id) => {
                 if !self.queue_device_action("revoke", Some(&id)) {
-                    self.model.push_notice("Device revocation is unavailable");
+                    self.model
+                        .push_notice(t("tube-notice-revocation-unavailable"));
                 }
             }
         }
@@ -1663,9 +1663,11 @@ impl TubeApp {
     /// condition, not an offline/network failure, so never falsify the source
     /// provenance while reporting it.
     fn request_rejected(&mut self, request: &Request, stopped: bool) {
-        const BUSY: &str = "Too many requests are pending. Please try again.";
-        const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
-        let message = if stopped { STOPPED } else { BUSY };
+        let message = t(if stopped {
+            "tube-notice-stopped"
+        } else {
+            "tube-notice-busy"
+        });
         if stopped {
             self.model.data_source = crate::model::DataSource {
                 live: false,
@@ -1679,7 +1681,7 @@ impl TubeApp {
             }
             Request::Feed => {
                 self.model.feed_loading = false;
-                self.model.feed_error = Some(message.to_string());
+                self.model.feed_error = Some(message);
             }
             Request::Branding(_)
             | Request::VideoMeta(_)

@@ -23,7 +23,13 @@ pub fn human_count(n: u64) -> String {
 
 /// `views` with the trailing noun, e.g. `1.2M views`.
 pub fn human_views(n: u64) -> String {
-    format!("{} views", human_count(n))
+    crate::i18n::t_args(
+        "tube-views",
+        &[
+            crate::i18n::arg("count", n),
+            crate::i18n::arg("shown", human_count(n)),
+        ],
+    )
 }
 
 /// Seconds → `h:mm:ss` or `m:ss` (no leading hour when under an hour).
