@@ -91,6 +91,34 @@ fn format_datetime_parts_for(
     Some(formatter.format(&value).to_string())
 }
 
+fn format_date_parts_for(
+    locale: &LanguageIdentifier,
+    year: i32,
+    month: u8,
+    day: u8,
+) -> Option<String> {
+    let formatter = DateTimeFormatter::try_new(data_locale(locale).into(), YMD::medium()).ok()?;
+    let value = DateTime {
+        date: Date::try_new_iso(year, month, day).ok()?,
+        time: Time::try_new(0, 0, 0, 0).ok()?,
+    };
+    Some(formatter.format(&value).to_string())
+}
+
+/// Format the date of a local wall-clock value with ICU4X/CLDR data for the
+/// active locale (the time of day left out, for a narrow column).
+pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
+    use chrono::Datelike;
+
+    format_date_parts_for(
+        &active_locale(),
+        value.year(),
+        value.month() as u8,
+        value.day() as u8,
+    )
+    .unwrap_or_else(|| value.format("%Y-%m-%d").to_string())
+}
+
 /// Format a local wall-clock value with ICU4X/CLDR data for the active locale.
 /// The stable numeric fallback is used only if locale data or input validation
 /// unexpectedly fails.

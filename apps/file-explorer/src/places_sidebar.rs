@@ -54,6 +54,15 @@ fn location_id(path: &Path) -> String {
     format!("loc:{}", path.display())
 }
 
+/// The row id of a cloud account whose folder is not mounted: choosing it
+/// opens what is wrong with the account rather than a folder.
+fn account_id(id: &str) -> String {
+    format!("{ACCOUNT_PREFIX}{id}")
+}
+
+/// The prefix of a row id naming an account rather than a folder.
+const ACCOUNT_PREFIX: &str = "account:";
+
 /// The folder a row id names, if it is one of ours.
 fn path_of_id(id: &str) -> Option<PathBuf> {
     id.strip_prefix("fav:")
@@ -66,6 +75,20 @@ struct Location {
     icon: Icon,
     label: String,
     path: PathBuf,
+    /// The account this row stands for, when its folder is not mounted: the
+    /// row then opens the account's state, and `path` is not a folder.
+    account: Option<String>,
+}
+
+/// A cloud account as the places list shows it.
+pub struct AccountPlace {
+    /// The account's own id.
+    pub id: String,
+    pub label: String,
+    /// Where its folder is mounted, when it is.
+    pub mount: Option<PathBuf>,
+    /// A short state ("Offline", "Sign in") when the account is not well.
+    pub status: Option<String>,
 }
 
 /// What the places list shows for the current folder.
@@ -85,11 +108,13 @@ impl Places {
                 icon: Icon::History,
                 label: t("files-place-recent"),
                 path: crate::recent::location(),
+                account: None,
             },
             Location {
                 icon: Icon::HardDrive,
                 label: t("files-place-root"),
                 path: crate::breadcrumbs::filesystem_root(&active),
+                account: None,
             },
         ];
         if let Some(trash) = crate::fileops::trash_dir() {
@@ -97,6 +122,7 @@ impl Places {
                 icon: Icon::Trash2,
                 label: t("files-place-trash"),
                 path: trash,
+                account: None,
             });
         }
         Self {
@@ -119,6 +145,7 @@ impl Places {
                 // Shared with the breadcrumb, which names the same place.
                 label: crate::model::workspace_label(&path),
                 path,
+                account: None,
             })
             .collect();
         // Workspaces lead the locations; Root (and any future devices) follow.
@@ -127,28 +154,33 @@ impl Places {
         self
     }
 
-    /// Surface mounted cloud accounts (`~/Remote/<label>`) as locations after
-    /// the workspaces. An account that is offline or needs attention wears
-    /// the matching icon.
+    /// Surface cloud accounts as locations after the workspaces. A mounted
+    /// account opens its folder; one that is offline or needs attention wears
+    /// the matching icon, and one whose folder is not mounted opens what is
+    /// wrong with it (so an account that needs signing in is never invisible).
     #[must_use]
-    pub fn with_remote_accounts(
-        mut self,
-        accounts: Vec<(String, PathBuf, Option<String>)>,
-    ) -> Self {
+    pub fn with_remote_accounts(mut self, accounts: Vec<AccountPlace>) -> Self {
         let at = self
             .locations
             .iter()
             .take_while(|place| place.icon == Icon::CloudDownload)
             .count();
-        for (offset, (label, path, status)) in accounts.into_iter().enumerate() {
-            let icon = match status.as_deref() {
+        for (offset, account) in accounts.into_iter().enumerate() {
+            let icon = match account.status.as_deref() {
                 None => Icon::CloudDownload,
                 Some("Offline") => Icon::WifiOff,
+                Some("Syncing") => Icon::Refresh,
                 Some(_) => Icon::TriangleAlert,
             };
+            let unmounted = account.mount.is_none();
             self.locations.insert(
                 at.saturating_add(offset).min(self.locations.len()),
-                Location { icon, label, path },
+                Location {
+                    icon,
+                    label: account.label,
+                    path: account.mount.unwrap_or_default(),
+                    account: unmounted.then_some(account.id),
+                },
             );
         }
         self
@@ -164,7 +196,7 @@ impl Places {
             .or_else(|| {
                 self.locations
                     .iter()
-                    .find(|place| place.path == self.active)
+                    .find(|place| place.account.is_none() && place.path == self.active)
                     .map(|place| location_id(&place.path))
             })
     }
@@ -198,7 +230,11 @@ impl Places {
             .locations
             .iter()
             .map(|place| {
-                NavItem::new(location_id(&place.path), place.label.clone())
+                let id = match &place.account {
+                    Some(account) => account_id(account),
+                    None => location_id(&place.path),
+                };
+                NavItem::new(id, place.label.clone())
                     .icon(place.icon)
                     .without_actions()
             })
@@ -246,7 +282,9 @@ impl Places {
                 let sink = sink.clone();
                 let chosen = Rc::clone(chosen);
                 move |id| {
-                    if let Some(path) = path_of_id(&id) {
+                    if let Some(account) = id.strip_prefix(ACCOUNT_PREFIX) {
+                        push(&sink, FileCommand::ShowRemoteAccount(account.to_owned()));
+                    } else if let Some(path) = path_of_id(&id) {
                         push(&sink, FileCommand::Navigate(path));
                     }
                     *chosen.borrow_mut() = Some(id);
@@ -359,17 +397,30 @@ mod tests {
         let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
             .with_workspaces(vec![PathBuf::from("/var/workspace")])
             .with_remote_accounts(vec![
-                ("Cloud".into(), PathBuf::from("/home/a/Remote/Cloud"), None),
-                (
-                    "Work".into(),
-                    PathBuf::from("/home/a/Remote/Work"),
-                    Some("Offline".into()),
-                ),
-                (
-                    "Mail".into(),
-                    PathBuf::from("/home/a/Remote/Mail"),
-                    Some("Sign in".into()),
-                ),
+                AccountPlace {
+                    id: "cloud".into(),
+                    label: "Cloud".into(),
+                    mount: Some(PathBuf::from("/home/a/Remote/Cloud")),
+                    status: None,
+                },
+                AccountPlace {
+                    id: "work".into(),
+                    label: "Work".into(),
+                    mount: Some(PathBuf::from("/home/a/Remote/Work")),
+                    status: Some("Offline".into()),
+                },
+                AccountPlace {
+                    id: "mail".into(),
+                    label: "Mail".into(),
+                    mount: Some(PathBuf::from("/home/a/Remote/Mail")),
+                    status: Some("Sign in".into()),
+                },
+                AccountPlace {
+                    id: "archive".into(),
+                    label: "Archive".into(),
+                    mount: None,
+                    status: Some("Sign in".into()),
+                },
             ]);
         let locations = places
             .sections()
@@ -390,6 +441,10 @@ mod tests {
         assert_eq!(icon("loc:/home/a/Remote/Cloud"), Some(Icon::CloudDownload));
         assert_eq!(icon("loc:/home/a/Remote/Work"), Some(Icon::WifiOff));
         assert_eq!(icon("loc:/home/a/Remote/Mail"), Some(Icon::TriangleAlert));
+        // An account with no mounted folder is still a row: it opens the
+        // account's state instead of a folder.
+        assert_eq!(order[4], "account:archive");
+        assert_eq!(icon("account:archive"), Some(Icon::TriangleAlert));
     }
 
     /// Home cannot be unpinned; other favourites can, fixed locations cannot.

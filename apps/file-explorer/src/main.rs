@@ -35,8 +35,9 @@
 use host_fs::attributes as xattr;
 use std::io::{Read, Write};
 
+mod demo_art;
+
 use file_explorer::FileExplorerWidget;
-use taffy::prelude::*;
 
 const MAX_RECEIVED_SHARE_URI_BYTES: usize = 16 * 1024;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
@@ -121,13 +122,12 @@ fn standalone_launch_spec() -> LaunchSpec {
         .max_positionals(1)
         .scenarios(&[
             "archive",
-            "archive-menu",
             "context-menu",
+            "context-menu-folder",
             "dropmove",
             "empty",
             "error",
             "grid",
-            "history",
             "loading",
             "menu",
             "pindrag",
@@ -148,7 +148,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let size = args.value("--size").and_then(parse_size);
     let viewport = shot_viewport(args.viewport, size);
     let scenario = args.scenario.as_deref();
-    if !xattr::SUPPORTED && matches!(scenario, Some("sync" | "thumbnails-fs" | "history")) {
+    if !xattr::SUPPORTED && matches!(scenario, Some("sync" | "thumbnails-fs")) {
         return Err(LaunchError::Operation(
             "this scenario requires the Tilo filesystem projection".into(),
         ));
@@ -166,8 +166,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("sync") => Some(seed_sync_demo()),
         Some("thumbnails") => Some(seed_thumbnails_demo(&home_root)),
         Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
-        Some("history") => Some(seed_history_demo()),
-        Some("archive" | "archive-menu") => Some(
+        Some("archive") => Some(
             seed_archive_demo(&home_root)
                 .map_err(|error| LaunchError::Operation(error.to_string()))?,
         ),
@@ -425,47 +424,6 @@ fn seed_sync_demo() -> std::path::PathBuf {
     dir
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "only called from the --shots handler on the main thread before the \
-              widget or any of its worker threads exist, so nothing reads the \
-              environment concurrently"
-)]
-fn seed_history_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("tilo-files-history-demo");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("Launch brief.md");
-    let _ = std::fs::write(&path, b"# Launch brief\n\nCurrent plan\n");
-    let older = "11111111-1111-4111-8111-111111111111";
-    let current = "22222222-2222-4222-8222-222222222222";
-    let history = serde_json::to_vec(&serde_json::json!({
-        "schema_version": 1,
-        "record_id": "launch-brief-record",
-        "total_versions": 2,
-        "versions_truncated": false,
-        "heads": [current],
-        "versions": [
-            {"id": older, "record_id": "launch-brief-record", "parents": [],
-             "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-             "timestamp_ms": 1_788_300_000_000_u64, "content_hash": vec![3; 32],
-             "metadata_hash": vec![4; 32], "provenance": "Create"},
-            {"id": current, "record_id": "launch-brief-record", "parents": [older],
-             "actor": {"person": vec![5; 32], "device": vec![6; 32]},
-             "timestamp_ms": 1_788_386_400_000_u64, "content_hash": vec![7; 32],
-             "metadata_hash": vec![8; 32], "provenance": "Edit"}
-        ],
-        "conflicts_truncated": false,
-        "conflicts": []
-    }))
-    .unwrap_or_default();
-    let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);
-    let _ = xattr::set(&path, "user.tilo.sync", b"local");
-    // SAFETY: shots seed before the app or any worker thread is constructed.
-    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
-    dir
-}
-
 /// Build a believable archive hierarchy for permanent responsive screenshots.
 /// The shot navigates the actual ZIP reader rather than injecting sample rows.
 fn seed_archive_demo(
@@ -492,7 +450,7 @@ fn seed_archive_demo(
     Ok(path)
 }
 
-/// Seed a demo directory of **real** sample files — gradient images, a genuine
+/// Seed a demo directory of **real** sample files — pictures, a genuine
 /// one-page PDF, a real EPUB with a cover, a video (badge), and an assortment of
 /// badge-only types — so a `--shots --scenario thumbnails` grid renders the
 /// actual generator + service path (decode → downscale → cache → paint), not a
@@ -506,42 +464,23 @@ fn seed_thumbnails_demo(home: &std::path::Path) -> std::path::PathBuf {
     // A subfolder (folder glyph) for visual balance.
     let _ = std::fs::create_dir_all(dir.join("Camera Roll"));
 
-    // Real raster images across formats + patterns.
-    write_image(
-        &dir.join("sunset.png"),
-        640,
-        480,
-        0,
-        image::ImageFormat::Png,
-    );
-    write_image(
-        &dir.join("harbour.jpg"),
-        640,
-        480,
-        1,
-        image::ImageFormat::Jpeg,
-    );
-    write_image(
-        &dir.join("forest-path.png"),
-        480,
-        640,
-        2,
-        image::ImageFormat::Png,
-    );
-    write_image(
-        &dir.join("bloom.jpg"),
-        600,
-        600,
-        3,
-        image::ImageFormat::Jpeg,
-    );
-    write_image(&dir.join("study.png"), 720, 480, 4, image::ImageFormat::Png);
+    // Real raster images across formats: pictures of a sunset, a harbour, a
+    // forest path, a flower and a mountain lake.
+    for (name, w, h, kind, format) in [
+        ("sunset.png", 640, 480, 0, image::ImageFormat::Png),
+        ("harbour.jpg", 640, 480, 1, image::ImageFormat::Jpeg),
+        ("forest path.png", 480, 640, 2, image::ImageFormat::Png),
+        ("bloom.jpg", 600, 600, 3, image::ImageFormat::Jpeg),
+        ("mountain lake.png", 720, 480, 4, image::ImageFormat::Png),
+    ] {
+        write_image(&dir.join(name), w, h, kind, format);
+    }
 
     // A genuine one-page PDF (pdfium renders its first page) and a real EPUB.
     let _ = std::fs::write(dir.join("Field guide.pdf"), minimal_pdf("Field Guide"));
     let _ = std::fs::write(
         dir.join("The Lantern-Keeper.epub"),
-        minimal_epub("The Lantern-Keeper", &gradient_png(300, 440, 3)),
+        minimal_epub("The Lantern-Keeper", &demo_art::cover_png(300, 440)),
     );
 
     // A video: no gstreamer in the hermetic build, so this shows an honest video
@@ -597,7 +536,7 @@ fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
         // it. Kept tiny here so it also fits the demo temp filesystem's per-xattr
         // cap (btrfs bounds a single xattr to its ~16 KiB node size; the real
         // in-memory FUSE mount allows the full 64 KiB, which HOST_EDGE targets).
-        let _ = xattr::set(&p, "user.tilo.thumb", &gradient_png(112, 84, kind));
+        let _ = xattr::set(&p, "user.tilo.thumb", &demo_art::scene_png(112, 84, kind));
         let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
     }
     // A couple of files with no host preview → sync badge + type badge.
@@ -611,9 +550,9 @@ fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
     dir
 }
 
-/// Write a gradient demo image to `path` in the given format.
+/// Write a demo picture to `path` in the given format.
 fn write_image(path: &std::path::Path, w: u32, h: u32, kind: u8, fmt: image::ImageFormat) {
-    let img = gradient_image(w, h, kind);
+    let img = demo_art::scene_image(w, h, kind);
     let mut out = Vec::new();
     if image::DynamicImage::ImageRgba8(img)
         .write_to(&mut std::io::Cursor::new(&mut out), fmt)
@@ -621,61 +560,6 @@ fn write_image(path: &std::path::Path, w: u32, h: u32, kind: u8, fmt: image::Ima
     {
         let _ = std::fs::write(path, out);
     }
-}
-
-/// A distinct, believable gradient/pattern per `kind` so demo thumbnails read as
-/// real, varied images rather than flat swatches.
-fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
-    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
-    let mut img = image::RgbaImage::new(width, height);
-    for (x, y, px) in img.enumerate_pixels_mut() {
-        let fx = x as f32 / width as f32;
-        let fy = y as f32 / height as f32;
-        let (r, g, b) = match kind % 5 {
-            0 => (
-                lerp(255.0, 60.0, fy),
-                lerp(150.0, 40.0, fy),
-                lerp(70.0, 130.0, fy),
-            ), // sunset
-            1 => {
-                let (dx, dy) = (fx - 0.5, fy - 0.42);
-                let d = (dx * dx + dy * dy).sqrt() * 1.7;
-                (
-                    lerp(40.0, 12.0, d),
-                    lerp(165.0, 55.0, d),
-                    lerp(215.0, 120.0, d),
-                ) // harbour
-            }
-            2 => {
-                let t = (fx + fy) * 0.5;
-                (
-                    lerp(90.0, 24.0, t),
-                    lerp(185.0, 95.0, t),
-                    lerp(95.0, 55.0, t),
-                ) // forest
-            }
-            3 => (
-                lerp(240.0, 250.0, fx),
-                lerp(90.0, 190.0, fy),
-                lerp(170.0, 70.0, fx),
-            ), // bloom
-            _ => {
-                let band = (((x / 18 + y / 18) % 2) as f32) * 34.0;
-                let c = 120.0 + fy * 70.0 + band;
-                (c, c * 0.98, c * 0.92) // study (soft warm gray)
-            }
-        };
-        *px = image::Rgba([r as u8, g as u8, b as u8, 255]);
-    }
-    img
-}
-
-/// A gradient PNG (used for EPUB covers and host-provided preview xattrs).
-fn gradient_png(w: u32, h: u32, kind: u8) -> Vec<u8> {
-    let mut out = Vec::new();
-    let _ = image::DynamicImage::ImageRgba8(gradient_image(w, h, kind))
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png);
-    out
 }
 
 /// Build a minimal but valid one-page PDF (a coloured header band + title text +
@@ -788,15 +672,12 @@ fn shot_viewport(viewport: Option<(u32, u32)>, size: Option<(u32, u32)>) -> (u32
 }
 
 /// Apply scenario-specific state that needs the already-laid-out geometry (a
-/// mid-drag reorder, an open context menu, a hovered row) — split out of
+/// mid-drag move, an open context menu) — split out of
 /// [`render_shot_to_png`] purely to stay under the line-count limit.
 fn apply_post_layout_scenario(
     widget: &mut FileExplorerWidget,
     scenario: Option<&str>,
     (w, h): (u32, u32),
-    state: &mut ui::State,
-    child: NodeId,
-    taffy: &TaffyTree<()>,
 ) {
     match scenario {
         Some("menu") => {
@@ -804,50 +685,11 @@ fn apply_post_layout_scenario(
             // directly below and right-aligned to its visible trigger.
             widget.debug_show_view_menu();
         }
-        Some("context-menu") => {
+        Some("context-menu" | "context-menu-folder") => {
             // Separate right-click fixture. Its location is a real pointer
             // anchor in the content pane, deliberately away from toolbar ⋯.
+            // The menu opens as it does for a click: no row is armed.
             widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.25));
-            // Arm the first row through the menu's real keyboard route so the
-            // still shows the armed-row treatment (the accent fill that
-            // replaced the invisible dark-theme veneer), not only the resting
-            // menu.
-            let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown);
-            let event = winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    state: winit::event::ElementState::Pressed,
-                },
-                key.clone(),
-                None,
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                None,
-                key,
-            );
-            let ev = winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            };
-            let mut handled = false;
-            let mut focus = None;
-            let mods = winit::event::Modifiers::default();
-            widget.handle_event(
-                &ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut state.doc,
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: child,
-                    taffy,
-                },
-            );
         }
         Some("pindrag") => {
             // Carry a folder out of the list toward the sidebar — mid-drag, so
@@ -873,38 +715,11 @@ fn apply_post_layout_scenario(
                 widget.debug_begin_move_drag(vec![source], target);
             }
         }
-        Some("select") => {
-            // Move the cursor over a (different) row so the hover veneer shows
-            // alongside the accent selection.
-            let ev = winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(f64::from(w) * 0.35, 560.0),
-            };
-            let mut handled = false;
-            let mut focus = None;
-            let mods = winit::event::Modifiers::default();
-            widget.handle_event(
-                &ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut state.doc,
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: child,
-                    taffy,
-                },
-            );
-        }
-        Some("history") => {
-            widget.debug_open_history_demo();
-        }
         // Summon the places drawer over the file view (the narrow layout's
         // toggle). The shell must have laid out once to know it is a drawer;
         // the capture then lays out again with it open.
         Some("places") => widget.debug_open_places_drawer(),
-        Some("archive-menu" | "undo-trash") => {
+        Some("undo-trash") => {
             widget.debug_open_view_menu();
         }
         _ => {}
@@ -948,9 +763,7 @@ fn render_shot_to_png(
     let _priming = frame.draw(&mut widget);
 
     // Post-layout scenarios need the laid-out geometry.
-    if let Some((state, taffy, child)) = frame.layout_parts() {
-        apply_post_layout_scenario(&mut widget, scenario, viewport, state, child, taffy);
-    }
+    apply_post_layout_scenario(&mut widget, scenario, viewport);
     // A scenario that changed the structure (a drawer opened) is laid out
     // again, as the live frame loop would.
     if widget.take_structure_dirty() {
