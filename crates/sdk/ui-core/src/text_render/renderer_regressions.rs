@@ -997,3 +997,36 @@ fn assert_same_origins(painted: &[(u32, f32, f32)], shaped: &[(u32, f32, f32)], 
         );
     }
 }
+
+#[test]
+fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
+    let mut renderer = renderer();
+    let style = named_style(UI_SANS_FAMILY);
+    let runs = renderer.shaped_runs("Report Отчёт Αναφορά", None, &style);
+    let sizes: Vec<f32> = runs.iter().map(|run| run.size).collect();
+    assert!(sizes.contains(&style.size), "{sizes:?}");
+    assert!(
+        sizes.iter().filter(|size| **size != style.size).count() >= 2,
+        "Cyrillic and Greek are x-height matched: {sizes:?}"
+    );
+    // Measurement and paint come from the same shaped buffer.
+    let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
+    let last = runs.last().and_then(|run| run.glyphs.last()).unwrap();
+    assert!(last.x < width);
+}
+
+#[test]
+fn the_generic_sans_follows_the_theme_ui_face() {
+    let mut renderer = renderer();
+    let generic = TextStyle::new(20.0);
+    let instrument = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    renderer.set_ui_face(UI_HYPERLEGIBLE_FAMILY);
+    let hyperlegible = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    assert!(
+        (instrument - hyperlegible).abs() > 1.0,
+        "{instrument} vs {hyperlegible}"
+    );
+    renderer.set_ui_face("No Such Family");
+    let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
+}
