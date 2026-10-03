@@ -28,7 +28,10 @@ apps/calendar/src/timeline_viewport.rs pixel_const 12
 apps/calendar/src/topbar.rs pixel_const 5
 apps/camera/src/app.rs pixel_const 7
 apps/canvas/src/gesture/brush.rs pixel_const 1
+apps/canvas/src/lib.rs pixel_const 3
 apps/canvas/src/model.rs pixel_const 1
+apps/canvas/src/panels/inspector.rs pixel_const 2
+apps/canvas/src/panels/mod.rs pixel_const 1
 apps/canvas/src/render.rs pixel_const 1
 apps/canvas/src/surface.rs pixel_const 2
 apps/chat/src/app.rs pixel_const 8
@@ -201,7 +204,7 @@ crates/sdk/ui-core/src/widget/date_picker.rs pixel_const 4
 crates/sdk/ui-core/src/widget/disclosure_header.rs pixel_const 1
 crates/sdk/ui-core/src/widget/document_viewport.rs pixel_const 6
 crates/sdk/ui-core/src/widget/drag.rs pixel_const 1
-crates/sdk/ui-core/src/widget/dropdown.rs pixel_const 8
+crates/sdk/ui-core/src/widget/dropdown.rs pixel_const 9
 crates/sdk/ui-core/src/widget/empty_state.rs pixel_const 2
 crates/sdk/ui-core/src/widget/file_picker.rs pixel_const 12
 crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3

@@ -5,6 +5,10 @@
 
 #[path = "delegated_promotion_cli.rs"]
 pub mod delegated_promotion_cli;
+#[path = "full_entry.rs"]
+pub mod full_entry;
+#[path = "history_compaction.rs"]
+pub mod history_compaction;
 #[path = "http_end_to_end.rs"]
 pub mod http_end_to_end;
 #[path = "promotion_cli.rs"]

@@ -6149,6 +6149,18 @@ impl FrameHarness {
         });
     }
 
+    /// Two left clicks at `(x, y)` that count as one double-click however
+    /// long the frames between the presses take: the multi-click window is
+    /// widened for exactly these two presses, so a slow host cannot split
+    /// them into two single clicks.
+    pub fn double_click_at(&mut self, x: f64, y: f64) {
+        let window = crate::gesture::multi_click_interval();
+        crate::gesture::set_multi_click_interval(crate::time::Duration::from_secs(3600));
+        self.click_at(x, y);
+        self.click_at(x, y);
+        crate::gesture::set_multi_click_interval(window);
+    }
+
     /// Press the left button at `from`, move through intermediate points to
     /// `to` and release there: a pointer drag in logical coordinates, as a
     /// drawing or a handle drag sees it.

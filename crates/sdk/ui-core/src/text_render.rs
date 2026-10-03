@@ -1519,6 +1519,83 @@ fn outline_ink_bounds(
     }
 }
 
+/// One shaped glyph as geometry: see [`TextRenderer::glyph_outlines`].
+#[derive(Clone, Debug)]
+pub struct GlyphOutline {
+    /// The outline around the glyph's origin, y down, in the style's units.
+    pub path: BezPath,
+    /// The glyph's origin on its baseline, where [`TextRenderer::draw_style`]
+    /// paints it.
+    pub origin: Point,
+    /// How far the pen moves on to the next glyph.
+    pub advance: f64,
+    /// The bytes of the text the glyph shows.
+    pub cluster: std::ops::Range<usize>,
+}
+
+/// A glyph's unhinted outline at `size`, y down; `None` for a colour or
+/// bitmap glyph, which has no outline to draw.
+fn outline_path(
+    font: &Font,
+    glyph_id: u16,
+    size: f32,
+    coords: &[vello::NormalizedCoord],
+) -> Option<BezPath> {
+    use skrifa::instance::{NormalizedCoord, Size};
+    use skrifa::outline::DrawSettings;
+    use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+    let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    if [b"COLR", b"CBDT", b"sbix", b"SVG "]
+        .iter()
+        .any(|tag| face.table_data(Tag::new(tag)).is_some())
+    {
+        return None;
+    }
+    let location: Vec<_> = coords
+        .iter()
+        .map(|v| NormalizedCoord::from_bits(*v))
+        .collect();
+    let outline = face
+        .outline_glyphs()
+        .get(GlyphId::new(u32::from(glyph_id)))?;
+    let mut pen = PathPen(BezPath::new());
+    outline
+        .draw(
+            DrawSettings::unhinted(Size::new(size), location.as_slice()),
+            &mut pen,
+        )
+        .ok()?;
+    Some(pen.0)
+}
+
+/// Draws a glyph outline into a path, flipping the font's y-up to y-down.
+struct PathPen(BezPath);
+
+impl skrifa::outline::OutlinePen for PathPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.move_to((f64::from(x), -f64::from(y)));
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.line_to((f64::from(x), -f64::from(y)));
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.0.quad_to(
+            (f64::from(cx), -f64::from(cy)),
+            (f64::from(x), -f64::from(y)),
+        );
+    }
+    fn curve_to(&mut self, ax: f32, ay: f32, bx: f32, by: f32, x: f32, y: f32) {
+        self.0.curve_to(
+            (f64::from(ax), -f64::from(ay)),
+            (f64::from(bx), -f64::from(by)),
+            (f64::from(x), -f64::from(y)),
+        );
+    }
+    fn close(&mut self) {
+        self.0.close_path();
+    }
+}
+
 impl InkBoundsPen {
     fn point(&mut self, x: f32, y: f32) {
         if !x.is_finite() || !y.is_finite() {
@@ -2641,6 +2718,65 @@ impl TextRenderer {
                     run.glyphs.iter().copied(),
                 );
         }
+    }
+
+    /// `text` shaped exactly as [`Self::draw_style`] paints it, one outline
+    /// per glyph: what draws text as geometry (an outlined export, words set
+    /// along a curve) and measures its ink. Colour and bitmap glyphs, which
+    /// have no outline, are left out.
+    pub fn glyph_outlines(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> Vec<GlyphOutline> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        let max_width = self.collapse_unused_max_width(text, max_width, style, false);
+        let prepared = self.shape_buffer(text, max_width, style);
+        let variations = style.resolved_variations();
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(at, _)| at.saturating_add(1)))
+            .collect();
+        let mut placed = Vec::new();
+        for run in prepared.buffer.layout_runs() {
+            let line_start = line_starts.get(run.line_i).copied().unwrap_or(0);
+            for glyph in run.glyphs {
+                if run.text.get(glyph.start..glyph.end) == Some("\u{ad}") {
+                    continue;
+                }
+                let (x, y) = glyph_paint_origin(
+                    glyph,
+                    hanging_glyph_x(&run, glyph, style.hanging_punctuation),
+                    run.line_y,
+                );
+                placed.push((
+                    glyph.font_id,
+                    glyph.font_weight,
+                    glyph.glyph_id,
+                    glyph.font_size,
+                    Point::new(f64::from(x), f64::from(y)),
+                    f64::from(glyph.w),
+                    line_start.saturating_add(glyph.start)..line_start.saturating_add(glyph.end),
+                ));
+            }
+        }
+        placed
+            .into_iter()
+            .filter_map(|(face, weight, glyph, size, origin, advance, cluster)| {
+                let font = self.vello_font(face, weight)?;
+                let coords = self.normalized_coords(face, &variations, weight);
+                Some(GlyphOutline {
+                    path: outline_path(&font, glyph, size, &coords)?,
+                    origin,
+                    advance,
+                    cluster,
+                })
+            })
+            .collect()
     }
 
     /// Retain the exact face and shared bytes already used by shaping.

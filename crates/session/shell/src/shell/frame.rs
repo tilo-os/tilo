@@ -2164,7 +2164,14 @@ impl FrameBuilder {
     /// sources by label; empty when the loop may idle. For tests and
     /// diagnostics.
     pub fn animation_owners(&self) -> Vec<String> {
-        let demand = self.animation_demand();
+        self.animation_owners_at(Instant::now())
+    }
+
+    /// [`Self::animation_owners`] with the chrome's animations read at
+    /// `now`. An animation a frame started after `now` still counts, so a
+    /// test can ask whether a frame began one without racing its length.
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        let demand = self.animation_demand_at(now);
         let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
             .filter(|label| *label != "content")
             .map(str::to_string)
@@ -2193,8 +2200,12 @@ impl FrameBuilder {
     }
 
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
+        self.animation_demand_at(Instant::now())
+    }
+
+    fn animation_demand_at(&self, now: Instant) -> AnimationDemand {
         AnimationDemand {
-            host: self.host.animation_demand_bits(Instant::now()),
+            host: self.host.animation_demand_bits(now),
             floating: self
                 .floating_overlays
                 .iter()
@@ -4099,6 +4110,37 @@ mod tests {
             .iter()
             .find(|(_, node)| node.label() == Some(name))
             .cloned()
+    }
+
+    #[test]
+    fn an_open_palette_reaches_assistive_technology_once() {
+        // The host publishes the palette (with its filter band) itself; the
+        // palette widget must not be exported a second time, or a screen
+        // reader sees two palettes and may type into the hidden one.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.host_mut().set_palette_visible(true);
+        fb.host_mut().set_palette_focus(true);
+        fb.host_mut().force_palette_settled();
+        fb.relayout();
+        let update = fb.build_a11y_tree_update(None, 1.0);
+        let named = |name: &str| {
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(name))
+                .count()
+        };
+        assert_eq!(named("Command palette"), 1, "one palette");
+        assert_eq!(named("Search filters"), 1, "its filter band, once");
+        let queries = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.supports_action(ui::accesskit::Action::SetValue)
+            })
+            .count();
+        assert_eq!(queries, 1, "one editable query");
     }
 
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {

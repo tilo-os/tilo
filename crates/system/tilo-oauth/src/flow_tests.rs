@@ -197,21 +197,20 @@ fn the_client_secret_goes_to_the_token_endpoint() {
 
 #[test]
 fn registered_ports_are_taken_in_order_and_the_code_can_be_pasted_when_all_are_busy() {
-    // Two ports the OS just handed out; hold the first so the listener has
-    // to take the second.
-    let first = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let second_port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let first_port = first.local_addr().unwrap().port();
+    // The fake server binds its own port first, so it cannot take the one
+    // freed below. Two ports the OS just handed out: hold the first so the
+    // listener has to take the second, released only right before it binds.
     let server = FakeAuthorizationServer::start();
+    let first = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let second = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let first_port = first.local_addr().unwrap().port();
+    let second_port = second.local_addr().unwrap().port();
     let registration = Registration {
         redirect_ports: RedirectPorts::Registered(vec![first_port, second_port]),
         paste_code_fallback: true,
         ..registration()
     };
+    drop(second);
     let authorization = Authorization::begin(&server.provider(), &registration, None).unwrap();
     assert_eq!(
         authorization.redirect_uri(),

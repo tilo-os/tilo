@@ -124,7 +124,11 @@ fn main(
     let tile_offset = paths[drawobj_ix | (WG_SIZE - 1u)].tiles;
     storageBarrier();
     if drawobj_ix < config.n_drawobj {
-        let tile_subix = select(0u, sh_tile_count[local_id.x - 1u], local_id.x > 0u);
+        // `select` evaluates both arms, so the first element would read index -1.
+        var tile_subix = 0u;
+        if local_id.x > 0u {
+            tile_subix = sh_tile_count[local_id.x - 1u];
+        }
         let bbox = vec4(ux0, uy0, ux1, uy1);
         let path = Path(bbox, tile_offset + tile_subix);
         paths[drawobj_ix] = path;

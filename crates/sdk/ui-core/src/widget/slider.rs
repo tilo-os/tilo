@@ -40,6 +40,10 @@ pub struct Slider {
     /// Where the value lives: a document key or process-local state.
     binding: Option<BoxedBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    /// Invoke the bound action once per drag, when it is let go.
+    settles: bool,
+    /// The value when the current drag began.
+    drag_from: Option<f64>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -81,6 +85,8 @@ impl Slider {
             value: 0.5,
             binding: Some(crate::doc_binding::number_key(on_change_path)),
             on_change: None,
+            settles: false,
+            drag_from: None,
             action: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -115,6 +121,16 @@ impl Slider {
         if self.action.is_none() {
             self.on_change = Some(Box::new(callback));
         }
+        self
+    }
+
+    /// Invoke the bound action once per drag, with the value it is let go
+    /// at, rather than at every step of it; a key or an assistive action
+    /// still invokes it at once. For an action that is an undoable edit, so
+    /// one drag is one step.
+    #[must_use]
+    pub fn commits_on_release(mut self) -> Self {
+        self.settles = true;
         self
     }
 
@@ -229,7 +245,9 @@ impl Slider {
         }
         self.value = new_value;
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.value);
+            if !(self.settles && self.is_dragging) {
+                let _ = action.emit(self.value);
+            }
         } else if let Some(binding) = &mut self.binding {
             binding.push(state, root, &self.value);
         }
@@ -554,6 +572,7 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
+                    self.drag_from = Some(self.value);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
@@ -561,6 +580,16 @@ impl Widget for Slider {
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     *ctx.handled = true;
+                    let moved = self
+                        .drag_from
+                        .take()
+                        .is_some_and(|from| (from - self.value).abs() > 0.001);
+                    if self.settles
+                        && moved
+                        && let Some(action) = &mut self.action
+                    {
+                        let _ = action.emit(self.value);
+                    }
                 }
             }
             _ => {}
@@ -1085,6 +1114,34 @@ mod tests {
                 &root
             ));
             assert_eq!(s.value, before, "a disabled slider must not change value");
+        }
+
+        // Case `a_settling_slider_invokes_its_action_once_per_drag`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(100.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                "nothing is invoked while the drag goes on"
+            );
+            dispatch(&mut slider, &mouse_release());
+            let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                .expect("letting go invokes the action");
+            let value = invoked.arguments["value"].as_f64().unwrap();
+            assert!((value - slider.value).abs() < 1e-9);
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
         }
 
         // Case `action_binding_owns_accessibility_value_changes`.

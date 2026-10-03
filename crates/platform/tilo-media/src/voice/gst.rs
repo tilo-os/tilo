@@ -780,11 +780,6 @@ mod tests {
         wait_for_device_workers();
         guard
     }
-    fn wait_for_null(element: &impl IsA<gst::Element>) {
-        tilo_test_env::wait_until("the worker's actual Null cleanup", || {
-            element.current_state() == gst::State::Null
-        });
-    }
 
     mod delayed {
         use super::*;
@@ -1142,6 +1137,7 @@ mod tests {
         audio
             .start_capture_element(&source.upcast(), Arc::new(|| true))
             .unwrap();
+        let worker = audio.capture_stop_handle().unwrap();
         assert!(
             !audio.capture_active(),
             "requested Playing is not observed microphone audio"
@@ -1152,7 +1148,7 @@ mod tests {
             Err(AudioError::DeviceLost)
         ));
         assert!(!audio.capture_active());
-        wait_for_null(&observed);
+        wait_for_worker_exit(&worker);
         assert_eq!(observed.current_state(), gst::State::Null);
     }
 
@@ -1174,8 +1170,9 @@ mod tests {
         assert!(pipeline.current_running_time().is_none());
         assert!(audio.poll_capture(Instant::now()).unwrap().is_empty());
         assert!(!audio.capture_ready());
-        audio.capture_stop_handle().unwrap().stop();
-        wait_for_null(&observed);
+        let worker = audio.capture_stop_handle().unwrap();
+        worker.stop();
+        wait_for_worker_exit(&worker);
         assert_eq!(observed.current_state(), gst::State::Null);
         assert!(matches!(
             audio.poll_capture(Instant::now()),
@@ -1434,6 +1431,7 @@ mod tests {
         audio
             .start_capture_element(&source, Arc::new(move || fence.load(Ordering::Acquire)))
             .unwrap();
+        let worker = audio.capture_stop_handle().unwrap();
         wait_for_capture(&mut audio);
         assert!(audio.capture_active());
         valid.store(false, Ordering::Release);
@@ -1442,7 +1440,7 @@ mod tests {
             Err(AudioError::Revoked)
         ));
         assert!(!audio.capture_active());
-        wait_for_null(&observed_source);
+        wait_for_worker_exit(&worker);
         assert_eq!(observed_source.current_state(), gst::State::Null);
         assert!(audio.poll_capture(Instant::now()).unwrap().is_empty());
     }
@@ -1460,8 +1458,9 @@ mod tests {
         audio
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
+        let worker = audio.capture_stop_handle().unwrap();
         audio.close();
-        wait_for_null(&observed_source);
+        wait_for_worker_exit(&worker);
         assert_eq!(observed_source.current_state(), gst::State::Null);
         assert_eq!(audio.playout(Instant::now()), Err(AudioError::Closed));
         assert_eq!(
@@ -1506,7 +1505,7 @@ mod tests {
             panic!("capture stop blocked on outer backend lock");
         }
         worker.join().unwrap();
-        wait_for_null(&observed);
+        wait_for_worker_exit(&stop);
         assert_eq!(observed.current_state(), gst::State::Null);
         assert!(!held.capture_active());
         assert!(matches!(

@@ -119,9 +119,7 @@ impl EngineSession {
         if let Some(f) = self.cached_frame_at(time_ms) {
             return Some(f);
         }
-        if !self.engine.seek_and_wait(time_ms, timeout) {
-            return None;
-        }
+        self.engine.seek_and_wait(time_ms, timeout).ok()?;
         let frame = Arc::new(self.engine.latest()?.clone());
         // Key the entry by the picture's own timestamp as well as the
         // requested time: an accurate seek lands on the frame covering

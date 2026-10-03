@@ -50,6 +50,14 @@ class Transport(unittest.TestCase):
         protocol.send(output, self.raw)
         self.assertEqual(output.getvalue(), struct.pack('!I', len(self.raw)) + self.raw)
 
+    def test_canonical_profile_source_maps_only_to_existing_runtime_module(self):
+        module = self.source/'os/dev/hardware_profile.py'
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b'canonical profile implementation\n')
+        files, _ = protocol.validate(protocol.bundle(self.source, 'a'*40, True))
+        self.assertEqual(files['usr/lib/tilo/hardware_profile.py'], module.read_bytes())
+        self.assertNotIn('usr/lib/tilo/uki_hardware_profile.py', protocol.ALLOWLIST)
+
     def test_bad_hash_path_duplicates_and_packet_size_refused(self):
         packet = json.loads(self.raw)
         for variant in ('hash', 'path', 'duplicate'):
@@ -76,7 +84,9 @@ class Transport(unittest.TestCase):
                 stream = client.makefile('rwb', buffering=0)
                 files, receipt = protocol.receive(stream)
                 results.append(files)
-                protocol.write_all(stream, protocol.canonical({'ok': True, 'receipt': receipt}) + b'\n')
+                runtime={'schema':'tilo.installer-code-runtime-probe.v1','backend':{'cached_target':{'mount':{
+                    'uki_fixture':{'sha256':'b'*64,'bytes':1024*1024,'physical_admission':False}}}}}
+                protocol.write_all(stream, protocol.canonical({'ok': True, 'receipt': receipt, 'runtime':runtime}) + b'\n')
         worker = threading.Thread(target=server, daemon=True)
         worker.start()
         def git(argv, **kwargs):
@@ -85,6 +95,9 @@ class Transport(unittest.TestCase):
             return Result()
         (self.source / 'installer-code-phase.json').write_text(json.dumps({'phase':'startup'}))
         (self.source / 'installer-code-channel.json').write_text(json.dumps({'schema':'tilo.installer-code-runtime.v1', 'enabled':True, 'port':port, 'source':str(self.source)}))
+        (self.source/'installer-code-uki-fixture.json').write_text(json.dumps({
+            'schema':'tilo.installer-code-uki-fixture.v1','physical_admission':False,'readonly':True,
+            'sha256':'b'*64,'bytes':1024*1024}))
         with patch.object(host.subprocess, 'run', side_effect=git):
             receipt = host.refresh(self.source, port, self.source / 'receipt.json', timeout=3)
         worker.join(3)
@@ -115,7 +128,8 @@ class Transport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'LF line endings'):
             protocol.bundle(self.source, 'a' * 40, False)
         for name in ('tilo-vm-install-proof.py', 'tilo-installer-code-refresh.py',
-                     'tilo-installer-code-protocol.py', 'tilo-verified-boot-install-preflight'):
+                     'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py',
+                     'tilo-verified-boot-install-preflight'):
             self.assertNotIn('usr/libexec/' + name, protocol.ALLOWLIST)
 
     def test_host_closed_window_and_resume_marker_refuse_before_network(self):
@@ -293,6 +307,108 @@ class Guest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'end test'):
                 self.refresh.main()
             ready.assert_called_once()
+
+    def test_backend_probe_requires_actual_transient_enforcing_helper_identity(self):
+        from types import SimpleNamespace
+        helper = b'# TILO_VM_CODE_REFRESH_PROBE_V1:\nactual helper bytes\n'
+        valid = {'schema':'tilo.installer-code-backend-probe.v1', 'transient':1,
+                 'enforcing':True, 'domain':'system_u:system_r:init_t:s0',
+                 'helper_sha256':hashlib.sha256(helper).hexdigest()}
+        for changed in ({}, {'enforcing':False}, {'transient':0},
+                        {'domain':'system_u:system_r:xdm_t:s0'}, {'helper_sha256':'a'*64}):
+            result = SimpleNamespace(returncode=0, stdout=json.dumps(dict(valid, **changed)).encode(), stderr=b'')
+            with self.subTest(changed=changed), patch.object(self.refresh.subprocess, 'run', return_value=result):
+                if changed:
+                    with self.assertRaisesRegex(ValueError, 'executed enforcing transient'):
+                        self.refresh.backend_probe({'usr/libexec/tilo-install':helper})
+                else:
+                    self.assertEqual(self.refresh.backend_probe({'usr/libexec/tilo-install':helper}), valid)
+
+    def test_bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos(self):
+        raw = protocol.canonical({'schema':protocol.SCHEMA, 'source':{'revision':'a'*40,'dirty':True},
+            'files':[{'path':'usr/libexec/tilo-install','sha256':hashlib.sha256(b'helper\n').hexdigest(),
+                      'data':base64.b64encode(b'helper\n').decode()}]})
+        class Duplex:
+            def __init__(self, data): self.reader=io.BytesIO(data); self.writer=io.BytesIO()
+            def readline(self, size): return self.reader.readline(size)
+            def read(self, size): return self.reader.read(min(size,3))
+            def write(self, data): return self.writer.write(data)
+            def flush(self): pass
+        stream = Duplex(b'LO-1\n'+b'TILO-CODE-HELLO-1\n'*20+struct.pack('!I',len(raw))+raw)
+        files, _ = self.refresh.bootstrap_receive(stream)
+        self.assertEqual(files['usr/libexec/tilo-install'], b'helper\n')
+        self.assertEqual(stream.writer.getvalue().count(b'installer-code-ready'),20)
+        with self.assertRaisesRegex(ValueError, 'too many repeated'):
+            self.refresh.bootstrap_receive(Duplex(b'TILO-CODE-HELLO-1\n'*66))
+
+
+class Bootstrap(unittest.TestCase):
+    def test_original_ci_boot_fixture_validates_real_archive_and_refuses_tampering(self):
+        from types import SimpleNamespace
+        probe=load('original_boot_fixture',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        builder=load('boot_fixture_builder',ROOT/'dev/make-installer-probe-fixture.py')
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/'inputs'; root.mkdir()
+            for name,data in {'kernel/7/vmlinuz':b'kernel','kernel/7/initramfs.img':b'initrd',
+                              'usr/lib/tilo/hardware-profile.json':b'{"id":"lenovo-83ed"}',
+                              'padding':b'x'*(1024*1024)}.items():
+                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(data)
+            archive=base/'inputs.tar'; builder.create(root,archive,'sha256:'+'a'*64)
+            sysblock=base/'sys'; (sysblock/archive.name).mkdir(parents=True)
+            ro=sysblock/archive.name/'ro'; ro.write_text('1')
+            def validate(projected):
+                self.assertEqual((projected/'kernel/7/vmlinuz').read_bytes(),b'kernel')
+                return '7',projected/'kernel/7/vmlinuz',projected/'kernel/7/initramfs.img',None
+            helper=SimpleNamespace(image_inputs=validate)
+            with patch.object(probe,'FIXTURE_DEVICE',archive), patch.object(probe,'SYS_BLOCK',sysblock), patch.object(probe,'SCRATCH_ROOT',base), \
+                    patch.object(Path,'is_block_device',return_value=True), \
+                    patch.object(probe,'run',return_value=str(archive.stat().st_size)), \
+                    patch.object(probe,'HELPER',root/'kernel/7/vmlinuz'):
+                result=probe.fixture_probe(helper)
+                self.assertEqual(result['profile'],'lenovo-83ed')
+                self.assertEqual(result['mount']['uki_fixture']['sha256'],hashlib.sha256(archive.read_bytes()).hexdigest())
+                ro.write_text('0')
+                with self.assertRaisesRegex(ValueError,'writable'): probe.fixture_probe(helper)
+                ro.write_text('1')
+                data=archive.read_bytes(); archive.write_bytes(data.replace(b'kernel',b'BROKEN',1))
+                with self.assertRaisesRegex(ValueError,'differ'): probe.fixture_probe(helper)
+            (root/'symlink').symlink_to(root/'kernel/7/vmlinuz')
+            with self.assertRaisesRegex(ValueError,'symlinks'): builder.create(root,base/'bad.tar','sha256:'+'a'*64)
+
+    def test_seed_validation_precedes_any_bind_and_exec_uses_frozen_daemon(self):
+        from types import SimpleNamespace
+        bootstrap = load('refresh_bootstrap_test', ROOT / 'usr/libexec/tilo-installer-code-bootstrap.py')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
+                     'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py')
+            for name in files: (root / name).write_bytes(name.encode())
+            receipt = {'schema':'tilo.installer-code-bootstrap.v1',
+                       'files':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}}
+            (root/'receipt.json').write_text(json.dumps(receipt))
+            destination = root/'original-proof'; destination.write_bytes(b'original')
+            daemon = SimpleNamespace(gate=lambda:None, BASE=root/'runtime')
+            original_stat = Path.stat
+            def root_owned(path, *args, **kwargs):
+                fields = list(original_stat(path, *args, **kwargs)); fields[4] = 0
+                return os.stat_result(fields)
+            with patch.object(bootstrap, 'ROOT', root), patch.object(bootstrap, 'DESTINATION', destination), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.object(Path, 'stat', root_owned), \
+                    patch.object(bootstrap, 'load_daemon', return_value=daemon), \
+                    patch.object(bootstrap.os, 'listxattr', return_value=['security.selinux']), \
+                    patch.object(bootstrap.os, 'getxattr', return_value=b'system_u:object_r:bin_t:s0'), \
+                    patch.object(bootstrap.os, 'setxattr'), patch.object(bootstrap, 'run') as run, \
+                    patch.object(bootstrap.os, 'execv', side_effect=RuntimeError('exec observed')) as execute:
+                (root/files[0]).write_bytes(b'tampered')
+                with self.assertRaisesRegex(ValueError, 'differs from host manifest'): bootstrap.start()
+                run.assert_not_called()
+                (root/files[0]).write_bytes(files[0].encode())
+                with self.assertRaisesRegex(RuntimeError, 'exec observed'): bootstrap.start()
+                execute.assert_called_once_with('/usr/bin/python3',
+                    ['/usr/bin/python3', str(root/'tilo-installer-code-refresh.py')])
+                self.assertEqual(run.call_args_list[0].args, ('mount', '--bind', str(root/files[-1]), str(destination)))
+                self.assertEqual(json.loads((daemon.BASE/'bootstrap.json').read_text()), receipt)
 
 
 if __name__ == '__main__':

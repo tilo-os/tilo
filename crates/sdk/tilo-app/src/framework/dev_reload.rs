@@ -5,7 +5,7 @@ use tilo_resource::{Doc, Reader, Resource};
 use ui_core::permissions::{LivePermissions, Role};
 use ui_core::widget::AppWidget;
 
-use super::app::{Editing, ResourceApp, build_root, role_permissions};
+use super::app::{Editing, ResourceApp, action_registry, build_root, role_permissions};
 
 /// Address of the `ui` this library linked. The host compares it with its own
 /// and refuses the library when they differ.
@@ -13,11 +13,13 @@ pub fn linked_ui() -> *const () {
     ui_core::app::dev_stamp_addr()
 }
 
-/// Build `A`'s current view and hand it to the host's `ui`.
+/// Build `A`'s current view and hand it, with the decoders of the edits it
+/// makes, to the host's `ui`.
 ///
 /// Returns `1` when the view was published. The document, route and caret
 /// already in the open windows are restored by the host after it installs
-/// this view.
+/// this view. The decoders must come from this library too: the view encodes
+/// its edits with this code, which the running code may not read.
 pub fn publish_root<A: ResourceApp>() -> i32 {
     let mut doc = Doc::new();
     if <A::Resource as Resource>::initialize(&mut doc).is_err() {
@@ -28,8 +30,11 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     };
     let permissions = LivePermissions::fixed(role_permissions("dev", Role::Owner).borrow().clone());
     let root = build_root::<A>(reader, Editing::Live(permissions));
-    let boxed: Box<dyn AppWidget> = Box::new(root);
-    ui_core::app::publish_dev_root(boxed);
+    let view: Box<dyn AppWidget> = Box::new(root);
+    ui_core::app::publish_dev_root(ui_core::app::DevRoot {
+        view,
+        registry: action_registry::<A>(),
+    });
     1
 }
 

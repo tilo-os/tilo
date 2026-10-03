@@ -163,8 +163,53 @@ def arrangement(ctx, res):
 
 @check("B06", AREA, "Monitor hotplug: unplugging and replugging an output moves windows and restores the layout")
 def hotplug(ctx, res):
-    helptext = ctx.vm.run("slot", "--help")
-    if "hotplug" not in helptext and "unplug" not in helptext:
-        raise Unobservable("tilo-vm cannot unplug or replug a slot's virtual output, "
-                           "so hotplug cannot be driven")
-    raise Unobservable("tilo-vm offers output hotplug, but this suite does not drive it yet")
+    # The guest kernel's DRM connector status is the hotplug: forcing it off and back to
+    # detect sends the same uevent a real cable does, so the compositor's own path runs.
+    ctx.reset()
+    st = ctx.state()
+    rects = core.display_rects(st)
+    expect(len(rects) >= 2, f"two outputs present (have {len(rects)})")
+    g = ctx.new_terminal_window()["id"]
+    st = ctx.state()
+    # Unplug whichever output the new window landed on.
+    d1 = core.display_of_group(st, g)
+    expect(d1 is not None, "the new window is on an output")
+    monitor = next((d.get("monitor", "") for d in st["workspace_tree"]["outputs"]["displays"]
+                    if d["id"] == d1), "")
+    name = monitor.removeprefix("connector:")
+    if not name or name == monitor:
+        raise Unobservable(f"display {d1} names no DRM connector (monitor={monitor!r})")
+    found = ctx.vm.root_exec(f"ls -d /sys/class/drm/card*-{name} 2>/dev/null").split()
+    if len(found) != 1:
+        raise Unobservable(f"connector {name} of display {d1} is not one DRM connector: {found}")
+    victim = found[0]
+    res.metrics["unplugged"] = victim
+
+    card = victim.rsplit("/", 1)[1].split("-", 1)[0]
+    widths = {d: r[2:4] for d, r in rects.items() if d != d1}
+
+    def force(state):
+        # Forcing a connector's status sends no uevent; the card's synthetic change
+        # event is the hotplug notification compositors listen for.
+        ctx.vm.vm_cmd("ssh", "--", f"sh -c 'echo {state} > {victim}/status && "
+                      f"echo change > /sys/class/drm/{card}/uevent'", timeout=60)
+
+    force("off")
+    try:
+        st = ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects) - 1, 10,
+                            "the unplugged output is gone from the layout")
+        ctx.shot("B06-unplugged")
+        kept = {d: r[2:4] for d, r in core.display_rects(st).items()}
+        res.metrics["remaining_sizes"] = kept
+        expect(all(kept.get(d) == wh for d, wh in widths.items()),
+               f"remaining outputs keep their modes: had {widths}, now {kept}")
+        ctx.wait_state(lambda s: core.display_of_group(s, g) not in (None, d1), 5,
+                       "the window moved to a remaining output")
+    finally:
+        force("detect")
+    ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects), 10,
+                   "the replugged output is back in the layout")
+    st = ctx.wait_state(lambda s: core.display_of_group(s, g) == d1, 5,
+                        f"the window returned to the replugged output {d1}")
+    res.metrics["restored_rects"] = core.display_rects(st)
+    ctx.shot("B06-replugged")

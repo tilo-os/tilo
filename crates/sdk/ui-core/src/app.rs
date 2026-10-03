@@ -910,6 +910,7 @@ impl App {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
+        let behaviour = component.behaviour;
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
@@ -940,6 +941,8 @@ impl App {
         validation.disarm();
         root_custody.root = Some(root);
         let mut app = retirement_assembly::assemble(root_custody);
+        app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
+        app.appearance_reconcile = behaviour.appearance_reconcile;
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -2226,10 +2229,7 @@ impl App {
     /// Returns whether the running root accepted it. A root that is not the
     /// framework host leaves the current view in place.
     #[cfg(feature = "native")]
-    pub(crate) fn install_reloaded_view(
-        &mut self,
-        root: Box<dyn crate::widget::AppWidget>,
-    ) -> bool {
+    pub(crate) fn install_reloaded_view(&mut self, root: DevRoot) -> bool {
         let Some(bound) = self
             .root_widget
             .as_any_mut()
@@ -2237,7 +2237,7 @@ impl App {
         else {
             return false;
         };
-        bound.component.root = Some(root);
+        bound.component.install_reloaded(root);
         self.needs_sync = true;
         true
     }

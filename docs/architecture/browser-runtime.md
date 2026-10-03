@@ -143,7 +143,7 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 17 | No browser fonts | `tilo-ui` text | Ported from 541: manifest `browser_startup`, `FontCatalog::load_browser_startup_bytes`, `TextRenderer::with_browser_font_system`, demand/install, browser emoji shaping | fixed |
 | 18 | App image stores spawn decode threads | `tilo-ui::image_store` | Ported from 541: `ImageStore::with_host_factory_with_max_dimension` | fixed |
 | 19 | Apps depend on `tilo-app` with native defaults | every app (`apps/*`) | Per-app `native` feature forwarding `tilo-app/native`, default on; browser builds use `default-features = false`. Notes also needs `portal` under `native` (`tilo-ui/portal` implies `native`) and `tilo-content` without `device` (`device` → `runtime-fs` → tokio `net`) | remaining |
-| 20 | Shell desktop (`crates/session/shell`) is native | shell | The portable part is `tilo-desktop-surface` (below): the toolkit's strip widgets over `tilo-desktop-model`. Pure tree operations the shell owned (`reconcile_strip_topology`, tab removal) moved into `tilo-desktop-model`; the shell delegates. Desktop search is shared through `tilo-desktop-search` (result kinds, the cross-provider ranking, portable providers, the palette session); the surface draws it with the toolkit's `CommandPalette` on Super/Cmd+K, Ctrl+K off macOS, Super+Space and the `global-search`/`commands` navigation commands. Other shell chrome (top bar, wheel, overview) stays native | fixed (surface, search) |
+| 20 | Shell desktop (`crates/session/shell`) is native | shell | The portable part is `tilo-desktop-surface` (below): the toolkit's strip widgets over `tilo-desktop-model`. Pure tree operations the shell owned (`reconcile_strip_topology`, tab removal) moved into `tilo-desktop-model`; the shell delegates. Desktop search is shared through `tilo-desktop-search` (result kinds, the cross-provider ranking, portable providers, the palette session); the surface draws it with the toolkit's `CommandPalette` on Super/Cmd+K, Ctrl+K off macOS, Super+Space and the `global-search`/`commands` navigation commands. The page mounts the surface under `tilo-desktop`'s backdrop and top bar (`src/shell.rs`), answering the bar's `DesktopChromeSource` from the tree and the page clock and applying its intents as navigation commands; an empty workspace shows `tilo-desktop`'s launchpad, and the bar's overview button `tilo-desktop`'s `OverviewPanel`. The wheel stays native | fixed (surface, search, top bar, launchpad, overview) |
 | 21 | `std::time` clocks panic at run time | `tilo-clock`, `qdoc::history` | `tilo-clock` uses `web-time` on wasm (target-only dep); `qdoc` stamps commits through `tilo-clock`. Other direct `SystemTime::now`/`Instant::now` callers remain run-time hazards | fixed (record flush path) |
 | 22 | Strip widgets hide their children | `tilo-ui` `GroupRow`/`WindowGroup` | `GroupRow::exposing_children` (opt-in) reports groups, handles, tab bars and active tiles in layout order, so in-process components get semantics, focus and lifecycle | fixed |
 | 23 | `ring` C code | `ring` | Builds with Apple clang 21 and upstream clang (wasm32 target). CI needs a clang with the wasm backend. Apple `ar` writes empty archives for wasm objects. That only breaks linking when a crate needs ring's C code at link time (it did while iroh, whose `iroh-relay` links a `cdylib`, was in the bundle); if it recurs, point `CC_wasm32_unknown_unknown`/`AR_wasm32_unknown_unknown` at LLVM (e.g. Homebrew `llvm@21`) | note |
@@ -1207,7 +1207,8 @@ The room's tree and each tab's record id are kept in the profile's durable
 store (`StorageKey::PackageRecord("so.tilo.browser-desktop", room)`, JSON)
 and committed with the records, so a reload restores the same windows on
 the same documents; a profile without one is seeded (one workspace, one
-strip, a window per requested application). In a certified room the
+strip, a window per requested application; without `apps`, none, so the
+empty workspace shows the launchpad). In a certified room the
 tree is also shared with the room's other pages ([Shared sessions](#shared-sessions)).
 
 ## Shared sessions
@@ -1293,8 +1294,15 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
 4. **Desktop surface.** *Done for one strip.* `tilo-desktop-surface` over
    `tilo-desktop-model` (blocker 20), navigation v1, persisted per room,
    tree→widget reconcile, shared per room. Open: semantic `activate` on
-   the new-tab button; shell chrome; desktop input ownership
-   (`desktop_input_ownership`).
+   the new-tab button; desktop input ownership
+   (`desktop_input_ownership`). The top bar and the launchpad are the
+   native shell's (`tilo-desktop`); the overview is `tilo-desktop`'s
+   `OverviewPanel` over the same `room_cards` the shell's overview reads.
+   Desktop chords are listed in
+   [the keyboard map](../shell-navigation-keyboard-map.md#in-the-browser). A desktop with nothing stored opens an
+   empty workspace named by `mountDesktop({workspaceName})`, which shows the
+   launchpad; later mounts restore the stored layout. Invite (the launchpad
+   card and the bar's people control) calls `mountDesktop({onInvite})`.
 5. **Make daemon clients optional.** *Done;* see
    [Local daemons](#local-daemons) and [Seams](#seams-the-page-installs).
 6. **Real peer.** *Done: sessions, records, desktop, carets* ([Shared sessions](#shared-sessions)).

@@ -1655,6 +1655,29 @@ enum DirectoryReply {
 }
 
 impl DirectoryReply {
+    /// The longest this asker is waited for. The shell's own surfaces ask
+    /// for a person mid-frame and keep their last results past a short
+    /// deadline. A remote caller has a deadline of its own and gives up by
+    /// dropping its answer, which ends the wait sooner; the bound here only
+    /// stops an owner that never answers from pinning the request.
+    fn patience(&self) -> Duration {
+        match self {
+            Self::Oneshot(_) => CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT,
+            Self::Pending(_) => CapnpBrokerState::DIRECTORY_OWNER_HUNG,
+        }
+    }
+
+    /// `answer`, awaited for as long as this asker still wants it: the
+    /// owning app answers on its next turn, and a turn running a heavy
+    /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
+    /// patience ran out, `Err(Unavailable)` once it stopped asking.
+    async fn awaited<T>(
+        &self,
+        answer: impl std::future::Future<Output = T>,
+    ) -> Result<T, ActionDirectoryBridgeError> {
+        await_while_asked(self.patience(), || !self.is_closed(), answer).await
+    }
+
     fn is_closed(&self) -> bool {
         match self {
             Self::Oneshot(sender) => sender.is_closed(),
@@ -1669,6 +1692,86 @@ impl DirectoryReply {
             }
             Self::Pending(completer) => completer.complete(reply),
         }
+    }
+}
+
+/// `answer`, or why it stopped being awaited: `patience` ran out
+/// (`TimedOut`) or `asking` turned false (`Unavailable`).
+async fn await_while_asked<T>(
+    patience: Duration,
+    asking: impl Fn() -> bool,
+    answer: impl std::future::Future<Output = T>,
+) -> Result<T, ActionDirectoryBridgeError> {
+    const ASKER_CHECK: Duration = Duration::from_millis(100);
+    let deadline = tokio::time::sleep(patience);
+    tokio::pin!(answer, deadline);
+    let mut check = tokio::time::interval(ASKER_CHECK);
+    loop {
+        tokio::select! {
+            value = &mut answer => return Ok(value),
+            () = &mut deadline => return Err(ActionDirectoryBridgeError::TimedOut),
+            _ = check.tick() => {
+                if !asking() {
+                    return Err(ActionDirectoryBridgeError::Unavailable);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod directory_patience_tests {
+    use super::{
+        ActionDirectoryBridgeError, CapnpBrokerState, DirectoryReply, Duration, await_while_asked,
+    };
+
+    /// A remote caller (an agent, another device) waits for an app whose
+    /// owner thread is busy with a heavy action or frame for longer than the
+    /// shell's own surfaces do; how long is the caller's to say.
+    #[test]
+    fn a_remote_asker_outwaits_a_busy_owner_and_stops_when_it_gives_up() {
+        let (completer, answer) =
+            tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
+        let remote = DirectoryReply::Pending(tilo_actions::remote::pending().0);
+        let (shell, _receiver) = tokio::sync::oneshot::channel();
+        let shell = DirectoryReply::Oneshot(shell);
+        assert!(remote.patience() > shell.patience());
+        assert!(
+            CapnpBrokerState::DIRECTORY_OWNER_HUNG
+                > CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT * 10
+        );
+        drop(remote);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let busy = Duration::from_millis(300);
+            let answered = await_while_asked(Duration::from_secs(5), || true, async {
+                tokio::time::sleep(busy).await;
+                7
+            })
+            .await;
+            assert_eq!(answered, Ok(7), "a busy owner is waited for");
+
+            let hung = await_while_asked(
+                Duration::from_millis(200),
+                || true,
+                std::future::pending::<()>(),
+            )
+            .await;
+            assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
+
+            let reply = DirectoryReply::Pending(completer);
+            drop(answer);
+            let abandoned = tilo_test_env::within(
+                "an abandoned asker stops the wait",
+                reply.awaited(std::future::pending::<()>()),
+            )
+            .await;
+            assert_eq!(abandoned, Err(ActionDirectoryBridgeError::Unavailable));
+        });
     }
 }
 
@@ -2624,7 +2727,13 @@ impl CapnpBrokerState {
     const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
     const DIRECTORY_MAX_WORK: u32 = 4_096;
     const DIRECTORY_MAX_DEPTH: u16 = 32;
+    /// How long the shell's own surfaces (palette, search) wait for an app's
+    /// directory before keeping their last results.
     const DIRECTORY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
+    /// An app that has not answered its directory in this long is hung, not
+    /// busy: its asker hears it timed out. Remote askers normally give up
+    /// sooner, on their own deadline.
+    const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
         self.expire_stale_invocations_at(
@@ -3279,24 +3388,19 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.query_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.query_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
                                 &query,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Page)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
@@ -3311,9 +3415,8 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.resolve_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.resolve_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
@@ -3321,17 +3424,13 @@ impl CapnpBrokerState {
                                 &revision,
                                 &resource,
                                 &action,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Resolution)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Start {
@@ -3344,23 +3443,18 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.start_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.start_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &target,
                                 argument.as_deref(),
                                 confirmation,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                 }

@@ -26,6 +26,7 @@ pub mod emoji_picker;
 pub mod intents;
 pub mod launchpad;
 pub mod overview;
+pub mod overview_panel;
 pub mod peer_join_toast;
 pub mod records;
 pub mod resolver;

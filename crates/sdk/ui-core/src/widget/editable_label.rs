@@ -56,6 +56,14 @@ pub struct EditableLabel {
     /// (blur-commit) without the press event carrying a position.
     last_pointer: Point,
     outcome: EditOutcome,
+    /// Invoked with each committed new value.
+    action: Option<crate::widget::ActionEmitter<String>>,
+    /// A double click on the idle label begins an edit.
+    renames: bool,
+    /// When the last press on the idle label was, to count the second.
+    last_press: Option<crate::time::Instant>,
+    /// Take the width the row leaves.
+    grow: bool,
 }
 
 impl EditableLabel {
@@ -73,7 +81,34 @@ impl EditableLabel {
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: EditOutcome::None,
+            action: None,
+            renames: false,
+            last_press: None,
+            grow: false,
         }
+    }
+
+    /// Invoke `binding` with each committed value that differs from the one
+    /// before: a rename is the app's own action.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Begin an edit on a double click, the way a list renames its items in
+    /// place. A single click is left to what is beneath (selecting the row).
+    #[must_use]
+    pub fn renames_on_double_click(mut self) -> Self {
+        self.renames = true;
+        self
+    }
+
+    /// Take the width the row leaves, eliding a long value.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.grow = true;
+        self
     }
 
     #[must_use]
@@ -164,12 +199,16 @@ impl EditableLabel {
             return;
         }
         let trimmed = self.input.value().trim().to_string();
+        let changed = !trimmed.is_empty() && trimmed != self.value;
         if !trimmed.is_empty() {
             self.value = trimmed;
         }
         self.editing = false;
         self.input.set_focus(false);
         self.outcome = EditOutcome::Committed(self.value.clone());
+        if changed && let Some(action) = self.action.as_mut() {
+            let _ = action.emit(self.value.clone());
+        }
     }
 
     /// No-op when not editing.
@@ -193,6 +232,33 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
+    /// A second press on the idle label soon after the first begins an edit.
+    fn count_double_click(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.renames
+            || !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+            || !self.rect.contains(self.last_pointer)
+        {
+            return;
+        }
+        let now = crate::time::now();
+        let second = self.last_press.is_some_and(|at| {
+            now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+        });
+        self.last_press = if second { None } else { Some(now) };
+        if second {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+        }
+    }
+
     /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
     fn text_band(&self) -> (f64, f64) {
         let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
@@ -202,6 +268,8 @@ impl EditableLabel {
 }
 
 impl Widget for EditableLabel {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -214,7 +282,11 @@ impl Widget for EditableLabel {
                 height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
             },
             flex_shrink: 1.0,
-            flex_grow: 0.0,
+            flex_grow: if self.grow { 1.0 } else { 0.0 },
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
+            },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -297,6 +369,7 @@ impl Widget for EditableLabel {
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if !self.editing {
+            self.count_double_click(event, ctx);
             return;
         }
         match event {
@@ -459,6 +532,42 @@ impl Widget for EditableLabel {
             }
         }
         Widget::perform_action(&mut self.input, action, state, path)
+    }
+}
+
+impl crate::widget::controls::ActionControls for EditableLabel {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        let control_id = self
+            .semantic_target
+            .as_deref()
+            .or_else(|| self.test_id())
+            .unwrap_or("editable_label");
+        vec![action.metadata(control_id)]
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 

@@ -16,6 +16,9 @@
 //! drive an incremental, case-insensitive substring filter (Backspace edits
 //! it) so hundred-entry lists stay usable without endless scrolling.
 //!
+//! [`Dropdown::as_menu`] makes it a menu button instead: an icon that opens
+//! a list of choices, each one a command rather than a value it keeps.
+//!
 //! While open the widget reports [`Widget::wants_pointer_capture`] so its
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
@@ -51,6 +54,9 @@ const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 const FONT: f32 = 15.0;
 const LINE_PX: f32 = 60.0;
+/// The narrowest a menu button's list opens, so its choices read in full
+/// beside an icon-sized trigger.
+const MENU_MIN_WIDTH: f64 = 240.0;
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 
@@ -129,6 +135,9 @@ pub struct Dropdown {
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     /// Default `true`.
     enabled: bool,
+    /// A menu button's icon: the control is that icon, and a choice is a
+    /// command it reports rather than a value it shows.
+    menu: Option<crate::icons::Icon>,
 }
 
 impl Dropdown {
@@ -161,6 +170,7 @@ impl Dropdown {
             last_cursor: Point::ZERO,
             viewport: None,
             enabled: true,
+            menu: None,
         }
     }
 
@@ -213,6 +223,17 @@ impl Dropdown {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// A menu button: the control is `icon` alone, its list opens at least
+    /// [`MENU_MIN_WIDTH`] wide aligned to the control's trailing edge, and
+    /// choosing an option reports it (to [`Self::on_change`] or
+    /// [`Self::on_action`]) without the control keeping it as its value.
+    /// Name it with [`Self::with_accessible_name`]: it shows no text.
+    #[must_use]
+    pub fn as_menu(mut self, icon: crate::icons::Icon) -> Self {
+        self.menu = Some(icon);
         self
     }
 
@@ -413,6 +434,15 @@ impl Dropdown {
             }
             _ => below,
         };
+        if self.menu.is_some() {
+            // Hangs from the trigger's trailing edge, kept inside the window.
+            let width = self.rect.width().max(MENU_MIN_WIDTH);
+            let mut x0 = self.rect.x1 - width;
+            if let Some(vp) = self.viewport {
+                x0 = x0.min(vp.x1 - width).max(vp.x0);
+            }
+            return Rect::new(x0, y0, x0 + width, y0 + h);
+        }
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + h)
     }
 
@@ -465,6 +495,68 @@ impl Dropdown {
         self.ensure_visible(self.highlight, filtered.len());
     }
 
+    /// A menu button's face: its icon on the ghost button's grounds, with
+    /// hover, open and focus each visible.
+    fn draw_menu_trigger(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        icon: crate::icons::Icon,
+    ) {
+        let radius = f64::from(theme.tokens.radii.md);
+        let shape = RoundedRect::from_rect(self.rect, radius);
+        let disabled = !self.effectively_enabled();
+        let ground = if self.open {
+            Some(theme.bg_active)
+        } else if self.is_hovered && !disabled {
+            Some(theme.bg_hover)
+        } else {
+            None
+        };
+        if let Some(ground) = ground {
+            scene.fill(Fill::NonZero, transform, ground, None, &shape);
+        }
+        if self.is_focused && !self.open {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+        }
+        let ink = theme.tokens.colors.ink_on_any(
+            &[
+                theme.tokens.colors.surfaces.base,
+                theme.bg_hover,
+                theme.bg_active,
+            ],
+            theme.text_primary,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let ink = if disabled {
+            ink.with_alpha_factor(crate::widget::DISABLED_ALPHA)
+        } else {
+            ink
+        };
+        let edge = (self.rect.height() * 0.5).min(20.0);
+        let at = self.rect.center();
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                at.x - edge / 2.0,
+                at.y - edge / 2.0,
+                at.x + edge / 2.0,
+                at.y + edge / 2.0,
+            ),
+            icon,
+            ink,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+
     /// Close the options overlay without changing its selected value.
     pub fn close(&mut self) {
         self.open = false;
@@ -476,6 +568,15 @@ impl Dropdown {
 
     /// Store `value` through the binding and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
+        if self.menu.is_some() {
+            // A menu's choice is a command: reported, never kept.
+            if let Some(action) = &mut self.action {
+                let _ = action.emit(value.to_string());
+            } else if let Some(callback) = self.on_change.as_mut() {
+                callback(value);
+            }
+            return;
+        }
         if let Some(action) = &mut self.action {
             let _ = action.emit(value.to_string());
         } else if let Some(binding) = &mut self.binding {
@@ -612,6 +713,8 @@ impl Dropdown {
                     self.close();
                     *handled = true;
                 }
+                // A menu shows no query to type into.
+                _ if self.menu.is_some() => {}
                 _ => {
                     let change = self.filter_composition.handle_event(
                         event,
@@ -674,10 +777,23 @@ impl Widget for Dropdown {
         // `flex_shrink: 0` a dropdown claimed the whole row and pushed every
         // later sibling past the edge to zero width. The floor keeps the
         // chevron slot and padding so a squeezed control is still a control.
+        let side = px(f64::from(theme.tokens.metrics.bar_height));
+        if self.menu.is_some() {
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(side),
+                    height: Dimension::length(side),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(px(f64::from(theme.tokens.metrics.bar_height))),
+                height: Dimension::length(side),
             },
             min_size: Size {
                 width: Dimension::length(px(PAD_X + CHEVRON_W)),
@@ -710,6 +826,10 @@ impl Widget for Dropdown {
     ) {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
+        }
+        if let Some(icon) = self.menu {
+            self.draw_menu_trigger(scene, transform, theme, icon);
+            return;
         }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // Disabled widgets paint their (forced-idle) look under a reduced
@@ -891,10 +1011,11 @@ impl Widget for Dropdown {
                     continue;
                 };
                 let row = Rect::new(list.x0, row_top, list.x1, row_bottom);
-                let is_selected = self
-                    .values
-                    .get(opt_idx)
-                    .is_some_and(|value| *value == self.selected);
+                let is_selected = self.menu.is_none()
+                    && self
+                        .values
+                        .get(opt_idx)
+                        .is_some_and(|value| *value == self.selected);
                 if vi == self.highlight {
                     scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &row);
                 } else if is_selected {
@@ -1058,7 +1179,13 @@ impl Widget for Dropdown {
         } else {
             (!self.selected.is_empty()).then(|| self.selected_label().to_string())
         };
-        let mut node = AccessNode::new(Role::ComboBox)
+        let role = if self.menu.is_some() {
+            Role::Button
+        } else {
+            Role::ComboBox
+        };
+        let value = if self.menu.is_some() { None } else { value };
+        let mut node = AccessNode::new(role)
             .with_optional_name(name)
             .with_optional_value(value)
             .with_state(AccessState {
@@ -1836,6 +1963,66 @@ mod tests {
         repeated_selection_splices_the_diff_not_the_whole_value();
         recommitting_the_current_value_is_free();
         local_state_binding_is_two_way_across_dropdowns();
+    }
+
+    #[test]
+    fn a_menu_button_reports_a_choice_without_keeping_it() {
+        let state = crate::LocalState::new(String::new());
+        let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&chosen);
+        let mut menu = Dropdown::from_state(opts(), &state)
+            .as_menu(crate::icons::Icon::Plus)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        menu.rect = Rect::new(560.0, 100.0, 592.0, 132.0);
+        let mut document = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // The list hangs from the icon's trailing edge, wide enough to read.
+        let list = menu.list_rect(opts().len());
+        assert!((list.x1 - menu.rect.x1).abs() < 1e-6, "{list:?}");
+        assert!(list.width() >= MENU_MIN_WIDTH);
+        menu.set_viewport(Rect::new(0.0, 0.0, 400.0, 800.0));
+        let kept = menu.list_rect(opts().len());
+        assert!(
+            kept.x1 <= 400.0 && kept.x0 >= 0.0,
+            "kept in the window: {kept:?}"
+        );
+
+        // Typing does not filter: a menu shows no query.
+        menu.set_focus(true);
+        assert!(feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut document,
+            &root
+        ));
+        assert!(menu.is_open());
+        feed_key(
+            &mut menu,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut document,
+            &root,
+        );
+        assert_eq!(menu.visible_count(), opts().len());
+        feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut document,
+            &root,
+        );
+        feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut document,
+            &root,
+        );
+
+        assert_eq!(&*chosen.borrow(), &["Europe/Amsterdam"]);
+        assert!(!menu.is_open());
+        assert_eq!(menu.selected(), "", "a command is not kept as a value");
+        assert_eq!(state.get(), "");
+        let node = menu.accessibility().expect("a menu button is announced");
+        assert_eq!(node.role, crate::a11y::Role::Button);
     }
 
     #[test]

@@ -54,6 +54,8 @@ mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
 #[cfg(target_arch = "wasm32")]
+mod shell;
+#[cfg(target_arch = "wasm32")]
 mod storage;
 #[cfg(target_arch = "wasm32")]
 mod throttle;

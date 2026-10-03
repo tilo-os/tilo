@@ -435,10 +435,10 @@ pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlig
 pub use status_bubble::StatusBubble;
 pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
-    FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
-    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout, TextFlowRegion,
-    TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextStyle,
-    TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
+    FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
+    NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
+    TextFlowRegion, TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer,
+    TextStyle, TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
     configured_font_system,
 };
 pub use text_selection::{

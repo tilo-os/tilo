@@ -573,8 +573,21 @@ impl ApplicationDefinition {
     }
 }
 
+/// How the window hosting a component treats its tree. Part of the
+/// component, so every host that runs it applies the same behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComponentBehaviour {
+    /// After a structural rebuild, focus the first focusable field again so a
+    /// filter that rebuilds the tree keeps its caret.
+    pub autofocus_on_structure_change: bool,
+    /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live:
+    /// scale, theme, contrast and motion follow it each tick.
+    pub appearance_reconcile: bool,
+}
+
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
     pub(crate) root: Option<Box<dyn AppWidget>>,
@@ -590,6 +603,10 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    /// Set how the hosting window treats this component's tree.
+    pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
+        self.behaviour = behaviour;
+    }
     pub(crate) fn take_root_retirement(
         &mut self,
     ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
@@ -725,6 +742,7 @@ impl AppComponent {
         let registry_owner = context.construction.clone();
         construction.disarm();
         Self {
+            behaviour: ComponentBehaviour::default(),
             history: None,
             context,
             root: Some(root),
@@ -743,6 +761,15 @@ impl AppComponent {
             })),
             registry_owner,
         }
+    }
+
+    /// Take the view and action decoders of newly loaded code in place of
+    /// the running ones. The document stays: the new view reads it, and edits
+    /// the new view encodes are decoded and applied by the new code.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
+        self.root = Some(root.view);
+        self.registry = Some(root.registry);
     }
 
     /// Return only weak proxies; payload ownership remains with this component.

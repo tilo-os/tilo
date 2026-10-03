@@ -1003,6 +1003,21 @@ fn a_found_resource_lists_every_action_across_the_hosts_pages() {
         ] {
             assert!(actions.contains(action), "{action}: {page}");
         }
+        let capped = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "save", "max_results": 1}),
+        )
+        .await
+        .unwrap();
+        let actions = resource(&capped, "word_processor.document")["actions"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            actions.keys().collect::<Vec<_>>(),
+            ["save-as"],
+            "max_results caps the rows: {capped}"
+        );
     });
 }
 
@@ -1172,6 +1187,24 @@ fn calls_run_in_order_and_stop_at_the_first_failure() {
         "the save after a failure does not run: {:?}",
         host.invoked()
     );
+
+    let kept = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": 1, "calls": [
+            {"resource": doc, "action": "paste", "arguments": {"markdown": "# Again {#b0}\n"}},
+            {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}}
+        ]}),
+    ))
+    .unwrap();
+    assert_eq!(kept["stopped"], 1, "{kept}");
+    assert!(
+        kept["kept"]
+            .as_str()
+            .is_some_and(|note| note.contains("0..1")),
+        "a batch stopped after a step that ran says that step stayed: {kept}"
+    );
+    assert!(stopped.get("kept").is_none(), "{stopped}");
 
     let both = run(call(
         &mut server,
