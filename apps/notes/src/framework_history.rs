@@ -1,63 +1,42 @@
 //! Notebook History presentation. Only frozen bytes and local navigation enter here.
 use crate::{MainPanel, PageId, Workspace, doc::NotesDoc};
 use automerge::{AutoCommit, ObjType};
+use ui::chrome::{NavRowFace, SelectionState, nav_row_height, paint_nav_row};
 use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
     restore::{HistoryRestoreRoot, HistoryRestoreSchema, RestoreValueType},
 };
-use ui::surface::{edge_on, edge_outline};
+use ui::surface::Region;
 use ui::{TextRenderer, Theme, Widget};
 use vello::{
     Scene,
-    kurbo::{Affine, Point, Rect, RoundedRect, Stroke},
-    peniko::Fill,
+    kurbo::{Affine, Point, Rect},
 };
 
-/// Page-tree geometry for the current text scale, every value a theme token
-/// (HIG §7b, §9.6): the pane is the theme's sidebar width and docks beside
-/// the page from the compact breakpoint up; the list starts a section pad
-/// (`s4`) down, a selected pill keeps `s2` from the pane sides and half an
-/// `s1` from its neighbours, the label sits `s3` inside the pill and each
-/// nesting level indents `s4`. A row is the theme's selector height or its
-/// measured label line plus `s2`, whole pixels at every scale.
+/// The page tree beside the previewed page. It is the navigation region of
+/// the preview, as in the live window: the theme's sidebar width, docked from
+/// the compact breakpoint up, with the same rows the live page tree has.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TreeRowMetrics {
     /// Window width from which the tree docks beside the page.
     min_panel_w: f64,
     /// Width of the tree pane.
     pane_w: f64,
-    /// Base size of a row label (the renderer applies the text scale).
-    text: f32,
+    /// Where the first row starts below the top of the pane.
     top: f64,
+    /// One row, as a navigation row is high in the sidebar's theme.
     row_h: f64,
-    line_h: f64,
-    pill_inset_x: f64,
-    pill_gap: f64,
-    label_pad_x: f64,
-    indent: f64,
 }
 
 impl TreeRowMetrics {
-    fn new(theme: &Theme, text_scale: f32) -> Self {
-        let sp = &theme.tokens.spacing;
-        let mx = &theme.tokens.metrics;
-        let text = theme.tokens.typography.scale.base;
-        let line_h = ui::text_metrics::line_height_px(text, text_scale);
+    fn new(theme: &Theme) -> Self {
+        let sidebar = theme.in_region(Region::Sidebar);
         Self {
-            min_panel_w: f64::from(mx.compact_breakpoint),
-            pane_w: f64::from(mx.sidebar_width),
-            text,
-            top: f64::from(sp.s4),
-            row_h: ui::text_metrics::at_least_whole(
-                f64::from(mx.selector_height),
-                line_h + f64::from(sp.s2),
-            ),
-            line_h,
-            pill_inset_x: f64::from(sp.s2),
-            pill_gap: f64::from(sp.s1),
-            label_pad_x: f64::from(sp.s3),
-            indent: f64::from(sp.s4),
+            min_panel_w: f64::from(theme.tokens.metrics.compact_breakpoint),
+            pane_w: f64::from(theme.tokens.metrics.sidebar_width),
+            top: f64::from(theme.tokens.spacing.s2),
+            row_h: nav_row_height(&sidebar),
         }
     }
 
@@ -71,25 +50,6 @@ impl TreeRowMetrics {
     fn row(&self, pane: Rect, index: usize) -> Rect {
         let y0 = pane.y0 + self.top + index as f64 * self.row_h;
         Rect::new(pane.x0, y0, pane.x1, y0 + self.row_h)
-    }
-
-    /// The selected row's pill inside its band.
-    fn pill(&self, row: Rect) -> Rect {
-        Rect::new(
-            row.x0 + self.pill_inset_x,
-            row.y0 + self.pill_gap / 2.0,
-            row.x1 - self.pill_inset_x,
-            row.y1 - self.pill_gap / 2.0,
-        )
-    }
-
-    /// Where a label of nesting `depth` starts, and the top of its line box
-    /// centred on the row.
-    fn label_origin(&self, row: Rect, depth: usize) -> Point {
-        Point::new(
-            row.x0 + self.pill_inset_x + self.label_pad_x + depth as f64 * self.indent,
-            row.y0 + (row.height() - self.line_h) / 2.0,
-        )
     }
 }
 
@@ -210,7 +170,7 @@ impl HistoryPreview for NotebookPreview {
         theme: &Theme,
     ) -> Result<(), String> {
         self.bounds = bounds;
-        let tree_width = TreeRowMetrics::new(theme, text.text_scale())
+        let tree_width = TreeRowMetrics::new(theme)
             .pane(bounds)
             .map_or(0.0, |pane| pane.width());
         let mut tree = taffy::TaffyTree::new();
@@ -252,34 +212,12 @@ impl HistoryPreview for NotebookPreview {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.bg_primary,
-            None,
-            &self.bounds,
-        );
-        let m = TreeRowMetrics::new(theme, text.text_scale());
+        let m = TreeRowMetrics::new(theme);
         if let Some(pane) = m.pane(self.bounds) {
-            let colors = &theme.tokens.colors;
-            // The page tree is its own raised pane beside the page, with the
-            // edge derived against that pane (HIG §9.5) — a bare list of
-            // titles on the page ground read as part of the page.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.raised,
-                None,
-                &pane,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                edge_on(colors.surfaces.raised),
-                None,
-                &Rect::new(pane.x1 - 1.0, pane.y0, pane.x1, pane.y1),
-            );
-            let radius = f64::from(theme.tokens.radii.md);
+            // The page tree is the navigation region of the preview, the
+            // same ground and rows as the live sidebar.
+            ui::surface::region(scene, transform, pane, Region::Sidebar, theme);
+            let sidebar = theme.in_region(Region::Sidebar);
             for (index, (id, depth)) in self.pages.iter().enumerate() {
                 let Some(page) = self.workspace.get(*id) else {
                     continue;
@@ -288,35 +226,15 @@ impl HistoryPreview for NotebookPreview {
                 if row.y0 >= pane.y1 {
                     break;
                 }
-                if self.workspace.selected() == Some(*id) {
-                    // The shown page is a lift (HIG §9.3), one `s1` clear
-                    // of the rows above and below it.
-                    let pill = m.pill(row);
-                    let lifted = crate::sidebar::selection_fill_on_raised(theme);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        lifted,
-                        None,
-                        &RoundedRect::from_rect(pill, radius),
-                    );
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        edge_on(lifted),
-                        None,
-                        &edge_outline(pill, radius),
-                    );
-                }
-                let origin = m.label_origin(row, *depth);
-                let max_w = (pane.x1 - m.pill_inset_x - m.label_pad_x - origin.x).max(0.0);
-                text.draw_text(
+                let selected = self.workspace.selected() == Some(*id);
+                paint_nav_row(
                     scene,
-                    &page.title,
-                    m.text,
-                    theme.text_primary,
-                    transform * Affine::translate((origin.x, origin.y)),
-                    Some(max_w as f32),
+                    transform,
+                    text,
+                    &sidebar,
+                    &NavRowFace::new(row, &page.title)
+                        .depth(*depth)
+                        .state(SelectionState::new(selected, false, false)),
                 );
             }
         }
@@ -404,79 +322,29 @@ mod tree_geometry_tests {
     use super::*;
 
     #[test]
-    fn history_tree_pane_rows_are_gapped_centred_and_registered_on_every_preset() {
-        eprintln!("phase neighbouring_selection_pills_keep_a_token_gap");
-        {
-            let theme = Theme::dark();
-            let m = TreeRowMetrics::new(&theme, 1.0);
-            let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
-            assert!(
-                m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0))
-                    .is_none(),
-                "below the compact breakpoint the tree yields to the page"
-            );
-            let a = m.pill(m.row(pane, 0));
-            let b = m.pill(m.row(pane, 1));
-            let gap = b.y0 - a.y1;
-            assert!(
-                (gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
-                "pill gap {gap} is not s1"
-            );
-            assert!(
-                a.x0 > pane.x0 && a.x1 < pane.x1,
-                "pill is inset from the pane sides"
-            );
-        }
+    fn history_tree_pane_docks_from_the_compact_breakpoint_and_rows_stack() {
+        let theme = Theme::dark();
+        let m = TreeRowMetrics::new(&theme);
+        let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
+        assert!((pane.width() - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 1e-9);
+        assert!(
+            m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0))
+                .is_none(),
+            "below the compact breakpoint the tree yields to the page"
+        );
+        let (a, b) = (m.row(pane, 0), m.row(pane, 1));
+        assert!((a.y1 - b.y0).abs() < 1e-9, "rows touch");
+        assert!(a.y0 >= pane.y0 + f64::from(theme.tokens.spacing.s2));
+        assert!(
+            (a.width() - pane.width()).abs() < 1e-9,
+            "a row is the pane's full band"
+        );
+    }
 
-        eprintln!("phase labels_sit_on_their_measured_line_centred_in_the_row");
-        {
-            let theme = Theme::dark();
-            for scale in [1.0_f32, 2.0] {
-                let m = TreeRowMetrics::new(&theme, scale);
-                let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
-                let row = m.row(pane, 3);
-                let origin = m.label_origin(row, 1);
-                let centre = origin.y + m.line_h / 2.0;
-                assert!((centre - row.center().y).abs() < 1e-9, "scale {scale}");
-                assert!(m.row_h >= m.line_h + f64::from(theme.tokens.spacing.s2));
-                assert!(m.row_h.fract().abs() < 1e-9, "whole-pixel rows at {scale}");
-                let depth0 = m.label_origin(row, 0).x;
-                assert!((origin.x - depth0 - f64::from(theme.tokens.spacing.s4)).abs() < 1e-9);
-            }
-        }
-
-        eprintln!("phase tree_pane_edge_and_selection_register_on_every_preset");
-        {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let raised = theme.tokens.colors.surfaces.raised;
-                assert!(
-                    ui::surface::edge_delta(edge_on(raised), raised)
-                        >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}",
-                    theme.name
-                );
-                // The selected page must be a contrast step off the pane, not
-                // the pane's own colour with an outline. High contrast paints one
-                // flat black tier, so there the fill is the toolkit's own lift
-                // fallback (a grey that moves less than a hairline in luminance
-                // terms) and the derived edge carries the step.
-                let lifted = crate::sidebar::selection_fill_on_raised(&theme);
-                let moved = ui::surface::edge_delta(lifted, raised);
-                assert!(moved > 0.0, "{} selection fill equals the pane", theme.name);
-                if theme.name != "High Contrast" {
-                    assert!(
-                        moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                        "{} selection fill {lifted:?} does not move off raised {raised:?}",
-                        theme.name
-                    );
-                }
-                assert!(
-                    ui::surface::edge_delta(edge_on(lifted), lifted)
-                        >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{} selection edge does not register on its fill",
-                    theme.name
-                );
-            }
-        }
+    #[test]
+    fn history_tree_rows_grow_with_the_text() {
+        let regular = TreeRowMetrics::new(&Theme::dark());
+        let large = TreeRowMetrics::new(&Theme::dark().with_text_scale(2.0));
+        assert!(large.row_h > regular.row_h);
     }
 }

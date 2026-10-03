@@ -20,6 +20,7 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
 )]
 #[test]
 fn notebook_history_previews_restores_and_refuses_a_second_writer() {
+    notes::app::present_history_button_for_test(false);
     eprintln!("phase notebook_shared_history_previews_restores_and_undoes_saved_content");
     {
         let f = LegacyFixture::rich();
@@ -210,6 +211,7 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
 )]
 #[test]
 fn production_preparation_imports_once_and_reopens_the_same_graph() {
+    notes::app::present_history_button_for_test(false);
     eprintln!(
         "phase production_preparation_imports_once_preserves_sources_and_reopens_real_history"
     );
@@ -410,6 +412,7 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
 
 #[test]
 fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
+    notes::app::present_history_button_for_test(false);
     for revoke in [false, true] {
         let f = LegacyFixture::rich();
         let checkout = imported(&f);
@@ -481,7 +484,7 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
     let profile = temp.path().join("application-state");
     let workspace = "00000000-0000-0000-0000-000000000023";
     let dump = temp.path().join("inspection.json");
-    let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
+    let spec = serde_json::json!({"actions":[],"inspect":dump});
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
         .env("XDG_DATA_HOME", &profile)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
@@ -497,7 +500,8 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
         String::from_utf8_lossy(&output.stderr)
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
-    assert!(inspection.contains("activity_timeline"), "{inspection}");
+    // The note header presents the window's History button, in place of the window's own bar.
+    assert!(inspection.contains("history-button"), "{inspection}");
     // A launch into a workspace opens the room's shared default record.
     let checkout = notes::hosting::launch_notebook(true);
     let directory = app_state::DocStore::room_record_dir_at(

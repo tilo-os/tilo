@@ -15,18 +15,21 @@
 //! pinned to the top of the panel. Title editing is still the
 //! sidebar's job (inline rename).
 //!
-//! Layout sketch:
+//! Layout sketch, every gap a theme token:
 //!
 //! ```text
 //! +-- panel rect ----------------------+
-//! | [PADDING_PX gutter]               |
-//! |   Title (32 pt)                   |
-//! |   --------- gap -----------       |
-//! |   BlockEditor                     |
-//! |     Paragraph                     |
-//! |     Heading 1                     |
-//! |     ...                           |
-//! +-----------------------------------+
+//! |  Title (LargeTitle, pinned)        |
+//! |  [tag] [tag]                       |
+//! |  In Projects                       |
+//! |  Created 2 Mar 2026, edited today  |
+//! |  Linked from                       |
+//! |  [note] [note]                     |
+//! |                                    |
+//! |  BlockEditor                       |
+//! |    Paragraph                       |
+//! |    ...                             |
+//! +------------------------------------+
 //! ```
 
 use std::collections::HashMap;
@@ -36,7 +39,7 @@ use automerge::AutoCommit;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -45,37 +48,68 @@ use ui::Widget;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{FontChoice, TextRenderer};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState, EmptyStateContent};
+use ui::tokens::TextRole;
+use ui::widget::{
+    BlockEditor, ChipFace, ChipLead, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
+};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
 use crate::num;
 
-/// Page-title size. The title is the note's most prominent element — a
-/// large, editable heading pinned above the body, the way Notion/Bear put
-/// the page name at the top of the page rather than burying it in the
-/// first line of the body. Editing it renames the page (and re-syncs the
-/// sidebar). The seeded page bodies no longer repeat the title as a body
-/// H1, so there's a single clear heading per page.
-const TITLE_SIZE: f32 = 30.0;
-/// Inner padding around the panel content.
-const PADDING_PX: f64 = 32.0;
-/// Vertical gap between the title and the block editor.
-const TITLE_TO_EDITOR_GAP: f64 = 14.0;
-/// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
-/// caret band without clipping descenders.
-const TITLE_HEIGHT: f64 = 44.0;
-/// Height of one compact metadata-chip row beneath the title. Tags stay out
-/// of the document body, so they are scannable without stealing the first
-/// editable block.
-const TAG_ROW_HEIGHT: f64 = 28.0;
-/// Horizontal/vertical separation between tag chips. Kept deliberately small
-/// so a dense project note still reads as metadata rather than a button bar.
-const TAG_CHIP_GAP: f64 = 6.0;
-/// The tag chip's painted height before the accessibility text multiplier.
-const TAG_CHIP_HEIGHT: f64 = 22.0;
+/// The note header's geometry in the theme the tree was built with. The note
+/// title is the page's `LargeTitle`: an editable heading pinned above the
+/// body, so there is a single clear heading per page. Every measure is a
+/// theme token or a measured line, never a pixel size.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Metrics {
+    /// The content gutter: the one left edge of title, metadata and body.
+    gutter: f64,
+    /// Where the body editor starts inside the panel: the gutter less the
+    /// padding its text lines add inside their own rect, so a paragraph's
+    /// first letter stands on the gutter with the title above it.
+    body_inset: f64,
+    /// Chips beside each other, and a line under the line it belongs to.
+    related: f64,
+    /// The gap between two groups of the header.
+    sibling: f64,
+    /// The gap between the header and the first block of the body.
+    body_gap: f64,
+    /// The title band: its line plus room for the focus ring.
+    title: f64,
+    /// One `Caption` line.
+    caption: f64,
+    /// One `Subheading` line.
+    group_title: f64,
+    /// One chip.
+    chip: f64,
+    /// The scroll bar's track width and its inset from the panel edge.
+    scroll_width: f64,
+    scroll_inset: f64,
+}
+
+impl Metrics {
+    fn of(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
+        Self {
+            gutter: f64::from(spacing.rhythm.group),
+            body_inset: (f64::from(spacing.rhythm.group) - f64::from(theme.padding_standard))
+                .max(0.0),
+            related: f64::from(spacing.rhythm.related),
+            sibling: f64::from(spacing.rhythm.sibling),
+            body_gap: f64::from(spacing.s4),
+            title: line(TextRole::LargeTitle) + 2.0 * f64::from(spacing.s2),
+            caption: line(TextRole::Caption),
+            group_title: line(TextRole::Subheading),
+            chip: ChipFace::height(theme),
+            scroll_width: f64::from(spacing.s2),
+            scroll_inset: f64::from(spacing.s1),
+        }
+    }
+}
 
 /// Presentation data for a durable tag. Keeping its id beside the label means
 /// a painted chip can invoke the same stable tag operation as the resource
@@ -94,6 +128,16 @@ pub struct BacklinkChip {
     pub page: PageId,
     pub title: String,
     pub references: u32,
+}
+
+/// What an incoming-link chip says: the source note, and how many times it
+/// links here when more than once.
+fn backlink_label(backlink: &BacklinkChip) -> String {
+    if backlink.references > 1 {
+        format!("{} ({})", backlink.title, backlink.references)
+    } else {
+        backlink.title.clone()
+    }
 }
 
 /// A page's body in the SDK rich-text editor, edited as Notes actions.
@@ -126,50 +170,6 @@ fn notes_editor(page: Option<PageId>) -> NotesEditor {
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true),
     )
-}
-
-/// The tag-chip row under the title (HIG §7b): title and tags read as one
-/// group (title + explanation), so the chips start one `s2` under the title
-/// — which also keeps them clear of the focused title's 2 px ring — each
-/// chip is the measured label line plus `s2`, padded `s2` each side, and
-/// chips sit `s2` apart (related siblings). One description for the painter
-/// and the layout tests, so the band the row reserves (`TAG_ROW_HEIGHT` plus
-/// the title ↔ editor gap) is checked against what is drawn.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TagChipBand {
-    /// Base size of a chip label. A *base* size, not `typography.scale.sm`:
-    /// `Theme::with_text_scale` has already multiplied that token and
-    /// `TextRenderer` applies the accessibility scale again, so a scaled
-    /// token would grow large-text chips twice.
-    pub text: f32,
-    pub y0: f64,
-    pub height: f64,
-    pub pad_x: f64,
-    pub gap: f64,
-}
-
-#[cfg(test)]
-impl TagChipBand {
-    /// Base size of the chip label (see [`TagChipBand::text`]).
-    pub(crate) fn label_size() -> f32 {
-        12.0
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn tag_chip_band(
-    spacing: &ui::tokens::spacing::Spacing,
-    title_bottom: f64,
-    label_line_h: f64,
-) -> TagChipBand {
-    TagChipBand {
-        text: TagChipBand::label_size(),
-        y0: title_bottom + f64::from(spacing.s2),
-        height: label_line_h + f64::from(spacing.s2),
-        pad_x: f64::from(spacing.s2),
-        gap: f64::from(spacing.s2),
-    }
 }
 
 #[allow(
@@ -209,10 +209,16 @@ pub struct MainPanel {
     /// layout, shared by pointer + semantic activation, and deliberately
     /// avoids making the title's entire metadata band accidentally editable.
     tag_rects: Vec<Rect>,
-    /// The height reserved for wrapped tag rows. It is recalculated whenever
-    /// width, text scale, or membership changes, so large text and long tag
-    /// names never collide with the first document block.
-    tag_area_height: f64,
+    /// The note's parent path and dates as `Caption` lines, in document
+    /// order, with the rect each is painted and read at.
+    caption_rows: Vec<(Rect, String)>,
+    /// The "Linked from" group title.
+    backlink_label: Rect,
+    /// The height the whole header (tags, captions, incoming links and the
+    /// gap to the body) takes in the scrolling document. It is recalculated
+    /// whenever width, text scale, or membership changes, so large text and
+    /// long tag names never collide with the first document block.
+    metadata_height: f64,
     /// A tag chip is a local navigation control. The app drains this retained
     /// id into `NotesOperation::OpenTag`, which validates the real canonical
     /// tag resource before changing the local browse view.
@@ -227,7 +233,6 @@ pub struct MainPanel {
     /// pretending that backlinks are separately authored metadata.
     backlinks: Vec<BacklinkChip>,
     backlink_rects: Vec<Rect>,
-    backlink_area_height: f64,
     pending_backlink_open: Option<PageId>,
     focused_backlink: Option<PageId>,
     hovered_backlink: Option<PageId>,
@@ -258,8 +263,6 @@ pub struct MainPanel {
     scroll_y: f64,
     scroll_content_height: f64,
     scroll_track: Rect,
-    scroll_width: f64,
-    scroll_inset: f64,
     scrollbar: Scrollbar,
     scroll_focused: bool,
     scroll_layout_dirty: bool,
@@ -278,13 +281,15 @@ pub struct MainPanel {
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
-    /// Mirrors the renderer's global text scale so title and tag geometry
-    /// reserves the same physical height as the glyphs it contains.
-    text_scale: f64,
-    /// Space reserved below the scroll viewport for app-level transient
-    /// chrome (the compact save bubble on phones). Content can still scroll
-    /// fully above it instead of being hidden underneath.
-    bottom_inset: f64,
+    /// The header geometry and the theme it was resolved in, from the last
+    /// `build_layout`: `apply_layout` measures chips with them and is handed
+    /// no theme of its own.
+    metrics: Metrics,
+    layout_theme: Theme,
+    /// How far the editor's paragraphs inset their text inside their own
+    /// rect, measured from the first one laid out. The body starts that much
+    /// short of the gutter, so the first letter stands on it.
+    line_padding: Option<f64>,
 }
 
 impl MainPanel {
@@ -297,8 +302,7 @@ impl MainPanel {
             parent_path: String::new(),
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
-                .with_font_family(FontChoice::SansSerif)
-                .with_font_size(TITLE_SIZE)
+                .with_text_role(TextRole::LargeTitle)
                 .with_id("note_title")
                 .with_accessible_name("Page title"),
             title_rect: Rect::ZERO,
@@ -306,14 +310,15 @@ impl MainPanel {
             pending_rename: None,
             tags: Vec::new(),
             tag_rects: Vec::new(),
-            tag_area_height: 0.0,
+            caption_rows: Vec::new(),
+            backlink_label: Rect::ZERO,
+            metadata_height: 0.0,
             pending_tag_open: None,
             focused_tag: None,
             hovered_tag: None,
             tag_layout_dirty: false,
             backlinks: Vec::new(),
             backlink_rects: Vec::new(),
-            backlink_area_height: 0.0,
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
@@ -327,8 +332,6 @@ impl MainPanel {
             scroll_y: 0.0,
             scroll_content_height: 0.0,
             scroll_track: Rect::ZERO,
-            scroll_width: 8.0,
-            scroll_inset: 4.0,
             scrollbar: Scrollbar::vertical(),
             scroll_focused: false,
             scroll_layout_dirty: false,
@@ -337,8 +340,9 @@ impl MainPanel {
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
             empty_action_focused: false,
-            text_scale: 1.0,
-            bottom_inset: 0.0,
+            metrics: Metrics::default(),
+            layout_theme: Theme::dark(),
+            line_padding: None,
         }
     }
 
@@ -539,10 +543,11 @@ impl MainPanel {
         self.set_title_value("");
         self.tags.clear();
         self.tag_rects.clear();
-        self.tag_area_height = 0.0;
+        self.caption_rows.clear();
         self.backlinks.clear();
         self.backlink_rects.clear();
-        self.backlink_area_height = 0.0;
+        self.backlink_label = Rect::ZERO;
+        self.metadata_height = 0.0;
         self.pending_tag_open = None;
         self.focused_tag = None;
         self.hovered_tag = None;
@@ -583,11 +588,6 @@ impl MainPanel {
         if self.tags != tags {
             self.tags = tags;
             self.tag_rects.clear();
-            self.tag_area_height = if self.tags.is_empty() {
-                0.0
-            } else {
-                TAG_ROW_HEIGHT * self.text_scale
-            };
             self.focused_tag = None;
             self.hovered_tag = None;
             self.dirty = true;
@@ -616,11 +616,6 @@ impl MainPanel {
         if self.backlinks != backlinks {
             self.backlinks = backlinks;
             self.backlink_rects.clear();
-            self.backlink_area_height = if self.backlinks.is_empty() {
-                0.0
-            } else {
-                42.0 * self.text_scale
-            };
             self.focused_backlink = None;
             self.hovered_backlink = None;
             self.dirty = true;
@@ -658,18 +653,6 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
-    }
-
-    pub fn set_bottom_inset(&mut self, inset: f64) {
-        let inset = inset.max(0.0);
-        if (self.bottom_inset - inset).abs() > f64::EPSILON {
-            self.bottom_inset = inset;
-            self.dirty = true;
-        }
-    }
-
-    fn body_bottom_inset(&self) -> f64 {
-        PADDING_PX.max(self.bottom_inset)
     }
 
     fn scroll_metrics(&self) -> ScrollMetrics {
@@ -801,61 +784,26 @@ impl MainPanel {
         false
     }
 
+    /// The title band, pinned above the scrolling document.
     fn title_height(&self) -> f64 {
-        TITLE_HEIGHT * self.text_scale
+        self.metrics.title
     }
 
-    fn metadata_height(&self) -> f64 {
-        self.tag_area_height + self.backlink_area_height + self.date_area_height()
-    }
-
-    fn date_area_height(&self) -> f64 {
-        if self.page_id.is_some() {
-            let rows = self.dates.labels().len() + usize::from(!self.parent_path.is_empty());
-            (4.0 + 16.0 * rows as f64) * self.text_scale
-        } else {
-            0.0
+    /// The lines under the tags, in document order: where the note sits in
+    /// the tree and when it was written.
+    fn caption_texts(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.parent_path.is_empty() {
+            lines.push(self.parent_path_label());
         }
-    }
-
-    fn metadata_top(&self) -> f64 {
-        self.title_rect.y1 + TITLE_TO_EDITOR_GAP * self.text_scale - self.scroll_y
-    }
-
-    fn parent_path_rect(&self) -> Option<Rect> {
-        if self.parent_path.is_empty() {
-            return None;
-        }
-        let y = self.metadata_top()
-            + self.tag_area_height
-            + self.backlink_area_height
-            + 4.0 * self.text_scale;
-        Some(Rect::new(
-            self.title_rect.x0,
-            y,
-            self.title_rect.x1,
-            y + 16.0 * self.text_scale,
-        ))
+        lines.extend(self.dates.labels());
+        lines
     }
 
     fn parent_path_label(&self) -> String {
         ui::i18n::I18nManager::format(
             "notes-parent-path",
             &[("path", self.parent_path.clone().into())],
-        )
-    }
-
-    fn date_row_rect(&self, row: usize) -> Rect {
-        let path_rows = usize::from(!self.parent_path.is_empty());
-        let y = self.metadata_top()
-            + self.tag_area_height
-            + self.backlink_area_height
-            + (4.0 + (row + path_rows) as f64 * 16.0) * self.text_scale;
-        Rect::new(
-            self.title_rect.x0,
-            y,
-            self.title_rect.x1,
-            y + 16.0 * self.text_scale,
         )
     }
 
@@ -868,87 +816,184 @@ impl MainPanel {
         }
     }
 
-    fn chip_width(&self, tag: &TagChip) -> f64 {
-        // Text shaping happens during draw, while this calculation is needed
-        // during layout. This intentionally conservative average glyph width
-        // keeps the layout stable across frames (and leaves enough breathing
-        // room for wide letters) without serialising a full renderer cache.
-        let label_chars = tag.name.chars().count().saturating_add(2);
-        let glyph_estimate = label_chars as f64 * 7.6 * self.text_scale;
-        glyph_estimate + 16.0 * self.text_scale
+    /// Lay `labels` out as wrapped chips from `top`, inside `[x0, x1]`.
+    /// Every chip is kept: a note can have many tags, and clipping metadata
+    /// after the first row would hide it.
+    fn flow_chips<'a>(
+        &self,
+        labels: impl Iterator<Item = &'a str>,
+        x0: f64,
+        x1: f64,
+        top: f64,
+    ) -> Vec<Rect> {
+        let theme = &self.layout_theme;
+        let m = self.metrics;
+        ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let mut rects = Vec::new();
+            let (mut x, mut y) = (x0, top);
+            for label in labels {
+                let width = ChipFace::intrinsic_width(label, ChipLead::None, false, text, theme)
+                    .min((x1 - x0).max(0.0));
+                if x > x0 && x + width > x1 {
+                    x = x0;
+                    y += m.chip + m.related;
+                }
+                rects.push(Rect::new(x, y, x + width, y + m.chip));
+                x += width + m.related;
+            }
+            rects
+        })
     }
 
-    fn backlink_chip_width(&self, backlink: &BacklinkChip) -> f64 {
-        let count = if backlink.references > 1 { 5 } else { 0 };
-        let glyph_estimate =
-            backlink.title.chars().count().saturating_add(count) as f64 * 7.4 * self.text_scale;
-        glyph_estimate + 20.0 * self.text_scale
-    }
-
-    /// Compute wrapped tag-chip geometry. A note can have many tags, and this
-    /// lays every one out rather than silently clipping metadata after the
-    /// first row. The editor receives the resulting inset on the next layout
-    /// pass, keeping its first block fully visible.
-    fn layout_tag_chips(&mut self) {
+    /// Place the note header in the scrolling document: tags, the caption
+    /// lines, then the incoming links under their group title. The rects are
+    /// what is painted and what pointer and assistive technology hit, and
+    /// `metadata_height` is what the body is inset by.
+    fn layout_metadata(&mut self) {
         self.tag_rects.clear();
-        if self.tags.is_empty() || self.title_rect.width() <= 0.0 {
-            self.tag_area_height = 0.0;
-            return;
-        }
-        let scale = self.text_scale;
-        let start_x = self.title_rect.x0;
-        let max_x = self.title_rect.x1;
-        let mut x = start_x;
-        let metadata_top = self.metadata_top();
-        let mut y = metadata_top + 4.0 * scale;
-        let chip_h = TAG_CHIP_HEIGHT * scale;
-        for tag in &self.tags {
-            let width = self.chip_width(tag).min((max_x - start_x).max(0.0));
-            if x > start_x && x + width > max_x {
-                x = start_x;
-                y += chip_h + TAG_CHIP_GAP * scale;
-            }
-            self.tag_rects
-                .push(Rect::new(x, y, (x + width).min(max_x), y + chip_h));
-            x += width + TAG_CHIP_GAP * scale;
-        }
-        let rows_bottom = self.tag_rects.last().map_or(y, |rect| rect.y1);
-        self.tag_area_height = (rows_bottom - metadata_top + 4.0 * scale).max(0.0);
-    }
-
-    fn layout_backlink_chips(&mut self) {
         self.backlink_rects.clear();
-        if self.backlinks.is_empty() || self.title_rect.width() <= 0.0 {
-            self.backlink_area_height = 0.0;
+        self.caption_rows.clear();
+        self.backlink_label = Rect::ZERO;
+        if self.page_id.is_none() || self.title_rect.width() <= 0.0 {
+            self.metadata_height = 0.0;
             return;
         }
-        let scale = self.text_scale;
-        let start_x = self.title_rect.x0;
-        let max_x = self.title_rect.x1;
-        let chip_h = TAG_CHIP_HEIGHT * scale;
-        let mut x = start_x;
-        let metadata_top = self.metadata_top();
-        let label_y = metadata_top + self.tag_area_height + 7.0 * scale;
-        let mut y = label_y + 15.0 * scale;
-        for backlink in &self.backlinks {
-            let width = self
-                .backlink_chip_width(backlink)
-                .min((max_x - start_x).max(0.0));
-            if x > start_x && x + width > max_x {
-                x = start_x;
-                y += chip_h + TAG_CHIP_GAP * scale;
-            }
-            self.backlink_rects
-                .push(Rect::new(x, y, (x + width).min(max_x), y + chip_h));
-            x += width + TAG_CHIP_GAP * scale;
+        let m = self.metrics;
+        let origin = self.rect.y0 + self.scroll_top_inset() - self.scroll_y;
+        let (x0, x1) = (self.title_rect.x0, self.title_rect.x1);
+        let mut y = origin;
+        let mut sections = 0_usize;
+
+        if !self.tags.is_empty() {
+            let rects = self.flow_chips(self.tags.iter().map(|tag| tag.name.as_str()), x0, x1, y);
+            y = rects.last().map_or(y, |rect| rect.y1);
+            self.tag_rects = rects;
+            sections += 1;
         }
-        let rows_bottom = self.backlink_rects.last().map_or(y, |rect| rect.y1);
-        self.backlink_area_height =
-            (rows_bottom - metadata_top - self.tag_area_height + 5.0 * scale).max(0.0);
+
+        let captions = self.caption_texts();
+        if !captions.is_empty() {
+            if sections > 0 {
+                y += m.related;
+            }
+            for line in captions {
+                self.caption_rows
+                    .push((Rect::new(x0, y, x1, y + m.caption), line));
+                y += m.caption;
+            }
+            sections += 1;
+        }
+
+        if !self.backlinks.is_empty() {
+            if sections > 0 {
+                y += m.sibling;
+            }
+            self.backlink_label = Rect::new(x0, y, x1, y + m.group_title);
+            y += m.group_title + m.related;
+            let labels: Vec<String> = self.backlinks.iter().map(backlink_label).collect();
+            let rects = self.flow_chips(labels.iter().map(String::as_str), x0, x1, y);
+            y = rects.last().map_or(y, |rect| rect.y1);
+            self.backlink_rects = rects;
+        }
+
+        self.metadata_height = (y - origin).max(0.0) + m.body_gap;
     }
 
+    /// Paint the note header from the rects `layout_metadata` placed, so
+    /// pointer and assistive-technology hit testing share exactly what is
+    /// drawn here.
+    fn paint_metadata(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let ink = theme.tokens.colors.text_dim;
+        let chip = |scene: &mut Scene,
+                    text: &mut TextRenderer,
+                    rect: Rect,
+                    label: &str,
+                    hovered: bool,
+                    focused: bool| {
+            ChipFace::new(rect, label)
+                .hovered(hovered)
+                .paint(scene, transform, text, theme);
+            if focused {
+                ui::widget::paint_focus_ring(scene, transform, rect, rect.height() / 2.0, theme);
+            }
+        };
+        for (tag, rect) in self.tags.iter().zip(&self.tag_rects) {
+            let hovered = self.hovered_tag == Some(tag.id);
+            let focused = self.focused_tag == Some(tag.id);
+            chip(scene, text, *rect, &tag.name, hovered, focused);
+        }
+        let caption = theme.text(TextRole::Caption);
+        for (rect, line) in &self.caption_rows {
+            text.draw_style(
+                scene,
+                line,
+                ink,
+                transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
+                Some(num::f32_of_f64(rect.width())),
+                &caption,
+            );
+        }
+        if !self.backlinks.is_empty() {
+            let label = &self.backlink_label;
+            text.draw_style(
+                scene,
+                &ui::i18n!("notes-linked-from"),
+                ink,
+                transform.pre_translate(Vec2::new(label.x0, label.y0)),
+                Some(num::f32_of_f64(label.width())),
+                &theme.text(TextRole::Subheading),
+            );
+        }
+        for (backlink, rect) in self.backlinks.iter().zip(&self.backlink_rects) {
+            let hovered = self.hovered_backlink == Some(backlink.page);
+            let focused = self.focused_backlink == Some(backlink.page);
+            chip(
+                scene,
+                text,
+                *rect,
+                &backlink_label(backlink),
+                hovered,
+                focused,
+            );
+        }
+    }
+
+    /// Measure how far a paragraph's first letter stands inside its rect, from
+    /// the first paragraph laid out, and ask for one more layout pass when it
+    /// is not what the body was inset by.
+    fn measure_line_padding(&mut self) {
+        let measured = self
+            .editor
+            .editor()
+            .blocks()
+            .iter()
+            .find(|block| matches!(block.kind, ui::widget::BlockKind::Paragraph))
+            .and_then(|block| {
+                let rect = block.line.get_rect();
+                (rect.width() > 0.0)
+                    .then(|| block.line.caret_rect(&self.layout_theme, 0).x0 - rect.x0)
+            })
+            .filter(|padding| padding.is_finite() && *padding >= 0.0);
+        if let Some(padding) = measured
+            && self
+                .line_padding
+                .is_none_or(|known| (known - padding).abs() > 0.01)
+        {
+            self.line_padding = Some(padding);
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The document starts under the pinned title.
     fn scroll_top_inset(&self) -> f64 {
-        PADDING_PX + self.title_height() + TITLE_TO_EDITOR_GAP * self.text_scale
+        self.metrics.gutter + self.title_height()
     }
 
     fn scroll_viewport(&self) -> Rect {
@@ -956,12 +1001,12 @@ impl MainPanel {
             self.rect.x0,
             self.rect.y0 + self.scroll_top_inset(),
             self.rect.x1,
-            self.rect.y1 - self.body_bottom_inset(),
+            self.rect.y1,
         )
     }
 
     fn editor_top_inset(&self) -> f64 {
-        self.scroll_top_inset() + self.metadata_height()
+        self.scroll_top_inset() + self.metadata_height
     }
 
     /// Currently displayed page id, if any.
@@ -1085,7 +1130,7 @@ impl MainPanel {
                 self.rect.x0,
                 self.rect.y0 + self.editor_top_inset(),
                 self.rect.x1,
-                self.rect.y1 - self.body_bottom_inset(),
+                self.rect.y1,
             )
         };
         self.editor
@@ -1210,8 +1255,11 @@ impl Widget for MainPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.scroll_width = f64::from(theme.tokens.spacing.s2);
-        self.scroll_inset = f64::from(theme.tokens.spacing.s1);
+        self.metrics = Metrics::of(theme);
+        if let Some(padding) = self.line_padding {
+            self.metrics.body_inset = (self.metrics.gutter - padding).max(0.0);
+        }
+        self.layout_theme = theme.clone();
         // The panel is a **leaf** in the parent's flex tree — we do
         // all internal positioning by hand in `apply_layout`. Using a
         // flex container with the editor as a child caused taffy's
@@ -1228,7 +1276,6 @@ impl Widget for MainPanel {
         // node, but we hide that by giving the editor `position:
         // Absolute` — so taffy doesn't push the panel's size from the
         // editor's content extent.
-        self.text_scale = f64::from(theme.text_scale);
         // `apply_layout` raises this again only if the actual available width
         // changes the wrapped chip rows. That one-shot handoff avoids a
         // perpetual re-layout loop while preserving a correct editor inset.
@@ -1248,8 +1295,8 @@ impl Widget for MainPanel {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(num::f32_of_f64(PADDING_PX)),
-                        right: length(num::f32_of_f64(PADDING_PX)),
+                        left: length(num::f32_of_f64(self.metrics.body_inset)),
+                        right: length(num::f32_of_f64(self.metrics.body_inset)),
                         top: length(num::f32_of_f64(self.editor_top_inset())),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
@@ -1330,33 +1377,31 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
-        // Preserve hierarchy without forcing a phone at 200% text to wrap a
-        // short page title underneath its metadata. This is responsive type
-        // sizing, not cancellation of the accessibility scale: 20 logical px
-        // still paints at 40 px at 2× (larger than the normal 30 px title).
-        let title_size = if self.text_scale >= 1.5 && self.rect.width() < 420.0 {
-            20.0
-        } else if self.text_scale >= 1.5 && self.rect.width() < 600.0 {
-            26.0
+        // A title that does not fit its line steps down one role instead of
+        // eliding, so a phone at 200% text still reads the whole name. This
+        // is responsive type, not cancellation of the text scale.
+        let gutter = self.metrics.gutter;
+        let line_width = (self.rect.width() - 2.0 * gutter).max(0.0);
+        let fits = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+            let style = self.layout_theme.text(TextRole::LargeTitle);
+            f64::from(text.measure_style(self.title_label.value(), None, &style).0) <= line_width
+        });
+        self.title_label.set_text_role(if fits {
+            TextRole::LargeTitle
         } else {
-            TITLE_SIZE
-        };
-        self.title_label.set_font_size(title_size);
+            TextRole::Title
+        });
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
-            self.rect.x0 + PADDING_PX,
-            self.rect.y0 + PADDING_PX,
-            (self.rect.x1 - PADDING_PX).max(self.rect.x0 + PADDING_PX),
-            self.rect.y0 + PADDING_PX + self.title_height(),
+            self.rect.x0 + gutter,
+            self.rect.y0 + gutter,
+            (self.rect.x1 - gutter).max(self.rect.x0 + gutter),
+            self.rect.y0 + gutter + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);
-        let prior_tag_area = self.tag_area_height;
-        let prior_backlink_area = self.backlink_area_height;
-        self.layout_tag_chips();
-        self.layout_backlink_chips();
-        if (self.tag_area_height - prior_tag_area).abs() > f64::EPSILON
-            || (self.backlink_area_height - prior_backlink_area).abs() > f64::EPSILON
-        {
+        let prior_metadata = self.metadata_height;
+        self.layout_metadata();
+        if (self.metadata_height - prior_metadata).abs() > f64::EPSILON {
             self.tag_layout_dirty = true;
             self.dirty = true;
         }
@@ -1367,6 +1412,7 @@ impl Widget for MainPanel {
         if let Some(n) = self.editor_node {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
+            self.measure_line_padding();
             let editor_rect = self.editor.get_rect();
             let last_block_bottom = self.editor.editor().content_bottom();
             // Content height = where the lowest block actually ends,
@@ -1374,14 +1420,15 @@ impl Widget for MainPanel {
             // for flex-column overflow (same kludge ui::Scrollable uses
             // in its apply_layout).
             let editor_content_h = (last_block_bottom - editor_rect.y0).max(0.0);
-            let viewport_h =
-                (self.rect.height() - self.body_bottom_inset() - self.scroll_top_inset()).max(0.0);
-            self.scroll_content_height = self.metadata_height() + editor_content_h;
+            let viewport_h = (self.rect.height() - self.scroll_top_inset()).max(0.0);
+            // The last block ends one gutter above the window's bottom edge.
+            self.scroll_content_height =
+                self.metadata_height + editor_content_h + self.metrics.gutter;
             let track_top = self.rect.y0 + self.scroll_top_inset();
             self.scroll_track = Rect::new(
-                self.rect.x1 - self.scroll_inset - self.scroll_width,
+                self.rect.x1 - self.metrics.scroll_inset - self.metrics.scroll_width,
                 track_top,
-                self.rect.x1 - self.scroll_inset,
+                self.rect.x1 - self.metrics.scroll_inset,
                 track_top + viewport_h,
             );
             if !self.scroll_metrics().overflows() {
@@ -1439,20 +1486,14 @@ impl Widget for MainPanel {
             // Metadata belongs to the same scrolling document as the blocks.
             // Refresh its hit/paint geometry after a caret reveal or clamp
             // changes the shared offset during this layout pass.
-            self.layout_tag_chips();
-            self.layout_backlink_chips();
+            self.layout_metadata();
             // Re-apply layout with the (possibly clamped) scroll
             // offset so block rects reflect their on-screen position.
             // Without this, click hit-tests would target stale rects
             // for a scrolled view.
             let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
-            let viewport = Rect::new(
-                self.rect.x0,
-                self.rect.y0 + self.scroll_top_inset(),
-                self.rect.x1,
-                self.rect.y1 - self.body_bottom_inset(),
-            );
+            let viewport = self.scroll_viewport();
             self.editor
                 .editor_mut()
                 .set_tooltip_viewport(Some(viewport));
@@ -1472,17 +1513,7 @@ impl Widget for MainPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-
-        // Background.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
+        // No ground: the window paints `surfaces.content` under the panel.
         if self.page_id.is_some() {
             // Prominent, editable page title, drawn OUTSIDE the scroll clip so
             // it stays pinned while the body scrolls under it.
@@ -1492,7 +1523,7 @@ impl Widget for MainPanel {
 
             // Everything below the sticky title is one scrolling document:
             // metadata first, then authored blocks. One clip keeps scrolled
-            // chips from painting through the title or status bar.
+            // chips from painting through the title.
             let body_clip = self.scroll_viewport();
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -1501,143 +1532,7 @@ impl Widget for MainPanel {
                 transform,
                 &body_clip,
             );
-
-            if !self.tags.is_empty() {
-                // Tag geometry is produced in `apply_layout`, before drawing,
-                // so pointer and assistive-tech hit testing share the exact
-                // rectangles that are painted here. Wrapped rows retain every
-                // tag rather than dropping the ones that do not fit one line.
-                let font = 12.0;
-                for (tag, rect) in self.tags.iter().zip(&self.tag_rects) {
-                    let chip = RoundedRect::from_rect(*rect, 11.0 * self.text_scale);
-                    let hovered = self.hovered_tag == Some(tag.id);
-                    let focused = self.focused_tag == Some(tag.id);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        if hovered || focused {
-                            tokens.colors.neutral[4]
-                        } else {
-                            tokens.colors.neutral[3]
-                        },
-                        None,
-                        &chip,
-                    );
-                    if focused {
-                        let focus =
-                            RoundedRect::from_rect(rect.inflate(1.0, 1.0), 12.0 * self.text_scale);
-                        scene.stroke(
-                            &Stroke::new(2.0),
-                            transform,
-                            tokens.colors.border_focus,
-                            None,
-                            &focus,
-                        );
-                    }
-                    text_renderer.draw_text(
-                        scene,
-                        &format!("# {}", tag.name),
-                        font,
-                        if hovered || focused {
-                            tokens.colors.text_primary
-                        } else {
-                            tokens.colors.text_dim
-                        },
-                        transform
-                            * Affine::translate((
-                                rect.x0 + 8.0 * self.text_scale,
-                                rect.y0 + 4.0 * self.text_scale,
-                            )),
-                        Some(num::f32_of_f64(
-                            (rect.width() - 16.0 * self.text_scale).max(0.0),
-                        )),
-                    );
-                }
-            }
-
-            if !self.backlinks.is_empty() {
-                let scale = self.text_scale;
-                let label_y = self.metadata_top() + self.tag_area_height + 7.0 * scale;
-                text_renderer.draw_text(
-                    scene,
-                    "LINKED FROM",
-                    10.0,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((self.title_rect.x0, label_y)),
-                    Some(num::f32_of_f64(self.title_rect.width())),
-                );
-                for (backlink, rect) in self.backlinks.iter().zip(&self.backlink_rects) {
-                    let hovered = self.hovered_backlink == Some(backlink.page);
-                    let focused = self.focused_backlink == Some(backlink.page);
-                    let chip = RoundedRect::from_rect(*rect, 11.0 * scale);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        if hovered || focused {
-                            tokens.colors.neutral[4]
-                        } else {
-                            tokens.colors.surfaces.raised
-                        },
-                        None,
-                        &chip,
-                    );
-                    scene.stroke(
-                        &Stroke::new(if focused { 2.0 } else { 1.0 }),
-                        transform,
-                        if focused {
-                            tokens.colors.border_focus
-                        } else {
-                            tokens.colors.border_standard
-                        },
-                        None,
-                        &chip,
-                    );
-                    let label = if backlink.references > 1 {
-                        format!("{} ({})", backlink.title, backlink.references)
-                    } else {
-                        backlink.title.clone()
-                    };
-                    text_renderer.draw_text(
-                        scene,
-                        &label,
-                        12.0,
-                        if hovered || focused {
-                            tokens.colors.text_primary
-                        } else {
-                            tokens.colors.text_dim
-                        },
-                        transform
-                            * Affine::translate((rect.x0 + 8.0 * scale, rect.y0 + 4.0 * scale)),
-                        Some(num::f32_of_f64((rect.width() - 16.0 * scale).max(0.0))),
-                    );
-                }
-            }
-
-            if let Some(path_rect) = self.parent_path_rect() {
-                let parent_path = self.parent_path_label();
-                text_renderer.draw_text(
-                    scene,
-                    &parent_path,
-                    11.0,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((path_rect.x0, path_rect.y0)),
-                    Some(num::f32_of_f64(self.title_rect.width())),
-                );
-            }
-
-            let compact_dates = self.title_rect.width() < 310.0 * self.text_scale;
-            for (row, label) in self.dates.display_labels(compact_dates).iter().enumerate() {
-                let date_rect = self.date_row_rect(row);
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    11.0,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((date_rect.x0, date_rect.y0)),
-                    Some(num::f32_of_f64(self.title_rect.width())),
-                );
-            }
-
+            self.paint_metadata(scene, transform, text_renderer, theme);
             self.editor
                 .draw(scene, transform, text_renderer, theme, presence);
             scene.pop_layer();
@@ -1666,26 +1561,19 @@ impl Widget for MainPanel {
                 self.rect,
                 &EmptyStateContent {
                     icon: Some(Icon::FileText),
-                    title: "Start your first note",
-                    message: Some(
-                        "Capture an idea, a plan, or a decision. You can organise it later.",
-                    ),
                     action_label: Some("New note"),
+                    ..EmptyStateContent::new("Start your first note")
                 },
                 self.last_pointer,
             )
             .unwrap_or(Rect::ZERO);
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
-                let focus = RoundedRect::from_rect(
-                    self.empty_action_rect.inflate(3.0, 3.0),
-                    f64::from(tokens.radii.md) + 2.0,
-                );
-                scene.stroke(
-                    &Stroke::new(2.0),
+                ui::widget::paint_focus_ring(
+                    scene,
                     transform,
-                    tokens.colors.border_focus,
-                    None,
-                    &focus,
+                    self.empty_action_rect,
+                    f64::from(theme.tokens.radii.control),
+                    theme,
                 );
             }
         }
@@ -1955,12 +1843,6 @@ impl Widget for MainPanel {
                 ));
             }
         }
-        for (row, label) in self.dates.labels().into_iter().enumerate() {
-            let rect = self.date_row_rect(row);
-            if rect.contains(point) {
-                return Some((rect, label));
-            }
-        }
         None
     }
 
@@ -2023,12 +1905,7 @@ impl Widget for MainPanel {
                         .focused(self.title_label.is_editing()),
                 ),
         ];
-        let mut metadata = Vec::new();
-        if !self.parent_path.is_empty() {
-            metadata.push(self.parent_path_label());
-        }
-        metadata.extend(self.dates.labels());
-        children.push(AccessNode::new(Role::Label).with_name(metadata.join(". ")));
+        children.push(AccessNode::new(Role::Label).with_name(self.caption_texts().join(". ")));
         for (tag, rect) in self.tags.iter().zip(&self.tag_rects) {
             children.push(
                 AccessNode::new(Role::Button)
@@ -2334,74 +2211,6 @@ mod tests {
             assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
             assert!(p.take_empty_action());
         }
-
-        eprintln!("phase surface_hints_follow_hit_targets_and_reveal_exact_compact_dates");
-        {
-            let mut panel = MainPanel::new();
-            panel.load_page(fresh_page_id(), "Launch", "");
-            panel.rect = Rect::new(0.0, 0.0, 300.0, 600.0);
-            panel.title_rect = Rect::new(32.0, 32.0, 268.0, 76.0);
-            panel.dates = crate::metadata::NoteDates {
-                created: Some(1_700_000_000),
-                edited: Some(1_700_003_600),
-            };
-            panel.set_tags(vec![TagChip {
-                id: fresh_page_id(),
-                name: "Research".into(),
-            }]);
-            panel.layout_tag_chips();
-            panel.set_backlinks(vec![BacklinkChip {
-                page: fresh_page_id(),
-                title: "A long source note title".into(),
-                references: 1,
-            }]);
-            panel.layout_backlink_chips();
-            assert_eq!(
-                panel.cursor_shape(panel.title_rect.center()),
-                Some(winit::window::CursorIcon::Text)
-            );
-            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
-            assert!(
-                panel
-                    .tooltip_target_at(panel.tag_rects[0].center())
-                    .unwrap()
-                    .1
-                    .contains("Research")
-            );
-            assert!(
-                panel
-                    .tooltip_target_at(panel.backlink_rects[0].center())
-                    .unwrap()
-                    .1
-                    .contains("A long source note title")
-            );
-            for row in 0..2 {
-                let rect = panel.date_row_rect(row);
-                let (target, label) = panel.tooltip_target_at(rect.center()).unwrap();
-                assert_eq!(target, rect);
-                assert_eq!(label, panel.dates.labels()[row]);
-                assert!(
-                    label.contains("UTC"),
-                    "compact metadata must expose the exact time"
-                );
-            }
-            assert!(panel.tooltip_target_at(Point::new(400.0, 400.0)).is_none());
-            assert!(panel.tooltip_target_at(Point::new(100.0, 500.0)).is_none());
-            panel.suppress_tooltips(true);
-            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_none());
-            assert!(
-                panel
-                    .tooltip_target_at(panel.tag_rects[0].center())
-                    .is_none()
-            );
-            panel.suppress_tooltips(false);
-            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
-            panel.begin_title_edit();
-            assert!(
-                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
-                "rename hint must not cover an active title edit"
-            );
-        }
     }
 
     #[test]
@@ -2448,17 +2257,31 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "the band geometry is built by adding the same spacing tokens, so exact equality is the property under test"
-    )]
+    /// A panel laid out at `width` in `theme`, with the title band placed
+    /// where `apply_layout` puts it.
+    fn panel_at(theme: &Theme, width: f64) -> MainPanel {
+        let mut panel = MainPanel::new();
+        panel.metrics = Metrics::of(theme);
+        panel.layout_theme = theme.clone();
+        panel.page_id = Some(fresh_page_id());
+        panel.rect = Rect::new(0.0, 0.0, width, 800.0);
+        let gutter = panel.metrics.gutter;
+        panel.title_rect = Rect::new(
+            gutter,
+            gutter,
+            width - gutter,
+            gutter + panel.title_height(),
+        );
+        panel
+    }
+
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
         eprintln!("phase high_text_title_tags_and_first_block_have_separate_bands");
         {
-            let mut panel = MainPanel::new();
-            panel.text_scale = 2.0;
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut panel = panel_at(&theme, 900.0);
             panel.set_tags(vec![
                 TagChip {
                     id: fresh_page_id(),
@@ -2469,55 +2292,83 @@ mod tests {
                     name: "Writing".into(),
                 },
             ]);
-
-            let title_top = PADDING_PX;
-            let title_bottom = title_top + panel.title_height();
-            let theme = Theme::dark();
-            let label_line_h = ui::text_metrics::line_height_px(
-                TagChipBand::label_size(),
-                num::f32_of_f64(panel.text_scale),
-            );
-            let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
-            let tags_bottom = band.y0 + band.height;
-            let first_block_top = panel.editor_top_inset();
-
-            assert!(title_bottom < band.y0, "title must not overlap tag chips");
+            panel.layout_metadata();
+            let first = panel.tag_rects[0];
+            let last = panel.tag_rects[1];
             assert!(
-                tags_bottom <= first_block_top,
-                "tag chips ({tags_bottom}) must clear the first block ({first_block_top})"
+                panel.title_rect.y1 <= first.y0,
+                "title must not overlap tag chips"
             );
-            // Neighbouring chips keep the related-sibling step apart, and the
-            // chip row keeps the title + explanation step under the title — clear
-            // of a focused title's 2 px ring as well.
-            assert_eq!(band.gap, f64::from(theme.tokens.spacing.s2));
-            assert_eq!(band.y0 - title_bottom, f64::from(theme.tokens.spacing.s2));
-            assert!(band.y0 - title_bottom - 2.0 >= f64::from(theme.tokens.spacing.s1));
+            assert!(
+                last.y1 <= panel.editor_top_inset(),
+                "tag chips ({}) must clear the first block ({})",
+                last.y1,
+                panel.editor_top_inset()
+            );
+            assert!(
+                (last.x0 - first.x1 - panel.metrics.related).abs() < 1e-9,
+                "neighbouring chips keep the related step apart"
+            );
+            assert!(
+                (first.height() - ChipFace::height(&theme)).abs() < 1e-9,
+                "a chip is as high as the toolkit's chip"
+            );
         }
 
-        eprintln!("phase first_metadata_row_starts_inside_the_scrolling_viewport");
+        eprintln!("phase the_header_is_one_group_on_the_content_gutter");
         {
-            let mut panel = MainPanel::new();
-            panel.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-            panel.title_rect = Rect::new(32.0, 32.0, 768.0, 76.0);
-            panel.page_id = Some(fresh_page_id());
-
-            assert!(
-                panel.date_row_rect(0).y0 >= panel.scroll_viewport().y0,
-                "created/edited metadata must not be clipped under the sticky title"
-            );
-
+            let theme = Theme::dark();
+            let mut panel = panel_at(&theme, 800.0);
             panel.set_parent_path("Projects / Launch".into());
+            panel.dates = crate::metadata::NoteDates {
+                created: Some(1_700_000_000),
+                edited: Some(1_700_003_600),
+            };
+            panel.set_tags(vec![TagChip {
+                id: fresh_page_id(),
+                name: "Research".into(),
+            }]);
+            panel.set_backlinks(vec![BacklinkChip {
+                page: fresh_page_id(),
+                title: "Roadmap".into(),
+                references: 1,
+            }]);
+            panel.layout_metadata();
+            let gutter = panel.metrics.gutter;
+            let edge = panel.rect.x0 + gutter;
+            assert!((panel.title_rect.x0 - edge).abs() < 1e-9);
+            assert!((panel.tag_rects[0].x0 - edge).abs() < 1e-9);
+            assert!((panel.backlink_label.x0 - edge).abs() < 1e-9);
+            assert!((panel.backlink_rects[0].x0 - edge).abs() < 1e-9);
+            assert_eq!(panel.caption_rows.len(), 2, "the path and one dates line");
+            for (rect, _) in &panel.caption_rows {
+                assert!((rect.x0 - edge).abs() < 1e-9);
+                assert!(rect.y0 >= panel.scroll_viewport().y0);
+            }
+            let last = panel.backlink_rects[0];
             assert!(
-                panel.parent_path_rect().expect("parent path").y0 >= panel.scroll_viewport().y0,
-                "the parent path must share the same visible metadata origin"
+                (panel.editor_top_inset() - last.y1 - panel.metrics.body_gap).abs() < 1e-9,
+                "the body starts one body gap under the header"
+            );
+        }
+
+        eprintln!("phase a_note_without_metadata_still_keeps_its_body_gap_under_the_title");
+        {
+            let theme = Theme::dark();
+            let mut panel = panel_at(&theme, 800.0);
+            panel.layout_metadata();
+            assert!(panel.caption_rows.is_empty());
+            assert!(panel.tag_rects.is_empty());
+            assert!(
+                (panel.editor_top_inset() - panel.title_rect.y1 - panel.metrics.body_gap).abs()
+                    < 1e-9
             );
         }
 
         eprintln!("phase wrapped_tags_reserve_space_before_the_editor");
         {
-            let mut panel = MainPanel::new();
-            panel.text_scale = 2.0;
-            panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut panel = panel_at(&theme, 420.0);
             panel.set_tags(
                 ["Release planning", "Customer research", "Accessibility"]
                     .into_iter()
@@ -2527,16 +2378,70 @@ mod tests {
                     })
                     .collect(),
             );
-
-            panel.layout_tag_chips();
+            panel.layout_metadata();
             assert_eq!(panel.tag_rects.len(), 3);
             assert!(
                 panel.tag_rects[1].y0 > panel.tag_rects[0].y0,
                 "long tags should wrap instead of disappearing beyond the panel edge"
             );
+            for rect in &panel.tag_rects {
+                assert!(
+                    rect.x1 <= panel.title_rect.x1 + 1e-9,
+                    "no chip leaves the gutter"
+                );
+            }
             assert!(
                 panel.editor_top_inset() >= panel.tag_rects.last().expect("tag rect").y1,
                 "the editor must start below every wrapped tag row"
+            );
+        }
+
+        eprintln!("phase surface_hints_follow_hit_targets");
+        {
+            let theme = Theme::dark();
+            let mut panel = panel_at(&theme, 600.0);
+            panel.set_tags(vec![TagChip {
+                id: fresh_page_id(),
+                name: "Research".into(),
+            }]);
+            panel.set_backlinks(vec![BacklinkChip {
+                page: fresh_page_id(),
+                title: "A long source note title".into(),
+                references: 1,
+            }]);
+            panel.layout_metadata();
+            assert_eq!(
+                panel.cursor_shape(panel.title_rect.center()),
+                Some(winit::window::CursorIcon::Text)
+            );
+            assert_eq!(
+                panel.cursor_shape(panel.tag_rects[0].center()),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
+            assert!(
+                panel
+                    .tooltip_target_at(panel.tag_rects[0].center())
+                    .unwrap()
+                    .1
+                    .contains("Research")
+            );
+            assert!(
+                panel
+                    .tooltip_target_at(panel.backlink_rects[0].center())
+                    .unwrap()
+                    .1
+                    .contains("A long source note title")
+            );
+            assert!(panel.tooltip_target_at(Point::new(590.0, 790.0)).is_none());
+            panel.suppress_tooltips(true);
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_none());
+            panel.suppress_tooltips(false);
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
+            panel.begin_title_edit();
+            assert!(
+                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
+                "rename hint must not cover an active title edit"
             );
         }
 
@@ -2562,19 +2467,17 @@ mod tests {
             assert_eq!(panel.take_tag_open(), Some(tag));
         }
 
-        eprintln!("phase backlinks_wrap_clear_the_editor_and_activate_by_page_identity");
+        eprintln!("phase backlinks_activate_by_page_identity");
         {
-            let mut panel = MainPanel::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut panel = panel_at(&theme, 420.0);
             let source = fresh_page_id();
-            panel.page_id = Some(fresh_page_id());
-            panel.text_scale = 2.0;
-            panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
             panel.set_backlinks(vec![BacklinkChip {
                 page: source,
                 title: "Long-running launch notes".into(),
                 references: 2,
             }]);
-            panel.layout_backlink_chips();
+            panel.layout_metadata();
             assert_eq!(panel.backlink_rects.len(), 1);
             assert!(
                 panel.editor_top_inset() >= panel.backlink_rects[0].y1,

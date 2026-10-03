@@ -41,6 +41,7 @@
 pub mod actions;
 pub mod app;
 pub mod capture;
+mod columns;
 pub mod component;
 mod continuation;
 pub mod framework_history;

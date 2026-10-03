@@ -193,17 +193,10 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
         app.apply_event_for_test(notes::sidebar::OutEvent::CreateChild { parent: None });
         let state = ui::State::new();
         let mut app = settle_layout(app, state, 480, 800);
+        // The shell's toggle is an action-bound control: click it through the
+        // production path, which runs the action after the click.
         let toggle = app.menu_btn_center_for_test();
-        dispatch(
-            &mut app,
-            Modifiers::default(),
-            &cursor_moved(toggle.x, toggle.y),
-        );
-        let mut left = mouse_press_right();
-        if let WindowEvent::MouseInput { button, .. } = &mut left {
-            *button = MouseButton::Left;
-        }
-        dispatch(&mut app, Modifiers::default(), &left);
+        Framed::harness_mut(&mut app).click_at(toggle.x, toggle.y);
         assert!(app.drawer_open_for_test());
         Framed::harness_mut(&mut app)
             .relayout_at((480, 800))

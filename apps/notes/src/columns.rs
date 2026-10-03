@@ -1,0 +1,127 @@
+//! The notes window's two columns, as the slots [`ui::widget::NavShell`]
+//! places.
+//!
+//! The shell owns everything around the columns: the header row, the sidebar
+//! toggle, the regions, the drawer and its scrim. The page tree and the note
+//! panel stay with `NotesApp`, which drives them from the same state every
+//! frame; a [`ColumnSlot`] is the empty child the shell sizes for each, and the
+//! app hangs the real column under it in the layout tree. That way both are
+//! laid out by the shell's own placement, in the same pass, at the size the
+//! shell gave their column.
+
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+
+use ui::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::TaffyTreeExt;
+
+/// Where the shell put the two columns this layout pass.
+#[derive(Clone, Default)]
+pub(crate) struct Columns {
+    pub sidebar: ColumnPlace,
+    pub content: ColumnPlace,
+}
+
+/// One column's layout node and rect, written by its [`ColumnSlot`].
+#[derive(Clone, Default)]
+pub(crate) struct ColumnPlace {
+    node: Rc<Cell<Option<NodeId>>>,
+    rect: Rc<Cell<Rect>>,
+}
+
+impl ColumnPlace {
+    /// The slot's layout node, while the shell shows the column.
+    pub fn node(&self) -> Option<NodeId> {
+        self.node.get()
+    }
+
+    /// The column's body, in window coordinates, as of the last layout.
+    pub fn rect(&self) -> Rect {
+        self.rect.get()
+    }
+
+    /// Forget the node before the shell builds its tree again.
+    pub fn reset(&self) {
+        self.node.set(None);
+    }
+
+    pub fn slot(&self) -> ColumnSlot {
+        ColumnSlot {
+            place: self.clone(),
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+/// The empty child a shell column holds: it takes the column's size and says
+/// where it is, and paints nothing.
+pub(crate) struct ColumnSlot {
+    place: ColumnPlace,
+    rect: Rect,
+}
+
+impl Widget for ColumnSlot {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        self.place.node.set(Some(node));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        self.rect = Rect::new(
+            x0,
+            y0,
+            x0 + f64::from(layout.size.width),
+            y0 + f64::from(layout.size.height),
+        );
+        self.place.rect.set(self.rect);
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "NotesColumn"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+/// What the window's header buttons asked for since the app last looked.
+#[derive(Default)]
+pub(crate) struct HeaderRequests {
+    pub new_note: Cell<bool>,
+    pub note_menu: Cell<bool>,
+}

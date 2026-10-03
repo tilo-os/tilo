@@ -794,7 +794,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         marker_brush.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(0.0, 0.0, 1.0, 1.0),
         );
@@ -859,7 +859,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         expected_marker.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(root_x - 4.0, last.y1 - 1.0, last.x1, last.y1 + 1.0),
         );
@@ -1201,7 +1201,9 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let no_mods = Modifiers::default();
         let btn = app.sidebar_new_page_btn_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
-        let handled = dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_press());
+        // A button acts on release.
+        let handled = dispatch(&mut app, no_mods, &mouse_release());
 
         assert!(handled, "clicking the + button must be consumed");
         let pages = app.workspace_pages_for_test();
