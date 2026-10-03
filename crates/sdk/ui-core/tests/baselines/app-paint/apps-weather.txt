@@ -1,17 +1,6 @@
 # The app-paint ratchet for apps-weather: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/weather/src/chart.rs literal_alpha 1
 apps/weather/src/chart.rs raw_paint 4
-apps/weather/src/core.rs desktop_ground 7
-apps/weather/src/core.rs literal_alpha 9
-apps/weather/src/core.rs literal_radius 4
-apps/weather/src/core.rs ramp_slot 5
-apps/weather/src/core.rs raw_paint 28
-apps/weather/src/framework_history.rs legacy_alias 1
-apps/weather/src/framework_history.rs ramp_slot 1
-apps/weather/src/framework_history.rs raw_paint 1
-apps/weather/src/icon.rs ramp_slot 4
-apps/weather/src/icon.rs raw_paint 12
-apps/weather/src/presentation.rs desktop_ground 1
-apps/weather/src/presentation.rs raw_paint 2
+apps/weather/src/core.rs raw_paint 2
+apps/weather/src/icon.rs raw_paint 10

@@ -6,10 +6,10 @@
 //! one source of truth — selecting a city in the overview is immediately
 //! reflected in the detail because both read the same `Core`.
 //!
-//! The shell owns the responsive geometry, the push/side-by-side transition,
-//! the Back affordance and the divider; these panes just paint their content
-//! into whatever rect the shell hands them, which is how the same code works
-//! side-by-side (wide) and full-screen-push (narrow).
+//! The shell owns the header row, the responsive geometry, the
+//! push/side-by-side transition and the Back button; these panes just paint
+//! their content into whatever rect the shell hands them, which is how the
+//! same code works side-by-side (wide) and full-screen-push (narrow).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -126,6 +126,25 @@ impl Widget for OverviewPane {
         self.core
             .borrow_mut()
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
+    }
+
+    /// The add-place suggestions and the per-place menu float in the
+    /// window's top layer, over the forecast too.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.core
+            .borrow_mut()
+            .draw_overview_overlay(scene, transform, text_renderer, theme);
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.core.borrow().overview_modal_capture()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -262,26 +281,5 @@ impl Widget for DetailPane {
 
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().detail_accessibility(self.rect))
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if !matches!(action, Action::Activate) {
-            return false;
-        }
-        if key_path.last().copied() != Some(ui::a11y::hash_key(&"weather.refresh-forecast")) {
-            return false;
-        }
-        let mut core = self.core.borrow_mut();
-        if core.is_fetching() {
-            return true;
-        }
-        core.refresh_selected_forecast();
-        true
     }
 }
