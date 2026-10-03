@@ -1246,7 +1246,7 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
     let settings = ctx.desktop_services.settings.clone();
     shell::portal::settings::spawn_signal_emitter(server.clone(), settings.subscribe());
     let light = LegacyAppearance::from_settings_text(
-        r#"{"appearance": {"theme": "Light", "text_scale": 1.5}}"#,
+        r#"{"appearance": {"mode": "light", "text_scale": 1.5}}"#,
         false,
     );
     for (namespace, key, value) in light.portal_settings() {
@@ -1296,7 +1296,7 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
         .await
         .expect("subscribe SettingChanged");
     let reduced_motion = LegacyAppearance::from_settings_text(
-        r#"{"appearance": {"theme": "Light", "text_scale": 1.5, "reduce_motion": true}}"#,
+        r#"{"appearance": {"mode": "light", "text_scale": 1.5, "reduce_motion": true}}"#,
         false,
     );
     for (namespace, key, value) in reduced_motion.portal_settings() {

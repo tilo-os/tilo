@@ -72,7 +72,11 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
+        "tilo.appearance.mode",
+        "tilo.appearance.dark_theme",
+        "tilo.appearance.light_theme",
+        "tilo.appearance.custom_themes",
+        "tilo.appearance.density",
         "tilo.appearance.schedule",
         "tilo.appearance.sunrise",
         "tilo.appearance.sunset",
@@ -82,10 +86,11 @@ policies! {
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
         "tilo.appearance.ui_scale",
-        "tilo.appearance.app_accents",
+        "tilo.appearance.reduce_transparency",
         "tilo.appearance.forced_colors",
-        "tilo.appearance.workspace_tint",
+        "tilo.appearance.workspace_temperatures",
         "tilo.appearance.studio",
+        "tilo.identity.colour",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -377,7 +382,7 @@ mod tests {
         {
             let document = serde_json::json!({
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "wallpaper_path": "/home/me/private.png",
                     "future_value": "must stay local"
                 },
@@ -389,8 +394,8 @@ mod tests {
             assert_eq!(
                 projected,
                 std::collections::BTreeMap::from([(
-                    "tilo.appearance.theme".to_string(),
-                    serde_json::json!("Nord")
+                    "tilo.appearance.mode".to_string(),
+                    serde_json::json!("light")
                 )])
             );
         }
