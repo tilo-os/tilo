@@ -360,7 +360,7 @@ fn folder_resource(
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
+            "{}, {}",
             folder.mode,
             if folder.overridden {
                 "override"
@@ -738,7 +738,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "experience {} · common {} · {} folders · {} active · help {} · imports {}",
+            "experience {}, common {}, folders {}, active {}, help {}, imports {}",
             state
                 .selection
                 .experience
@@ -771,7 +771,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "ready {} · current page {}",
+            "ready {}, current page {}",
             yes_no(state.review.ready),
             state.page
         )),
@@ -785,7 +785,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
+            "Desktop {}, Full OS {}, Connected {}, Next {}, Back {}, Folder policies {}, Folder edits {}, Help {}, Imports {}",
             yes_no(state.availability.desktop),
             yes_no(state.availability.full_os),
             yes_no(state.availability.connected),
@@ -803,7 +803,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
     Resource::new(SETUP_RESOURCE_ID, "imager.setup", "Guided Tilo setup")
         .with_presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {} · {} · {} folder(s) · review {} · Desktop {} · Full OS {} · Connected {} · Next {} · Back {}",
+                "{}, {}, {}, folders {}, review {}, Desktop {}, Full OS {}, Connected {}, Next {}, Back {}",
                 state.page,
                 state
                     .selection

@@ -1,11 +1,11 @@
 //! Root widget for the Disk Imager (imager) app.
 //!
-//! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
-//! **wizard** with a six-station step indicator —
-//! Source → Drive → Customize → Confirm → Write → Done — and a Back /
-//! primary-action footer for creating a verified USB/SD installation medium.
+//! `ImagerApp` is a single painted widget that renders a guided **wizard**:
+//! a stepper (Image → Drive → Customize → Confirm → Write → Done) over the
+//! step's content and a Back / primary-action footer, for creating a
+//! verified USB or SD installation medium.
 //!
-//! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
+//! * **Image** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), or a known Tilo release.
 //! * **Drive** — choose external media from the *real* block devices (`lsblk`);
 //!   internal and system disks are never eligible. Installation onto those is
@@ -18,6 +18,12 @@
 //!   read-back **verify** pass.
 //! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
+//! Every block is a toolkit composite painted through its face — the
+//! stepper, the drop zone, list rows, the property list, the banner, the
+//! progress ring and bars, the empty state, the buttons — so the wizard
+//! chooses where things go and never how they look. The framework paints the
+//! window ground.
+//!
 //! Every write is doubly gated: the typed confirmation at Confirm, then native
 //! host authentication for a short-lived privileged writer. The wizard itself
 //! stays unprivileged; tests and shots cannot start the helper.
@@ -27,439 +33,122 @@
 //! worker channels are local capabilities: another peer can inspect a plan,
 //! but never select/arm/write this machine's device.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
-use ui::paint::{PaintCtx, with_alpha};
+use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_metrics::centered_text_top;
+use ui::text_render::{ParagraphAlign, TextRenderer, TextStyle};
 use ui::theme::Theme;
-use ui::tokens::Metrics;
-use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
-use ui::widget::{Badge, Button, ButtonFace, TextInput, Widget};
+use ui::tokens::TextRole;
+use ui::widget::{
+    Banner, BannerContent, BannerKind, Button, ButtonFace, ButtonRole, ControlSize, DropZoneFace,
+    EmptyState, EmptyStateContent, Interaction, ListRowFace, ProgressBar, ProgressRingFace,
+    ProgressRingSize, PropertyListFace, PropertyRow, RowLeading, ScrollMetrics, Scrollbar,
+    StepperFace, TextInput, Widget, paint_focus_ring,
+};
 
+use crate::Gaps;
 use crate::customize::{CustomizePanel, CzField};
 use crate::doc::ImagerDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
-    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
-    TiloRelease, fmt_eta, fmt_rate, fmt_size,
+    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TiloRelease,
+    fmt_eta, fmt_rate, fmt_size,
 };
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::WriteSetupPanel;
 
-// ---- layout constants (logical px) -------------------------------------
-// The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
-// step once, and this immediate-mode layout — a pure function of the
-// viewport that receives no `Theme` — imports the ones it uses.
-use crate::rhythm::{GROUP, HERO, LABEL, REGION, RELATED, SECTION, SIBLING};
+/// The widest the wizard's content column grows: a form and its review
+/// read best at a bounded measure (HIG §7a), the same one `FormPage` keeps.
+pub(crate) const READABLE_WIDTH: f64 = 720.0;
 
-/// Page gutter; below [`COMPACT_GUTTER_BELOW`] the compact gutter applies.
-const OUTER: f64 = GROUP;
-const OUTER_COMPACT: f64 = SECTION;
-const COMPACT_GUTTER_BELOW: f64 = 600.0;
-// The compositor draws the window chrome + app name (OS owns chrome), so the
-// app itself opens straight into the step indicator — no in-app title bar.
-const CRUMB_TOP: f64 = GROUP;
-/// A step station is a pointer target.
-const CRUMB_H: f64 = Metrics::BASE.min_pointer_target as f64;
-/// Wide step stations: the labelled width, and the gap carrying the connector.
-const CRUMB_W: f64 = 132.0;
-const CRUMB_GAP: f64 = SECTION;
-/// Footer actions and the confirmation field are panel rows.
-const CONTROL_H: f64 = Metrics::BASE.panel_row_height as f64;
-/// Small secondary buttons (Rescan, Preview): the minimum pointer target.
-const SMALL_CONTROL_H: f64 = Metrics::BASE.min_pointer_target as f64;
-const FOOTER_H: f64 = CONTROL_H + 2.0 * SECTION;
-const CONTENT_MAX_W: f64 = 900.0;
-/// Hand-drawn glyphs: the drop-zone arrow's box, the check discs, the hero.
-const ICON: f64 = Metrics::BASE.icon_lg as f64;
-const CHECK_R: f64 = ICON / 2.0;
-const HERO_DISC_R: f64 = 2.0 * ICON;
-/// Progress ring: radius and stroke.
-const RING_R: f64 = 76.0;
-const RING_W: f64 = 12.0;
-const RING_OUTER: f64 = RING_R + RING_W / 2.0;
-/// Phase bar thickness.
-const BAR_H: f64 = RELATED;
-/// The zero-state USB-stick glyph: cap and body.
-const GLYPH_CAP_H: f64 = SECTION;
-const GLYPH_BODY_H: f64 = 54.0;
-const GLYPH_H: f64 = GLYPH_CAP_H + GLYPH_BODY_H;
-/// Gap between a step title and its description line (title + explanation).
-const STEP_SUB_GAP: f64 = RELATED;
-/// The gap between a step's heading group and its first content block is the
-/// theme's `spacing.s3`, cached from `build_layout` into `heading_gap` because
-/// the renderer hook that measures the heading receives no `Theme`.
-fn default_heading_gap() -> f64 {
-    f64::from(ui::tokens::spacing::Spacing::default().s3)
-}
-/// Unmeasured floor for the heading group (a wrapped description needs the
-/// taller compact value); the measured group is never shorter.
-const STEP_HEADER_FLOOR: f64 = 44.0;
-const STEP_HEADER_FLOOR_COMPACT: f64 = 64.0;
-
-/// Copy of the Drive step's zero state, shared by the measurer and painter.
-const EMPTY_TITLE: &str = "Insert a drive";
-const EMPTY_LINE_1: &str = "Plug in a USB stick or SD card, then press Rescan.";
-const EMPTY_LINE_2: &str = "Internal disks are available after booting this installation medium.";
-const RESCAN_LABEL: &str = "⟳ Rescan";
-const PLAIN_TITLE: &str = "This image is written unchanged";
-const PLAIN_BODY: &str = "Pre-configuration (hostname, user, region) is available for Tilo images. Press Continue to write it as-is.";
-
-/// The text measurements the layout model needs, so the unmeasured 1×
-/// defaults and the renderer-measured bands share one set of formulas: a
-/// band is always "its line boxes plus rhythm steps", never a hand-tuned
-/// pixel count.
-trait Measure {
-    /// Line-box height of `size`-pt text.
-    fn line(&mut self, size: f32) -> f64;
-    /// Advance width of `s`.
-    fn width(&mut self, s: &str, size: f32, weight: TextWeight) -> f64;
-    /// Height of `s` wrapped to `max_w`.
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64;
+thread_local! {
+    /// The renderer that measures the wizard before the host's renderer has:
+    /// a fresh window lays every block out on real line boxes, so a probe
+    /// frame never places a control on a zero-height band.
+    static PROBE_RENDERER: RefCell<TextRenderer> = RefCell::new(TextRenderer::new());
 }
 
-impl Measure for TextRenderer {
-    fn line(&mut self, size: f32) -> f64 {
-        f64::from(self.measure("Hg", size, None).1)
-    }
-    fn width(&mut self, s: &str, size: f32, weight: TextWeight) -> f64 {
-        f64::from(self.measure_weighted(s, size, None, weight).0)
-    }
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64 {
-        f64::from(
-            self.measure_weighted(s, size, Some(max_w.max(1.0) as f32), weight)
-                .1,
-        )
-    }
-}
+/// The labels of every footer primary action, so the button keeps one width
+/// while its label changes (Cancel write → Stopping…).
+const PRIMARY_LABELS: [&str; 6] = [
+    "Continue",
+    "Erase and write",
+    "Cancel write",
+    "Stopping…",
+    "Start over",
+    "Review and retry",
+];
+const RESCAN_LABEL: &str = "Rescan";
+const DROP_TITLE: &str = "Choose a disk image";
+const DROP_MESSAGE: &str = "ISO, IMG or RAW file";
+const DROP_ACTION: &str = "Browse…";
+const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
+const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
+const PLAIN_BODY: &str =
+    "Setup options are only available for Tilo images. This image is written unchanged.";
 
-/// The layout before the renderer has measured anything: the same formulas
-/// over a type-scale estimate, so a probe frame never places a control on a
-/// zero-height band.
-struct Estimate;
-
-impl Measure for Estimate {
-    /// The toolkit's line-height formula at 1× — what `TextRenderer::measure`
-    /// reports for one line — so the unmeasured and measured bands agree.
-    fn line(&mut self, size: f32) -> f64 {
-        line_height_px(size, 1.0)
-    }
-    fn width(&mut self, s: &str, size: f32, _weight: TextWeight) -> f64 {
-        s.chars().count() as f64 * f64::from(size) * 0.55
-    }
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64 {
-        let lines = (self.width(s, size, weight) / max_w.max(1.0))
-            .ceil()
-            .max(1.0);
-        lines * self.line(size)
-    }
-}
-
-/// Text-derived geometry of the Source step's blocks: the drop zone, the
-/// selected-source card, the release rows, the recent rows and the section
-/// captions. Measured from the renderer in `adjust_layout_with_measure` and
-/// read by both the hit layout and the painters, so a row is clickable
-/// exactly where it is drawn at every text scale.
-#[derive(Clone, Debug, PartialEq)]
-struct SourceMetrics {
-    /// Text scale the bands were measured at; the compact breakpoint scales
-    /// by it.
-    text_scale: f64,
-    /// Browse drop zone: band, and the tops of its title / hint lines
-    /// (the stack is centred in the band).
-    dropzone_h: f64,
-    dz_title_top: f64,
-    dz_sub_top: f64,
-    /// Selected-source card, wide and compact: badge band, card band and the
-    /// tops of the summary and tag lines. The compact card stacks the name
-    /// beside the kind badge, so its lines start under the badge band.
-    card_badge_h: f64,
-    card_h: f64,
-    card_summary_top: f64,
-    card_tag_top: f64,
-    card_h_compact: f64,
-    card_summary_top_compact: f64,
-    card_tag_top_compact: f64,
-    /// Release row: band and the top of its channel/size line.
-    release_row_h: f64,
-    release_detail_top: f64,
-    /// Recent row: band and the top of its size line.
-    recent_row_h: f64,
-    recent_size_top: f64,
-    /// A section caption's band: its line box plus the gap to its list.
-    section_h: f64,
-    /// The "no releases" zero-state card.
-    zero_h: f64,
-}
-
-impl Default for SourceMetrics {
-    fn default() -> Self {
-        Self::from_lines(1.0, &mut Estimate)
-    }
-}
-
-impl SourceMetrics {
-    fn from_lines(text_scale: f64, m: &mut dyn Measure) -> Self {
-        let (h16, h15_5, h14_5, h14) = (m.line(16.0), m.line(15.5), m.line(14.5), m.line(14.0));
-        let (h13, h12_5, h12, h11_5, h11) = (
-            m.line(13.0),
-            m.line(12.5),
-            m.line(12.0),
-            m.line(11.5),
-            m.line(11.0),
-        );
-        // Drop zone: the title/hint stack sits `GROUP` inside the band.
-        let dz_stack = h16 + RELATED + h12_5;
-        // Cards and rows: `SECTION` / `RELATED` padding, `LABEL` between the
-        // lines of one block.
-        let card_badge_h = h12 + RELATED;
-        let card_summary_top = SECTION + h15_5 + LABEL;
-        let card_tag_top = card_summary_top + h12 + LABEL;
-        let card_summary_top_compact = SECTION + h15_5.max(card_badge_h) + RELATED;
-        let card_tag_top_compact = card_summary_top_compact + h12 + LABEL;
-        let release_detail_top = RELATED + h14_5 + LABEL;
-        let recent_size_top = RELATED + h13 + LABEL;
-        Self {
-            text_scale,
-            dropzone_h: dz_stack + 2.0 * GROUP,
-            dz_title_top: GROUP,
-            dz_sub_top: GROUP + h16 + RELATED,
-            card_badge_h,
-            card_h: card_tag_top + h11_5 + SECTION,
-            card_summary_top,
-            card_tag_top,
-            card_h_compact: card_tag_top_compact + h11_5 + SECTION,
-            card_summary_top_compact,
-            card_tag_top_compact,
-            release_row_h: release_detail_top + h11_5 + RELATED,
-            release_detail_top,
-            recent_row_h: recent_size_top + h11 + RELATED,
-            recent_size_top,
-            section_h: h11 + RELATED,
-            zero_h: h14 + RELATED + h12 + 2.0 * GROUP,
-        }
-    }
-
-    fn card_h(&self, compact: bool) -> f64 {
-        if compact {
-            self.card_h_compact
-        } else {
-            self.card_h
-        }
-    }
-}
-
-/// Text-derived geometry of the Drive step: the Rescan button, the drive
-/// card's stacked lines and the zero-state card.
-#[derive(Clone, Debug, PartialEq)]
-struct DriveMetrics {
-    /// Rescan: its label plus a `SECTION` inset each side.
-    rescan_w: f64,
-    /// Kind badge / removable chip band.
-    badge_h: f64,
-    /// Line tops inside a card: model, device · size, the erase note.
-    model_top: f64,
-    dev_top: f64,
-    erase_top: f64,
-    card_h: f64,
-    /// Zero-state card: glyph, title and both lines, and the band.
-    empty_glyph_top: f64,
-    empty_title_top: f64,
-    empty_line_top: f64,
-    empty_line2_top: f64,
-    empty_h: f64,
-}
-
-impl Default for DriveMetrics {
-    fn default() -> Self {
-        Self::from_lines(&mut Estimate, CONTENT_MAX_W)
-    }
-}
-
-impl DriveMetrics {
-    fn from_lines(m: &mut dyn Measure, content_w: f64) -> Self {
-        let (h17, h16, h12_5, h12, h11_5) = (
-            m.line(17.0),
-            m.line(16.0),
-            m.line(12.5),
-            m.line(12.0),
-            m.line(11.5),
-        );
-        // The badge band, shared by the kind badge and the removable chip.
-        let badge_h = h12 + RELATED;
-        let model_top = SECTION + badge_h + RELATED;
-        let dev_top = model_top + h16 + LABEL;
-        let erase_top = dev_top + h12_5 + LABEL;
-        let para_w = (content_w - 2.0 * GROUP).max(1.0);
-        let empty_glyph_top = REGION;
-        let empty_title_top = empty_glyph_top + GLYPH_H + GROUP;
-        let empty_line_top = empty_title_top + h17 + RELATED;
-        let empty_line2_top =
-            empty_line_top + m.para(EMPTY_LINE_1, 13.0, TextWeight::Regular, para_w) + RELATED;
-        Self {
-            rescan_w: m.width(RESCAN_LABEL, 12.5, TextWeight::Medium) + 2.0 * SECTION,
-            badge_h,
-            model_top,
-            dev_top,
-            erase_top,
-            card_h: erase_top + h11_5 + SECTION,
-            empty_glyph_top,
-            empty_title_top,
-            empty_line_top,
-            empty_line2_top,
-            empty_h: empty_line2_top
-                + m.para(EMPTY_LINE_2, 12.0, TextWeight::Regular, para_w)
-                + REGION,
-        }
-    }
-}
-
-/// One key/value row of the Confirm review card.
-struct ConfirmRow {
-    key: &'static str,
-    value: String,
-    size: f32,
-    weight: TextWeight,
-    tone: RowTone,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RowTone {
-    Primary,
-    Success,
-    Danger,
-}
-
-/// Text-derived geometry of the Confirm step: the review card's rows, the
-/// danger banner and the caption / note around the confirmation field.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct ConfirmMetrics {
-    /// Value column offset from the card's left edge: the widest key plus a
-    /// `GROUP` gap.
-    value_x: f64,
-    /// Row tops (offsets from the card top) and the card band.
-    row_top: Vec<f64>,
-    card_h: f64,
-    banner_h: f64,
-    label_h: f64,
-    note_h: f64,
-}
-
-/// Text-derived geometry of the Write step below its title.
-#[derive(Clone, Debug, PartialEq)]
-struct WriteMetrics {
-    /// The ring's percentage readout.
-    pct_h: f64,
-    /// The rate / ETA line.
-    meta_h: f64,
-    /// The 12 pt lines: the ring caption, each phase label, the foot line.
-    small_h: f64,
-}
-
-impl Default for WriteMetrics {
-    fn default() -> Self {
-        Self::from_lines(&mut Estimate)
-    }
-}
-
-impl WriteMetrics {
-    fn from_lines(m: &mut dyn Measure) -> Self {
-        Self {
-            pct_h: m.line(30.0),
-            meta_h: m.line(13.0),
-            small_h: m.line(12.0),
-        }
-    }
-
-    /// Ring centre offset from the content top for a heading band `head`.
-    fn ring_cy(&self, head: f64) -> f64 {
-        head + REGION + RING_OUTER
-    }
-
-    /// Top of the rate / ETA line.
-    fn meta_top(&self, head: f64) -> f64 {
-        self.ring_cy(head) + RING_OUTER + SIBLING
-    }
-
-    /// Top of the first phase label.
-    fn bars_top(&self, head: f64) -> f64 {
-        self.meta_top(head) + self.meta_h + GROUP
-    }
-
-    /// Pitch of one labelled phase bar.
-    fn bar_pitch(&self) -> f64 {
-        self.small_h + LABEL + BAR_H + SIBLING
-    }
-
-    /// Top of the "image → drive" caption after both bars.
-    fn foot_top(&self, head: f64) -> f64 {
-        self.bars_top(head) + 2.0 * self.bar_pitch() - SIBLING + GROUP
-    }
-
-    fn extent(&self, head: f64) -> f64 {
-        self.foot_top(head) + self.small_h + SECTION
-    }
-}
-
-/// Text-derived geometry of the Done step: hero, copy and the summary card.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct DoneMetrics {
-    headline_h: f64,
-    /// Height of the sub-copy block (one line, or the wrapped failure detail).
-    sub_h: f64,
-    /// Value column offset from the card's left edge.
-    value_x: f64,
-    row_h: f64,
-    /// Card top offset from the content top, and its band.
-    card_top: f64,
-    card_h: f64,
-}
-
-impl DoneMetrics {
-    fn disc_cy(content_y0: f64) -> f64 {
-        content_y0 + HERO + HERO_DISC_R
-    }
-
-    fn headline_top(content_y0: f64) -> f64 {
-        Self::disc_cy(content_y0) + HERO_DISC_R + GROUP
-    }
-
-    fn sub_top(&self, content_y0: f64) -> f64 {
-        Self::headline_top(content_y0) + self.headline_h + RELATED
-    }
-
-    fn extent(&self) -> f64 {
-        self.card_top + self.card_h + SECTION
-    }
-}
-
-/// Every text-derived band of the wizard, measured together: one comparison
-/// decides whether the layout re-solves and one assignment stores the
-/// result, so a band added later cannot be left out of either.
+/// Every text-derived band of the wizard, measured together from the
+/// renderer and theme that paint it: one comparison decides whether the
+/// layout re-solves and one assignment stores the result, so a band added
+/// later cannot be left out of either.
 #[derive(Clone, Debug, PartialEq, Default)]
 struct Bands {
-    source: SourceMetrics,
-    drive: DriveMetrics,
-    confirm: ConfirmMetrics,
-    write: WriteMetrics,
-    done: DoneMetrics,
-    /// The "written unchanged" card of a plain-ISO Customize step.
-    plain_card_h: f64,
+    gaps: Gaps,
+    /// The theme's text scale; the compact breakpoint scales by it.
+    text_scale: f64,
+    /// The theme's UI scale; the readable width scales by it.
+    ui_scale: f64,
+    /// The stepper's height at the content width it was measured for.
+    stepper_h: f64,
+    /// One line of the step title.
+    title_h: f64,
+    /// A regular and a small control.
+    control_h: f64,
+    small_control_h: f64,
+    /// The footer's Back button and its widest primary action.
+    back_w: f64,
+    primary_w: f64,
+    /// The Drive step's Rescan button.
+    rescan_w: f64,
+    /// One line of `Caption` (the footer hint, the field note) and `Label`
+    /// (a field caption).
+    caption_h: f64,
+    label_h: f64,
+    /// One line of `Body`.
+    body_h: f64,
+    /// A section header line (`Subheading`).
+    section_h: f64,
+    /// A list row with a secondary line.
+    row_h: f64,
+    /// The drop zone with its Browse button.
+    dropzone_h: f64,
+    /// The plain-image explanation on Customize.
+    plain_h: f64,
+    /// The Confirm review and its erase warning.
+    review_h: f64,
+    banner_h: f64,
+    /// The Write step's progress ring.
+    ring_d: f64,
+    /// The Done hero: its mark, headline and explanation, and the summary.
+    headline_h: f64,
+    done_sub_h: f64,
+    summary_h: f64,
 }
 
 /// A clickable hit-target for one frame. Pure function of the viewport +
@@ -474,7 +163,6 @@ enum Hit {
     Target(usize),
     Rescan,
     ConfirmField,
-    StepJump(Step),
     Back,
     Next,
     StartWrite,
@@ -483,23 +171,30 @@ enum Hit {
 }
 
 struct Layout {
-    crumbs: Vec<(Rect, Step)>,
-    /// At compact widths the six-step rail shows numbered/checkmarked discs
-    /// without labels. The page heading still names the current station, and
-    /// this keeps every station visible instead of clipping the first/last
-    /// controls outside the window.
-    compact_crumbs: bool,
+    /// Where the stepper sits above the content.
+    stepper: Rect,
     back: Option<Rect>,
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
+    /// The clip of the scrolling step body.
     viewport_content: Rect,
+    /// The step body, scrolled: its full extent from the scrolled top.
     content: Rect,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
-)]
+/// One block of the Image step, in reading order, with the band it fills.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SourceBlock {
+    DropZone,
+    /// A section header line.
+    Header(&'static str),
+    /// The selected image when no list below shows it.
+    Selected,
+    Release(usize),
+    NoReleases,
+    Recent(usize),
+}
+
 pub struct ImagerApp {
     // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
@@ -546,21 +241,15 @@ pub struct ImagerApp {
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
-    /// Measured height of the current step's heading group (title + wrapped
-    /// description + the gap before content), refreshed from the renderer in
-    /// `adjust_layout_with_measure`. `None` until the first measurement or on
-    /// steps that place their own header; see [`Self::step_header_h`].
-    step_heading_h: Option<f64>,
-    /// `theme.tokens.spacing.s3`, refreshed in `build_layout` for the
-    /// renderer hook (which receives no `Theme`).
-    heading_gap: f64,
-    /// Every step's text-derived bands, refreshed with the heading; see
-    /// [`Bands`].
+    /// The theme of the last layout pass, so the measuring hook (which
+    /// receives no `Theme`) resolves the same roles and spacing the painters
+    /// use.
+    theme: Theme,
+    /// Every step's text-derived bands; see [`Bands`].
     bands: Bands,
-    /// Measured line box of a step title (the accessible heading's bounds).
-    title_h: f64,
-    hover_target: Option<usize>,
-    /// Vertical offset for the step body. The step rail and footer stay put.
+    /// The Write step's two phase bars.
+    phase_bars: [ProgressBar; 2],
+    /// Vertical offset for the step body. The stepper and footer stay put.
     scroll_y: f64,
     /// Keyboard focus for canvas controls. Profile fields retain their focus
     /// in `CustomizePanel`, using the same Tab sequence.
@@ -601,8 +290,7 @@ impl ImagerApp {
             progress: Progress::default(),
             confirm_input: TextInput::local()
                 .with_id("imager_device_confirmation")
-                .with_font_size(14.0)
-                .with_plain_chrome()
+                .with_kind(ui::widget::TextInputKind::Path)
                 .with_enter_submits(true),
             status: String::new(),
             step: Step::Source,
@@ -622,11 +310,12 @@ impl ImagerApp {
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
-            step_heading_h: None,
-            heading_gap: default_heading_gap(),
+            theme: Theme::dark(),
             bands: Bands::default(),
-            title_h: Estimate.line(19.0),
-            hover_target: None,
+            phase_bars: [
+                ProgressBar::new(0.0).with_label("Write"),
+                ProgressBar::new(0.0).with_label("Verify"),
+            ],
             scroll_y: 0.0,
             keyboard_hit: None,
             customize: CustomizePanel::new(),
@@ -635,38 +324,6 @@ impl ImagerApp {
         };
         app.estimate_bands();
         app
-    }
-
-    /// Every band at its unmeasured 1× estimate, so a layout taken before
-    /// the renderer's first measurement still places every block — the
-    /// state-dependent Confirm rows and Done copy, the plain-ISO card — on a
-    /// real band rather than at zero height.
-    fn estimate_bands(&mut self) {
-        self.bands = self.measure_bands(&mut Estimate, CONTENT_MAX_W, 1.0);
-    }
-
-    /// Every band at content width `content_w`, from `m` at `text_scale`:
-    /// the same formulas over the renderer (`adjust_layout_with_measure`)
-    /// and over the 1× estimate (`estimate_bands`).
-    fn measure_bands(&self, m: &mut dyn Measure, content_w: f64, text_scale: f64) -> Bands {
-        let plain_card_h = SECTION
-            + m.line(16.0)
-            + RELATED
-            + m.para(
-                PLAIN_BODY,
-                13.0,
-                TextWeight::Regular,
-                (content_w - 2.0 * SECTION).max(1.0),
-            )
-            + SECTION;
-        Bands {
-            source: SourceMetrics::from_lines(text_scale, m),
-            drive: DriveMetrics::from_lines(m, content_w),
-            confirm: self.measure_confirm(m, content_w),
-            write: WriteMetrics::from_lines(m),
-            done: self.measure_done(m, content_w, crate::compact_content(content_w, text_scale)),
-            plain_card_h,
-        }
     }
 
     pub(crate) fn target(&self) -> Option<&TargetDrive> {
@@ -717,26 +374,6 @@ impl ImagerApp {
                     && writer_available
             }
             // Write is in-progress and Done is terminal — neither advances.
-            Step::Write | Step::Done => false,
-        }
-    }
-
-    /// Whether `s` is a completed station (drawn with a green check). A step is
-    /// completed once the flow has moved past it — except a Customize station
-    /// that was *skipped* (a plain ISO carries no profile), which reads as
-    /// not-engaged rather than done.
-    fn step_completed(&self, s: Step) -> bool {
-        s.index() < self.step.index() && (s != Step::Customize || self.customizable())
-    }
-
-    /// Whether a step can be jumped to by clicking its indicator station. The
-    /// execution stations (Write, Done) are never jump targets.
-    fn crumb_reachable(&self, s: Step) -> bool {
-        match s {
-            Step::Source => true,
-            Step::Drive => self.source.is_some(),
-            Step::Customize => self.selected.is_some() && self.customizable(),
-            Step::Confirm => self.selected.is_some(),
             Step::Write | Step::Done => false,
         }
     }
@@ -867,17 +504,14 @@ impl ImagerApp {
             "drive" => {
                 self.selected = Some(0);
                 self.step = Step::Drive;
-                self.status = "1 removable, 2 total".into();
             }
             "customize" | "customize-timezone-open" | "export" => {
                 self.selected = Some(0);
                 self.step = Step::Customize;
-                self.status = "Pre-configuring Tilo 1.0".into();
             }
             "confirm" => {
                 self.selected = Some(0);
                 self.step = Step::Confirm;
-                self.status = "Ready to write Tilo 1.0 → /dev/sdb".into();
             }
             "progress" => {
                 self.selected = Some(0);
@@ -889,7 +523,9 @@ impl ImagerApp {
                     rate_bps: 176_000_000,
                     error: None,
                 };
-                self.status = "Writing Tilo 1.0 → /dev/sdb".into();
+                // A running write can be cancelled; the posed frame shows the
+                // control as it is while the helper runs.
+                self.job_control = Some(JobControl::new());
             }
             "done" => {
                 self.selected = Some(0);
@@ -901,7 +537,6 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.status = "Done — Tilo 1.0 written and verified".into();
             }
             "done-failed" => {
                 self.selected = Some(0);
@@ -911,19 +546,19 @@ impl ImagerApp {
                     write_frac: 0.36,
                     verify_frac: 0.0,
                     rate_bps: 0,
-                    error: Some("Write failed — device disappeared mid-write".into()),
+                    error: Some(
+                        "The drive was disconnected while it was being written. Reconnect it, then review and retry."
+                            .into(),
+                    ),
                 };
-                self.status = "Write failed — device disappeared mid-write".into();
             }
             "drive-empty" => {
                 self.step = Step::Drive;
-                self.status = "No removable drives detected".into();
             }
             "drive-internal" => {
                 // The Drive step at rest: nothing selected yet, so the card
                 // shows its rest edge rather than the selection ring.
                 self.step = Step::Drive;
-                self.status = "1 removable, 2 total".into();
             }
             _ => {}
         }
@@ -959,7 +594,7 @@ impl ImagerApp {
     fn accessible_step_copy(&self) -> (&'static str, String) {
         match self.step {
             Step::Source => (
-                "Choose the source image",
+                "Choose an image",
                 if self.releases().is_empty() {
                     "Pick a local ISO or IMG file to write.".into()
                 } else {
@@ -967,12 +602,12 @@ impl ImagerApp {
                 },
             ),
             Step::Drive => (
-                "Select the target drive",
+                "Choose a drive",
                 "Only external installation media is available here. The selected drive will be erased."
                     .into(),
             ),
             Step::Customize => (
-                "Prepare your setup",
+                "Prepare the setup",
                 if self.customizable() {
                     "These non-secret choices travel with the installer and shorten setup on the device."
                         .into()
@@ -982,18 +617,18 @@ impl ImagerApp {
             ),
             Step::Confirm => (
                 if self.action == Action::Install {
-                    "Confirm and install"
+                    "Review and install"
                 } else {
-                    "Confirm and write"
+                    "Review and write"
                 },
                 "Review the destructive operation, then type the drive name to unlock it."
                     .into(),
             ),
             Step::Write => (
                 if self.progress.phase == JobPhase::Verifying {
-                    "Verifying the drive"
+                    "Verifying"
                 } else {
-                    "Writing the drive"
+                    "Writing"
                 },
                 "Keep the drive connected until writing and verification finish.".into(),
             ),
@@ -1001,9 +636,9 @@ impl ImagerApp {
                 let success = self.progress.phase == JobPhase::Success;
                 (
                     if success {
-                        "Drive is ready"
+                        "The drive is ready"
                     } else {
-                        "Write failed"
+                        "Writing failed"
                     },
                     if success {
                         "The image was written and verified. You can safely remove the drive."
@@ -1025,7 +660,6 @@ impl ImagerApp {
             Hit::Target(index) => format!("imager:hit:target:{index}"),
             Hit::Rescan => "imager:hit:rescan".into(),
             Hit::ConfirmField => "imager:hit:confirm-field".into(),
-            Hit::StepJump(step) => format!("imager:hit:step:{}", step.key()),
             Hit::Back => "imager:hit:back".into(),
             Hit::Next => "imager:hit:next".into(),
             Hit::StartWrite => "imager:hit:start-write".into(),
@@ -1046,27 +680,12 @@ impl ImagerApp {
             "cancel-write" => Some(Hit::CancelWrite),
             "cancel-download" => Some(Hit::CancelDownload),
             "write-another" => Some(Hit::WriteAnother),
-            _ => {
-                let (kind, value) = suffix.split_once(':')?;
-                match kind {
-                    "step" => match value {
-                        "source" => Some(Hit::StepJump(Step::Source)),
-                        "drive" => Some(Hit::StepJump(Step::Drive)),
-                        "customize" => Some(Hit::StepJump(Step::Customize)),
-                        "confirm" => Some(Hit::StepJump(Step::Confirm)),
-                        "write" => Some(Hit::StepJump(Step::Write)),
-                        "done" => Some(Hit::StepJump(Step::Done)),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }
+            _ => None,
         }
     }
 
     fn a11y_hit_enabled(&self, hit: Hit) -> bool {
         match hit {
-            Hit::StepJump(step) => self.crumb_reachable(step),
             Hit::Next => match self.step {
                 Step::Source | Step::Drive | Step::Customize => self.can_advance(self.step),
                 Step::Confirm | Step::Write | Step::Done => false,
@@ -1139,30 +758,14 @@ impl ImagerApp {
         }
     }
 
-    fn a11y_step_navigation(&self, lay: &Layout) -> ui::a11y::AccessNode {
-        let children = lay
-            .crumbs
-            .iter()
-            .map(|(rect, step)| {
-                let reachable = self.crumb_reachable(*step);
-                self.a11y_control(
-                    ui::a11y::Role::Button,
-                    format!("Step {} of 6: {}", step.index() + 1, step.title()),
-                    *rect,
-                    Hit::StepJump(*step),
-                    !reachable,
-                )
-                .with_state(ui::a11y::AccessState {
-                    focused: self.keyboard_hit == Some(Hit::StepJump(*step)),
-                    focusable: reachable,
-                    selected: *step == self.step,
-                    disabled: !reachable,
-                    ..Default::default()
-                })
-                .with_position(step.index() + 1, Step::all().len())
-            })
-            .collect();
-        Self::a11y_group("Setup steps", children)
+    /// The stepper: where the wizard is, as a progress indicator.
+    fn a11y_stepper(&self, lay: &Layout) -> ui::a11y::AccessNode {
+        let labels = stepper_labels();
+        let face = StepperFace::new(&labels, self.stepper_current());
+        ui::a11y::AccessNode::new(ui::a11y::Role::ProgressBar)
+            .with_name(self.step.title())
+            .with_value(face.position_text())
+            .with_bounds(lay.stepper)
     }
 
     fn a11y_source_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
@@ -1185,7 +788,7 @@ impl ImagerApp {
                         false,
                     )
                     .with_description(format!(
-                        "{} · {} image",
+                        "{}, {} image",
                         release.target_label(),
                         fmt_size(release.size)
                     ))
@@ -1331,34 +934,23 @@ impl ImagerApp {
             ]
             .iter()
             .any(|word| status_lower.contains(word));
-        // The spoken description always has a band: the painted heading's
-        // wrapped description where the step shows one, otherwise one line of
-        // description type — never a zero-height rect (Write, a plain-ISO
-        // Customize and Done paint no description but still describe the step).
-        let description_line = line_height_px(13.0, self.bands.source.text_scale as f32);
+        // The step's title line; the spoken description shares its band.
+        let title_band = Rect::new(
+            lay.content.x0,
+            lay.content.y0,
+            lay.content.x1,
+            lay.content.y0 + self.bands.title_h,
+        );
         let mut children = vec![
-            self.a11y_step_navigation(&lay)
-                .with_hashed_key("step-navigation"),
+            self.a11y_stepper(&lay).with_hashed_key("step-navigation"),
             AccessNode::new(Role::Heading { level: 1 })
                 .with_name(title)
                 .with_hashed_key("step-heading")
-                .with_bounds(Rect::new(
-                    lay.content.x0,
-                    lay.content.y0,
-                    lay.content.x1,
-                    lay.content.y0 + self.title_h,
-                )),
+                .with_bounds(title_band),
             AccessNode::new(Role::Paragraph)
                 .with_value(description)
                 .with_hashed_key("step-description")
-                .with_bounds(Rect::new(
-                    lay.content.x0,
-                    lay.content.y0 + self.title_h + STEP_SUB_GAP,
-                    lay.content.x1,
-                    lay.content.y0
-                        + (self.step_header_h(lay.content) - self.heading_gap)
-                            .max(self.title_h + STEP_SUB_GAP + description_line),
-                )),
+                .with_bounds(title_band),
         ];
         if !self.status.is_empty() {
             children.push(
@@ -1385,9 +977,9 @@ impl ImagerApp {
                                 source.name,
                                 fmt_size(source.size),
                                 if self.source_is_official(source) {
-                                    "Official Tilo release — catalog verified"
+                                    "Official Tilo release, verified"
                                 } else {
-                                    "Local image — unverified, written as-is"
+                                    "Local image, written unchanged"
                                 }
                             ))
                             .with_hashed_key("selected-image"),
@@ -1523,11 +1115,13 @@ impl ImagerApp {
                 .push(Self::a11y_group("Wizard actions", footer).with_hashed_key("wizard-actions"));
         }
         AccessNode::new(Role::Window)
-            .with_name("Start Media Creator")
+            .with_name("Disk Imager")
             .with_children(children)
     }
 }
 
+/// Whether this process should enumerate real block devices. The live binary
+/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
 /// Whether this process should enumerate real block devices. The live binary
 /// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
 /// document's seeded/posed state is authoritative and no `lsblk` runs.
@@ -1535,164 +1129,686 @@ fn live_probe_enabled() -> bool {
     std::env::var("IMAGER_LIVE").is_ok()
 }
 
-// ---- theme-derived colour helpers --------------------------------------
-
-fn source_color(theme: &Theme, kind: SourceKind) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        SourceKind::TiloImage => c.accent[5],
-        SourceKind::IsoFile => c.semantic.info,
-    }
+/// One line of `style`, as the renderer that paints it measures it.
+fn line_of(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style("Ag", None, style).1)
 }
 
-fn kind_color(theme: &Theme, kind: TargetKind) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        TargetKind::Usb => c.semantic.success,
-        TargetKind::Nvme => c.accent[5],
-        TargetKind::Ssd => c.semantic.info,
-        TargetKind::Hdd => c.neutral[5],
-        TargetKind::SdCard => c.accent[7],
-        TargetKind::Other => c.neutral[4],
-    }
+/// The height of `text` in `style` wrapped at `width`.
+fn para_of(tr: &mut TextRenderer, text: &str, style: &TextStyle, width: f64) -> f64 {
+    f64::from(tr.measure_style(text, Some(width.max(1.0) as f32), style).1)
 }
 
-/// A run of wizard text: the string, the style it is shaped with and its ink.
-pub(crate) struct TextRun<'a> {
-    text: &'a str,
-    style: TextStyle,
-    color: Color,
+/// The step titles the stepper shows.
+fn stepper_labels() -> [&'static str; 6] {
+    Step::all().map(|step| step.title())
 }
 
-impl<'a> TextRun<'a> {
-    pub(crate) fn new(text: &'a str, style: TextStyle, color: Color) -> Self {
-        Self { text, style, color }
+// =========================================================================
+// Measurement
+// =========================================================================
+impl ImagerApp {
+    /// Every band at its first, unscaled measurement, so a layout taken
+    /// before the host's renderer has measured still places every block on a
+    /// real band.
+    fn estimate_bands(&mut self) {
+        let width = if self.rect.width() > 0.0 {
+            self.rect.width()
+        } else {
+            READABLE_WIDTH
+        };
+        let bands = PROBE_RENDERER
+            .with(|renderer| self.measure_bands(&mut renderer.borrow_mut(), &self.theme, width));
+        self.bands = bands;
     }
 
-    /// The run with its line box's top-left at `at`, wrapped at `max_w`.
-    pub(crate) fn draw(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        at: Point,
-        max_w: Option<f32>,
-    ) {
-        tr.draw_style(
-            scene,
-            self.text,
-            self.color,
-            Affine::translate(at.to_vec2()),
-            max_w,
-            &self.style,
-        );
-    }
-
-    fn width(&self, tr: &mut TextRenderer) -> f64 {
-        f64::from(tr.measure_style(self.text, None, &self.style).0)
-    }
-
-    fn draw_right(&self, scene: &mut Scene, tr: &mut TextRenderer, right: f64, top: f64) {
-        let w = self.width(tr);
-        self.draw(scene, tr, Point::new(right - w, top), None);
-    }
-
-    fn draw_center(&self, scene: &mut Scene, tr: &mut TextRenderer, cx: f64, top: f64) {
-        let w = self.width(tr);
-        self.draw(scene, tr, Point::new(cx - w / 2.0, top), None);
-    }
-
-    fn line_top(&self, tr: &mut TextRenderer, band_y0: f64, band_h: f64) -> f64 {
-        ImagerApp::line_top(
+    /// Every band for a window `width` wide, from the renderer and theme that
+    /// paint them.
+    fn measure_bands(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> Bands {
+        let gaps = Gaps::of(&theme.tokens.spacing);
+        let mut bands = Bands {
+            gaps,
+            text_scale: f64::from(theme.text_scale),
+            ui_scale: f64::from(theme.ui_scale),
+            ..Bands::default()
+        };
+        // The column width depends on the scales measured above.
+        let probe = Self::column_width(&bands, width);
+        let content_w = probe;
+        let compact = crate::compact_content(content_w, bands.text_scale);
+        let labels = stepper_labels();
+        bands.stepper_h = StepperFace::new(&labels, self.step.index()).height(tr, theme, content_w);
+        bands.title_h = line_of(tr, &theme.text(TextRole::Title));
+        bands.control_h = ButtonFace::height(ControlSize::Regular, theme);
+        bands.small_control_h = ButtonFace::height(ControlSize::Small, theme);
+        bands.back_w = ButtonFace::new(Rect::ZERO, "Back")
+            .icon(Icon::ChevronLeft)
+            .intrinsic_width(tr, theme);
+        bands.primary_w = PRIMARY_LABELS
+            .iter()
+            .map(|label| ButtonFace::new(Rect::ZERO, label).intrinsic_width(tr, theme))
+            .fold(0.0, f64::max);
+        bands.rescan_w = ButtonFace::new(Rect::ZERO, RESCAN_LABEL)
+            .icon(Icon::Refresh)
+            .control_size(ControlSize::Small)
+            .intrinsic_width(tr, theme);
+        bands.caption_h = line_of(tr, &theme.text(TextRole::Caption));
+        bands.label_h = line_of(tr, &theme.text(TextRole::Label));
+        bands.body_h = line_of(tr, &theme.text(TextRole::Body));
+        bands.section_h = line_of(tr, &theme.text(TextRole::Subheading));
+        bands.row_h = ListRowFace::new("Ag").secondary("Ag").height(tr, theme);
+        bands.dropzone_h = DropZoneFace::new(DROP_TITLE).message(DROP_MESSAGE).height(
             tr,
-            self.text,
-            self.style.size,
-            self.style.weight,
-            band_y0,
-            band_h,
+            theme,
+            content_w,
+            bands.control_h,
+        );
+        bands.plain_h = para_of(tr, PLAIN_BODY, &theme.text(TextRole::Body), content_w);
+        let review = self.review_rows();
+        let rows: Vec<PropertyRow<'_>> = review
+            .iter()
+            .map(|(label, value)| PropertyRow::new(label, value))
+            .collect();
+        bands.review_h = PropertyListFace::new(&rows).height(tr, theme, content_w);
+        bands.banner_h = Self::banner_height(tr, theme, content_w, &self.confirm_warning());
+        bands.ring_d = ProgressRingSize::Large.diameter(theme);
+        bands.headline_h = line_of(tr, &theme.text(TextRole::LargeTitle));
+        let body = theme.text(TextRole::Body);
+        bands.done_sub_h = if self.progress.phase == JobPhase::Success {
+            let (_, sub) = Self::done_ok_copy(self.action == Action::Install, compact);
+            para_of(tr, sub, &body, content_w)
+        } else {
+            2.0 * line_of(tr, &body)
+        };
+        let summary = self.summary_rows();
+        let rows: Vec<PropertyRow<'_>> = summary
+            .iter()
+            .map(|(label, value)| PropertyRow::new(label, value))
+            .collect();
+        bands.summary_h = PropertyListFace::new(&rows).height(tr, theme, content_w);
+        bands
+    }
+
+    /// The erase warning's banner height at `width`: the toolkit banner's own
+    /// measure of its title, message and insets.
+    fn banner_height(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+        warning: &(String, &str),
+    ) -> f64 {
+        let mut banner = Banner::new(BannerKind::Error, warning.0.clone()).with_message(warning.1);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let _ = banner.build_layout(&mut taffy, theme, &mut nodes);
+        let size = Widget::measure(
+            &mut banner,
+            taffy::Size {
+                width: Some(width as f32),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width as f32),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            tr,
+        );
+        f64::from(size.height)
+    }
+}
+
+// =========================================================================
+// Layout
+// =========================================================================
+impl ImagerApp {
+    /// The page gutter for a window `width` wide.
+    fn gutter(bands: &Bands, width: f64) -> f64 {
+        let g = bands.gaps;
+        if crate::compact_content(width - 2.0 * g.group, bands.text_scale) {
+            g.section
+        } else {
+            g.group
+        }
+    }
+
+    /// The content column's width for a window `width` wide.
+    fn column_width(bands: &Bands, width: f64) -> f64 {
+        (width - 2.0 * Self::gutter(bands, width))
+            .min(READABLE_WIDTH * bands.ui_scale.max(1.0) * bands.text_scale.max(1.0))
+            .max(0.0)
+    }
+
+    /// The content column of the window, left to right.
+    fn column(&self) -> (f64, f64) {
+        let v = self.rect;
+        let w = Self::column_width(&self.bands, v.width());
+        let x0 = v.x0 + (v.width() - w) / 2.0;
+        (x0, x0 + w)
+    }
+
+    /// Whether `content` takes the steps' compact form; see
+    /// [`crate::compact_content`].
+    fn compact_content(&self, content: Rect) -> bool {
+        crate::compact_content(content.width(), self.bands.text_scale)
+    }
+
+    /// How far a list row reaches past the content column, so its title
+    /// lines up with the column's headings while its lift has room.
+    fn row_outset(&self, content: Rect) -> f64 {
+        if self.compact_content(content) {
+            0.0
+        } else {
+            self.bands.gaps.sibling
+        }
+    }
+
+    fn row_rect(&self, content: Rect, y: f64) -> Rect {
+        let out = self.row_outset(content);
+        Rect::new(content.x0 - out, y, content.x1 + out, y + self.bands.row_h)
+    }
+
+    fn stepper_rect(&self) -> Rect {
+        let (x0, x1) = self.column();
+        let y0 = self.rect.y0 + self.bands.gaps.group;
+        Rect::new(x0, y0, x1, y0 + self.bands.stepper_h)
+    }
+
+    fn footer_h(&self) -> f64 {
+        self.bands.control_h + 2.0 * self.bands.gaps.section
+    }
+
+    fn footer_top(&self) -> f64 {
+        self.rect.y1 - self.footer_h()
+    }
+
+    fn content_viewport_rect(&self) -> Rect {
+        let (x0, x1) = self.column();
+        let top = self.stepper_rect().y1 + self.bands.gaps.region;
+        let bottom = (self.footer_top() - self.bands.gaps.section).max(top);
+        Rect::new(x0, top, x1, bottom)
+    }
+
+    /// Where the step's first block starts below its title.
+    fn body_top(&self, content: Rect) -> f64 {
+        content.y0 + self.bands.title_h + self.bands.gaps.section
+    }
+
+    /// The step body's height at `viewport`'s width: every block measured,
+    /// plus the bottom margin, never shorter than the viewport.
+    fn content_extent(&self, viewport: Rect) -> f64 {
+        let at = Rect::new(viewport.x0, 0.0, viewport.x1, f64::INFINITY);
+        let bottom = match self.step {
+            Step::Source => self.layout_source(at, &mut Vec::new()),
+            Step::Drive => self.layout_drive(at, &mut Vec::new()),
+            Step::Customize => {
+                if self.customizable() {
+                    self.customize.extent(at)
+                } else {
+                    self.body_top(at) + self.bands.plain_h
+                }
+            }
+            Step::Confirm => self.confirm_note_top(at) + self.bands.caption_h,
+            Step::Write => self.write_foot_top(at) + self.bands.caption_h,
+            Step::Done => self.done_summary_rect(at).y1,
+        };
+        viewport.height().max(bottom + self.bands.gaps.section)
+    }
+
+    fn max_scroll(&self) -> f64 {
+        let viewport = self.content_viewport_rect();
+        (self.content_extent(viewport) - viewport.height()).max(0.0)
+    }
+
+    fn content_rect(&self) -> Rect {
+        let viewport = self.content_viewport_rect();
+        let extent = self.content_extent(viewport);
+        Rect::new(
+            viewport.x0,
+            viewport.y0 - self.scroll_y,
+            viewport.x1,
+            viewport.y0 - self.scroll_y + extent,
         )
     }
 
-    /// Centred on `cx`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    fn draw_center_v(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        cx: f64,
-        band_y0: f64,
-        band_h: f64,
-    ) {
-        let top = self.line_top(tr, band_y0, band_h);
-        self.draw_center(scene, tr, cx, top);
-    }
-
-    /// Right-aligned at `right`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    fn draw_right_v(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        right: f64,
-        band_y0: f64,
-        band_h: f64,
-    ) {
-        let top = self.line_top(tr, band_y0, band_h);
-        self.draw_right(scene, tr, right, top);
-    }
-
-    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
-    /// left-aligned block of that width once it does not.
-    fn draw_para_centered(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        cx: f64,
-        top: f64,
-        max_w: f64,
-    ) {
-        if self.width(tr) <= max_w {
-            self.draw_center(scene, tr, cx, top);
-        } else {
-            self.draw(
-                scene,
-                tr,
-                Point::new(cx - max_w / 2.0, top),
-                Some(max_w as f32),
-            );
+    fn compute_layout(&self) -> Layout {
+        let mut hits: Vec<(Rect, Hit)> = Vec::new();
+        let content = self.content_rect();
+        match self.step {
+            Step::Source => {
+                self.layout_source(content, &mut hits);
+            }
+            Step::Drive => {
+                self.layout_drive(content, &mut hits);
+            }
+            Step::Confirm => hits.push((self.confirm_field_rect(content), Hit::ConfirmField)),
+            // Customize's fields are owned by `CustomizePanel`, which
+            // hit-tests its own rects in `handle_event`; Write (in progress)
+            // and Done have no interactive content beyond the footer.
+            Step::Customize | Step::Write | Step::Done => {}
+        }
+        let (back, primary) = self.footer_buttons(content);
+        if let Some(back) = back {
+            hits.push((back, Hit::Back));
+        }
+        hits.push((
+            primary,
+            match self.step {
+                Step::Confirm => Hit::StartWrite,
+                Step::Write => Hit::CancelWrite,
+                Step::Done => Hit::WriteAnother,
+                _ => Hit::Next,
+            },
+        ));
+        Layout {
+            stepper: self.stepper_rect(),
+            back,
+            primary: Some(primary),
+            hits,
+            viewport_content: self.content_viewport_rect(),
+            content,
         }
     }
-}
 
-// =========================================================================
-// Drawing primitives
-// =========================================================================
-impl ImagerApp {
-    /// Wrap a terminal failure into a small, measured block. Error strings can
-    /// contain long device paths or platform diagnostics, so character-count
-    /// truncation is not enough: every returned line is measured in the same
-    /// font used to paint it and is guaranteed to fit `max_width`.
+    fn has_back(&self) -> bool {
+        matches!(self.step, Step::Drive | Step::Customize | Step::Confirm)
+    }
+
+    /// The footer's Back and primary buttons: as wide as their labels at the
+    /// column's edges, or sharing the column when it is compact.
+    fn footer_buttons(&self, content: Rect) -> (Option<Rect>, Rect) {
+        let b = &self.bands;
+        let y0 = self.footer_top() + b.gaps.section;
+        let y1 = y0 + b.control_h;
+        if self.has_back() && self.compact_content(content) {
+            let half = (content.width() - b.gaps.sibling) / 2.0;
+            return (
+                Some(Rect::new(content.x0, y0, content.x0 + half, y1)),
+                Rect::new(content.x1 - half, y0, content.x1, y1),
+            );
+        }
+        let primary_w = b.primary_w.min(content.width());
+        let back = self
+            .has_back()
+            .then(|| Rect::new(content.x0, y0, content.x0 + b.back_w, y1));
+        (back, Rect::new(content.x1 - primary_w, y0, content.x1, y1))
+    }
+
+    // ---- Image -------------------------------------------------------------
+
+    /// Whether a release or a shown recent entry already presents the
+    /// selected image, so it is not shown twice.
+    fn source_listed(&self, source: &Source) -> bool {
+        self.releases().iter().any(|r| r.matches_source(source))
+            || self.shown_recent().iter().any(|i| {
+                self.recent
+                    .get(*i)
+                    .is_some_and(|r| r.path == source.path && r.name == source.name)
+            })
+    }
+
+    /// The recent images worth offering: the last few that are not one of
+    /// the releases listed above them.
+    fn shown_recent(&self) -> Vec<usize> {
+        self.recent
+            .iter()
+            .enumerate()
+            .filter(|(_, recent)| !self.releases().iter().any(|r| r.matches_source(recent)))
+            .map(|(i, _)| i)
+            .take(3)
+            .collect()
+    }
+
+    /// The Image step's blocks in reading order.
+    fn source_blocks(&self) -> Vec<SourceBlock> {
+        let mut blocks = vec![SourceBlock::DropZone];
+        if let Some(source) = &self.source
+            && !self.source_listed(source)
+        {
+            blocks.push(SourceBlock::Header("Selected image"));
+            blocks.push(SourceBlock::Selected);
+        }
+        blocks.push(SourceBlock::Header("Tilo releases"));
+        if self.releases().is_empty() {
+            blocks.push(SourceBlock::NoReleases);
+        }
+        blocks.extend((0..self.releases().len()).map(SourceBlock::Release));
+        let recent = self.shown_recent();
+        if !recent.is_empty() {
+            blocks.push(SourceBlock::Header("Recent"));
+            blocks.extend(recent.into_iter().map(SourceBlock::Recent));
+        }
+        blocks
+    }
+
+    /// Every block of the Image step with its band, from `content`'s top.
+    fn source_bands(&self, content: Rect) -> Vec<(SourceBlock, Rect)> {
+        let b = &self.bands;
+        let mut y = self.body_top(content);
+        let mut previous: Option<SourceBlock> = None;
+        let mut out = Vec::new();
+        for block in self.source_blocks() {
+            y += match (previous, block) {
+                (Some(_), SourceBlock::Header(_)) => b.gaps.group,
+                (Some(SourceBlock::Header(_)), _) => b.gaps.related,
+                _ => 0.0,
+            };
+            let rect = match block {
+                SourceBlock::DropZone => Rect::new(content.x0, y, content.x1, y + b.dropzone_h),
+                SourceBlock::Header(_) => Rect::new(content.x0, y, content.x1, y + b.section_h),
+                SourceBlock::NoReleases => Rect::new(content.x0, y, content.x1, y + b.body_h),
+                SourceBlock::Selected | SourceBlock::Release(_) | SourceBlock::Recent(_) => {
+                    self.row_rect(content, y)
+                }
+            };
+            y = rect.y1;
+            out.push((block, rect));
+            previous = Some(block);
+        }
+        out
+    }
+
+    /// Hit targets of the Image step on the bands the painters fill.
+    /// Returns the y just under the last block.
+    fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) -> f64 {
+        let mut bottom = self.body_top(content);
+        for (block, rect) in self.source_bands(content) {
+            match block {
+                SourceBlock::DropZone => hits.push((rect, Hit::PickFile)),
+                SourceBlock::Release(i) => {
+                    if self.release_download_index == Some(i) {
+                        hits.push((rect, Hit::CancelDownload));
+                    } else if self.release_rx.is_none() {
+                        hits.push((rect, Hit::Release(i)));
+                    }
+                }
+                SourceBlock::Recent(i) => hits.push((rect, Hit::Recent(i))),
+                SourceBlock::Header(_) | SourceBlock::Selected | SourceBlock::NoReleases => {}
+            }
+            bottom = rect.y1;
+        }
+        bottom
+    }
+
+    // ---- Drive -------------------------------------------------------------
+
+    /// The Rescan button, on the title's line at the column's trailing edge.
+    fn drive_rescan_rect(&self, content: Rect) -> Rect {
+        let b = &self.bands;
+        let cy = content.y0 + b.title_h / 2.0;
+        Rect::new(
+            content.x1 - b.rescan_w,
+            cy - b.small_control_h / 2.0,
+            content.x1,
+            cy + b.small_control_h / 2.0,
+        )
+    }
+
+    /// The empty state's area: the rest of the visible body.
+    fn drive_empty_rect(&self, content: Rect) -> Rect {
+        let top = self.body_top(content);
+        let viewport = self.content_viewport_rect();
+        let bottom =
+            (viewport.y1 - self.scroll_y - (viewport.y0 - content.y0 - self.scroll_y).max(0.0))
+                .max(top + self.bands.title_h * 4.0);
+        Rect::new(
+            content.x0,
+            top,
+            content.x1,
+            bottom.min(top + viewport.height()),
+        )
+    }
+
+    fn layout_drive(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) -> f64 {
+        hits.push((self.drive_rescan_rect(content), Hit::Rescan));
+        let visible = self.visible_targets();
+        if visible.is_empty() {
+            return self.body_top(content) + self.bands.title_h * 4.0;
+        }
+        let mut y = self.body_top(content);
+        for (idx, _) in visible {
+            let r = self.row_rect(content, y);
+            hits.push((r, Hit::Target(idx)));
+            y = r.y1;
+        }
+        y
+    }
+
+    // ---- Confirm -----------------------------------------------------------
+
+    fn confirm_review_rect(&self, content: Rect) -> Rect {
+        let top = self.body_top(content);
+        Rect::new(content.x0, top, content.x1, top + self.bands.review_h)
+    }
+
+    fn confirm_banner_rect(&self, content: Rect) -> Rect {
+        let top = self.confirm_review_rect(content).y1 + self.bands.gaps.group;
+        Rect::new(content.x0, top, content.x1, top + self.bands.banner_h)
+    }
+
+    /// Origin of the optional on-write setup form (Wi-Fi / enrollment).
+    fn write_setup_top(&self, content: Rect) -> f64 {
+        self.confirm_banner_rect(content).y1 + self.bands.gaps.group
+    }
+
+    /// The typed device-name confirmation field. It follows the warning (and
+    /// the optional write-setup form) in reading order — review, warning,
+    /// optional network/identity, type the name, then the footer's primary
+    /// action — under its caption.
+    fn confirm_field_rect(&self, content: Rect) -> Rect {
+        let b = &self.bands;
+        let after = if self.offers_write_setup() {
+            let top = self.write_setup_top(content);
+            top + self.write_setup.extent(content, top)
+        } else {
+            self.confirm_banner_rect(content).y1 + b.gaps.group
+        };
+        let top = after + b.label_h + b.gaps.tight;
+        Rect::new(content.x0, top, content.x1, top + b.control_h)
+    }
+
+    fn confirm_note_top(&self, content: Rect) -> f64 {
+        self.confirm_field_rect(content).y1 + self.bands.gaps.tight
+    }
+
+    /// The facts the Confirm step reviews, in reading order.
+    fn review_rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![(
+            "Image",
+            self.source
+                .as_ref()
+                .map_or_else(|| "None selected".into(), |s| s.name.clone()),
+        )];
+        if let Some(source) = &self.source {
+            rows.push(("Image size", fmt_size(source.size)));
+        }
+        rows.push((
+            "Drive",
+            self.target()
+                .map_or_else(|| "None selected".into(), |d| d.model.clone()),
+        ));
+        if let Some(drive) = self.target() {
+            rows.push(("Device", drive.dev_path()));
+        }
+        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
+            rows.push((
+                "Space",
+                if tgt.fits(src.size) {
+                    format!(
+                        "{} left on the drive afterwards",
+                        fmt_size(tgt.size.saturating_sub(src.size))
+                    )
+                } else {
+                    "The image is larger than the drive".into()
+                },
+            ));
+        }
+        rows.push(("Setup", self.review_setup()));
+        rows
+    }
+
+    /// What the write sets up, as one sentence.
+    fn review_setup(&self) -> String {
+        let mut parts = if self.customizable() {
+            vec![format!(
+                "Pre-configured for {} on {}",
+                self.profile.user.username, self.profile.hostname
+            )]
+        } else {
+            vec!["Written unchanged, then verified".to_string()]
+        };
+        if !self.profile.wifi_ssid.trim().is_empty() {
+            parts.push(format!("joins {}", self.profile.wifi_ssid.trim()));
+        }
+        if self.profile.enroll_local_identity {
+            let label = self.profile.device_label.trim();
+            if label.is_empty() {
+                parts.push("enrolled as a new device".into());
+            } else {
+                parts.push(format!("enrolled as {label}"));
+            }
+        }
+        parts.join(", ")
+    }
+
+    /// The erase warning: louder for a fixed or system disk.
+    fn confirm_warning(&self) -> (String, &'static str) {
+        let device = self
+            .target()
+            .map_or_else(|| "the drive".to_string(), TargetDrive::dev_path);
+        let system = self.target().is_some_and(|d| d.is_system);
+        let internal = self.target().is_some_and(|d| !d.removable);
+        let title = if system {
+            "This is your system disk".to_string()
+        } else if internal {
+            format!("Everything on the internal disk {device} is erased")
+        } else {
+            format!("Everything on {device} is erased")
+        };
+        let message = if system {
+            "Everything on it, the running system included, is erased. This cannot be undone."
+        } else {
+            "This cannot be undone."
+        };
+        (title, message)
+    }
+
+    /// The note under the confirmation field. Shot mode poses the field as
+    /// ready for documentation, but never enables the backend.
+    fn confirm_note(&self) -> &'static str {
+        if !(crate::write::write_available() || self.shot_confirmation_ready) {
+            "Writing is turned off in this preview."
+        } else if self.confirm_matches() {
+            "The name matches. Erase and write when you are ready."
+        } else {
+            "Type the device name exactly as shown above."
+        }
+    }
+
+    // ---- Write -------------------------------------------------------------
+
+    fn write_ring_rect(&self, content: Rect) -> Rect {
+        let d = self.bands.ring_d;
+        let top = self.body_top(content) + self.bands.gaps.group;
+        let cx = content.center().x;
+        Rect::new(cx - d / 2.0, top, cx + d / 2.0, top + d)
+    }
+
+    fn write_meta_top(&self, content: Rect) -> f64 {
+        self.write_ring_rect(content).y1 + self.bands.gaps.section
+    }
+
+    /// The top of the first phase row (its label line, then its bar).
+    fn write_bars_top(&self, content: Rect) -> f64 {
+        self.write_meta_top(content) + self.bands.caption_h + self.bands.gaps.region
+    }
+
+    fn write_bar_pitch(&self) -> f64 {
+        let b = &self.bands;
+        b.label_h + b.gaps.related + b.gaps.related + b.gaps.group
+    }
+
+    fn write_foot_top(&self, content: Rect) -> f64 {
+        self.write_bars_top(content) + 2.0 * self.write_bar_pitch()
+    }
+
+    // ---- Done --------------------------------------------------------------
+
+    fn done_icon_rect(&self, content: Rect) -> Rect {
+        let side = self.bands.title_h * 2.0;
+        let top = content.y0 + self.bands.gaps.region;
+        let cx = content.center().x;
+        Rect::new(cx - side / 2.0, top, cx + side / 2.0, top + side)
+    }
+
+    fn done_headline_top(&self, content: Rect) -> f64 {
+        self.done_icon_rect(content).y1 + self.bands.gaps.group
+    }
+
+    fn done_sub_top(&self, content: Rect) -> f64 {
+        self.done_headline_top(content) + self.bands.headline_h + self.bands.gaps.related
+    }
+
+    fn done_summary_rect(&self, content: Rect) -> Rect {
+        let top = self.done_sub_top(content) + self.bands.done_sub_h + self.bands.gaps.region;
+        Rect::new(content.x0, top, content.x1, top + self.bands.summary_h)
+    }
+
+    /// The Done step's summary of what was written where.
+    fn summary_rows(&self) -> Vec<(&'static str, String)> {
+        let (Some(src), Some(tgt)) = (&self.source, self.target()) else {
+            return Vec::new();
+        };
+        vec![
+            ("Image", src.name.clone()),
+            ("Drive", tgt.model.clone()),
+            ("Device", tgt.dev_path()),
+        ]
+    }
+
+    /// The success hero's headline and explanation, shared by the painter and
+    /// the band measurement.
+    fn done_ok_copy(install: bool, compact: bool) -> (&'static str, &'static str) {
+        match (install, compact) {
+            (true, false) => (
+                "Tilo is installed",
+                "The disk was written and verified. Remove the installation media and restart.",
+            ),
+            (true, true) => (
+                "Tilo is installed",
+                "Written and verified. Remove the media and restart.",
+            ),
+            (false, false) => (
+                "The drive is ready",
+                "The image was written and verified. You can safely remove the drive.",
+            ),
+            (false, true) => (
+                "The drive is ready",
+                "Written and verified. You can safely remove the drive.",
+            ),
+        }
+    }
+
+    /// Wrap a terminal failure into at most `max_lines` measured lines of
+    /// `style`. Error strings can contain long device paths or platform
+    /// diagnostics, so every returned line is measured in the style that
+    /// paints it and is guaranteed to fit `max_width`.
     fn failure_detail_lines(
         tr: &mut TextRenderer,
+        style: &TextStyle,
         detail: &str,
         max_width: f32,
         max_lines: usize,
     ) -> Vec<String> {
-        const SIZE: f32 = 13.5;
-        const WEIGHT: TextWeight = TextWeight::Regular;
+        let width = |tr: &mut TextRenderer, s: &str| tr.measure_style(s, None, style).0;
         let mut remaining = detail.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut lines = Vec::new();
         while !remaining.is_empty() && lines.len() < max_lines {
-            if tr.measure_weighted(&remaining, SIZE, None, WEIGHT).0 <= max_width {
+            if width(tr, &remaining) <= max_width {
                 lines.push(remaining);
                 break;
             }
-
             let last_line = lines.len() + 1 == max_lines;
-            let ellipsis_width = if last_line {
-                tr.measure_weighted("…", SIZE, None, WEIGHT).0
-            } else {
-                0.0
-            };
+            let ellipsis_width = if last_line { width(tr, "…") } else { 0.0 };
             let allowed = (max_width - ellipsis_width).max(1.0);
             let mut fitting_end = 0;
             let mut whitespace_end = None;
@@ -1701,7 +1817,7 @@ impl ImagerApp {
                 let Some(candidate) = remaining.get(..end) else {
                     break;
                 };
-                if tr.measure_weighted(candidate, SIZE, None, WEIGHT).0 > allowed {
+                if width(tr, candidate) > allowed {
                     break;
                 }
                 fitting_end = end;
@@ -1711,7 +1827,7 @@ impl ImagerApp {
             }
             if fitting_end == 0 {
                 // Even one glyph does not fit; returning no line is safer than
-                // painting outside the card at extreme accessibility scales.
+                // painting outside the column at extreme accessibility scales.
                 break;
             }
             let split_at = whitespace_end
@@ -1734,1070 +1850,176 @@ impl ImagerApp {
         }
         lines
     }
-
-    fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r, radius),
-        );
-    }
-    /// A crisp stroke on the outermost pixel row of `r` (HIG §9.5).
-    fn stroke_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        scene.stroke(
-            &Stroke::new(w),
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
-        );
-    }
-    fn dashed_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        let stroke = Stroke::new(w).with_dashes(0.0, [7.0, 6.0]);
-        scene.stroke(
-            &stroke,
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
-        );
-    }
-    /// A zero-state slot: the card fill under a dashed derived edge.
-    fn dashed_card(scene: &mut Scene, t: Affine, r: Rect, radius: f64, fill: Color, w: f64) {
-        Self::fill_rr(scene, t, r, radius, fill);
-        Self::dashed_rr(scene, t, r, radius, surface::edge_on(fill), w);
-    }
-    /// The face of a hoverable list row or card (a release row, a drive
-    /// card): raised at rest, the theme's hover tint under the pointer; its
-    /// edge is `edge_on(face)` through `ui::surface::card`. Buttons are not
-    /// painted here — they are `Button::paint` faces.
-    fn row_face(theme: &Theme, hovered: bool) -> Color {
-        if hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.raised
-        }
-    }
-    /// Ink for a label on a filled badge or button, resolved against the
-    /// fill it sits on rather than assumed white (text: 4.5:1).
-    fn ink_on(theme: &Theme, fill: Color) -> Color {
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, Color::WHITE, ON_FILL_MIN_CONTRAST)
-    }
-    /// Ink for a glyph on a filled disc (a check mark, the failure "!"):
-    /// the non-text bar (3:1), as the toolkit's Toggle knob and Slider thumb.
-    fn glyph_ink(theme: &Theme, fill: Color) -> Color {
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, Color::WHITE, NON_TEXT_MIN_CONTRAST)
-    }
-    fn bar(scene: &mut Scene, t: Affine, r: Rect, frac: f64, track: Color, fill: Color) {
-        let radius = r.height() / 2.0;
-        surface::card(scene, t, r, radius, track);
-        let frac = frac.clamp(0.0, 1.0);
-        if frac > 0.0 {
-            let w = (r.width() * frac).max(radius * 2.0).min(r.width());
-            let fr = Rect::new(r.x0, r.y0, r.x0 + w, r.y1);
-            Self::fill_rr(scene, t, fr, radius, fill);
-        }
-    }
-
-    /// A small check-mark glyph inside a filled disc of radius `rad` at `c`.
-    fn check_disc(scene: &mut Scene, t: Affine, center: Point, rad: f64, disc: Color, tick: Color) {
-        scene.fill(Fill::NonZero, t, disc, None, &Circle::new(center, rad));
-        let mut p = BezPath::new();
-        p.move_to((center.x - rad * 0.42, center.y + rad * 0.02));
-        p.line_to((center.x - rad * 0.10, center.y + rad * 0.34));
-        p.line_to((center.x + rad * 0.46, center.y - rad * 0.34));
-        scene.stroke(&Stroke::new(rad * 0.24), t, tick, None, &p);
-    }
-
-    /// Top of the line box of `s` centred in the band `band_y0 ..= band_y0 +
-    /// band_h` (`ui::text_metrics::centered_text_top`) — text sits on its
-    /// measured line inside its container, never on a hand-tuned offset.
-    fn line_top(
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        weight: TextWeight,
-        band_y0: f64,
-        band_h: f64,
-    ) -> f64 {
-        let (_, h) = tr.measure_weighted(s, size, None, weight);
-        centered_text_top(band_y0, band_h, f64::from(h))
-    }
-
-    /// A kind badge (`Tilo`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
-    /// its label needs, filling the band `at.y ..= at.y + band_h` from `at.x`.
-    /// Returns the badge's rect so the text column can follow it.
-    fn kind_badge(
-        ctx: &mut PaintCtx<'_>,
-        at: Point,
-        band_h: f64,
-        label: &str,
-        fill: Color,
-    ) -> Rect {
-        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let (x, top) = (at.x, at.y);
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (w, _) = tr.measure(label, size, None);
-        let badge = Rect::new(x, top, x + f64::from(w) + 2.0 * RELATED, top + band_h);
-        Badge::paint_at(scene, t, badge, label, fill, tr, theme);
-        badge
-    }
-
-    fn section_label(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        s: &str,
-        x: f64,
-        y: f64,
-    ) {
-        TextRun::new(
-            s,
-            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            theme.tokens.colors.text_dim,
-        )
-        .draw(scene, tr, Point::new(x, y), None);
-    }
 }
 
 // =========================================================================
-// Layout
+// Chrome: stepper, footer, scroll bar
 // =========================================================================
 impl ImagerApp {
-    /// Whether `content` takes the steps' compact form; see
-    /// [`crate::compact_content`].
-    fn compact_content(&self, content: Rect) -> bool {
-        crate::compact_content(content.width(), self.bands.source.text_scale)
-    }
-
-    /// Title and description painted at the top of the Source step; one
-    /// source for the painter and for the heading measurement.
-    fn source_heading(&self) -> (&'static str, Option<&'static str>) {
-        (
-            "Choose the source image",
-            Some(if self.releases().is_empty() {
-                "The image to write. Pick a local .iso or .img file."
-            } else {
-                "The image to write. Pick a local .iso or .img file, or a Tilo release below."
-            }),
-        )
-    }
-
-    /// Title and description painted at the top of the Drive step.
-    fn drive_heading() -> (&'static str, Option<&'static str>) {
-        (
-            "Select the target drive",
-            Some("The drive to write to — everything on it will be erased."),
-        )
-    }
-
-    /// Title and description painted at the top of the Customize step; a
-    /// plain ISO has no description (its card says it is written unchanged).
-    fn customize_heading(&self) -> (&'static str, Option<&'static str>) {
-        let description = self.customizable().then(|| {
-            if self.action == Action::Install {
-                "Set up the machine Tilo will install — you can change any of this later."
-            } else {
-                "These choices travel with the installer, so setup on the device is shorter."
-            }
-        });
-        ("Prepare your setup", description)
-    }
-
-    /// Title and description painted at the top of the Confirm step.
-    fn confirm_heading(&self) -> (&'static str, Option<&'static str>) {
-        match self.action {
-            Action::Install => (
-                "Confirm & install",
-                Some("Review the install, then type the drive's name to unlock it."),
-            ),
-            Action::Flash => (
-                "Confirm & write",
-                Some("Review the write, then type the drive's name to unlock it."),
-            ),
-        }
-    }
-
-    /// Title painted at the top of the Write step (no description).
-    fn write_heading(&self) -> (&'static str, Option<&'static str>) {
-        let title = match (self.progress.phase == JobPhase::Writing, self.action) {
-            (true, Action::Install) => "Installing…",
-            (true, Action::Flash) => "Writing…",
-            (false, _) => "Verifying…",
-        };
-        (title, None)
-    }
-
-    /// The heading group whose measured height positions the step's first
-    /// content block: the title and its optional description. Done is a
-    /// centred hero and has no heading.
-    fn step_heading(&self) -> Option<(&'static str, Option<&'static str>)> {
-        match self.step {
-            Step::Source => Some(self.source_heading()),
-            Step::Drive => Some(Self::drive_heading()),
-            Step::Customize => Some(self.customize_heading()),
-            Step::Confirm => Some(self.confirm_heading()),
-            Step::Write => Some(self.write_heading()),
-            Step::Done => None,
-        }
-    }
-
-    /// The unmeasured 1× floor for the heading group at this content width.
-    fn step_header_floor(&self, content: Rect) -> f64 {
-        if self.compact_content(content) {
-            STEP_HEADER_FLOOR_COMPACT
+    /// The station the stepper marks: every step before it is done. A
+    /// verified result completes the last station too.
+    fn stepper_current(&self) -> usize {
+        if self.step == Step::Done && self.progress.phase == JobPhase::Success {
+            Step::all().len()
         } else {
-            STEP_HEADER_FLOOR
+            self.step.index()
         }
     }
 
-    /// Distance from the content top to the first content block: the
-    /// measured heading group when the renderer has supplied one, never less
-    /// than the 1× floor the layout tests pin.
-    fn step_header_h(&self, content: Rect) -> f64 {
-        let floor = self.step_header_floor(content);
-        self.step_heading_h.map_or(floor, |h| h.max(floor))
+    fn draw_stepper(&self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
+        let labels = stepper_labels();
+        StepperFace::new(&labels, self.stepper_current()).paint(ctx, lay.stepper);
     }
 
-    /// The page gutter for a window `width` logical pixels wide.
-    fn gutter_for(width: f64) -> f64 {
-        if width < COMPACT_GUTTER_BELOW {
-            OUTER_COMPACT
-        } else {
-            OUTER
-        }
-    }
-
-    /// The content column width for a window `width` logical pixels wide
-    /// (mirrors [`Self::content_viewport_rect`]).
-    fn content_width_for(width: f64) -> f64 {
-        (width - Self::gutter_for(width) * 2.0)
-            .min(CONTENT_MAX_W)
-            .max(0.0)
-    }
-
-    /// Measure the current heading group at the width the content will get
-    /// for a window `width` logical pixels wide. Returns the title line box
-    /// and the whole group (title, gap, wrapped description, content gap).
-    fn measure_step_heading(&self, tr: &mut TextRenderer, width: f64) -> Option<(f64, f64)> {
-        let (_, sub) = self.step_heading()?;
-        let content_w = Self::content_width_for(width);
-        let title_h = tr.line(19.0);
-        let group = match sub {
-            Some(sub) => {
-                title_h
-                    + STEP_SUB_GAP
-                    + tr.para(sub, 13.0, TextWeight::Regular, content_w)
-                    + self.heading_gap
-            }
-            None => title_h + self.heading_gap,
-        };
-        Some((title_h, group))
-    }
-
-    fn content_viewport_rect(&self) -> Rect {
-        let v = self.rect;
-        let top = CRUMB_TOP + CRUMB_H + REGION;
-        let bottom = v.y1 - FOOTER_H - SIBLING;
-        let w = Self::content_width_for(v.width());
-        let x0 = v.x0 + (v.width() - w) / 2.0;
-        Rect::new(x0, v.y0 + top, x0 + w, v.y0 + bottom)
-    }
-
-    /// The step body's height at `viewport`'s width: every block measured,
-    /// plus the bottom margin, never shorter than the viewport.
-    fn content_extent(&self, viewport: Rect) -> f64 {
-        let requested = match self.step {
-            Step::Source => self.source_extent(viewport),
-            Step::Drive => self.drive_extent(viewport),
-            Step::Customize => self.customize_extent(viewport),
-            Step::Confirm => self.confirm_extent(viewport),
-            Step::Write => self.bands.write.extent(self.step_header_h(viewport)),
-            Step::Done => self.bands.done.extent(),
-        };
-        viewport.height().max(requested)
-    }
-
-    fn max_scroll(&self) -> f64 {
-        let viewport = self.content_viewport_rect();
-        (self.content_extent(viewport) - viewport.height()).max(0.0)
-    }
-
-    fn content_rect(&self) -> Rect {
-        let viewport = self.content_viewport_rect();
-        let extent = self.content_extent(viewport);
-        Rect::new(
-            viewport.x0,
-            viewport.y0 - self.scroll_y,
-            viewport.x1,
-            viewport.y0 - self.scroll_y + extent,
-        )
-    }
-
-    fn compute_layout(&self) -> Layout {
-        let v = self.rect;
-        let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        let content = self.content_rect();
-
-        // ---- Step-indicator pills ----
-        let steps = Step::all();
-        let full_total = CRUMB_W * steps.len() as f64 + CRUMB_GAP * (steps.len() as f64 - 1.0);
-        let compact_crumbs = v.width() - OUTER * 2.0 < full_total;
-        let rail_margin = if compact_crumbs { OUTER_COMPACT } else { OUTER };
-        let rail_w = (v.width() - rail_margin * 2.0).max(0.0);
-        let (crumb_w, gap, total) = if compact_crumbs {
-            // Six controls remain inside the content margins down to the
-            // supported 320 px compact viewport. Prefer useful hit targets to
-            // labels which cannot fit; the screen heading supplies the name.
-            let gap = if rail_w >= 280.0 { RELATED } else { LABEL };
-            let gaps = gap * (steps.len() as f64 - 1.0);
-            let crumb_w = ((rail_w - gaps) / steps.len() as f64).max(24.0);
-            (crumb_w, gap, crumb_w * steps.len() as f64 + gaps)
-        } else {
-            (CRUMB_W, CRUMB_GAP, full_total)
-        };
-        let mut cx = v.x0 + (v.width() - total) / 2.0;
-        let cy = v.y0 + CRUMB_TOP;
-        let mut crumbs = Vec::new();
-        for s in steps {
-            let r = Rect::new(cx, cy, cx + crumb_w, cy + CRUMB_H);
-            crumbs.push((r, s));
-            if self.crumb_reachable(s) {
-                hits.push((r, Hit::StepJump(s)));
-            }
-            cx += crumb_w + gap;
-        }
-
-        // ---- Per-step content hit-targets ----
-        match self.step {
-            Step::Source => {
-                self.layout_source(content, &mut hits);
-            }
-            Step::Drive => self.layout_drive(content, &mut hits),
-            Step::Confirm => self.layout_confirm(content, &mut hits),
-            // Customize's fields/toggles are owned by `CustomizePanel`, which
-            // hit-tests its own rects in `handle_event`; Write (in progress)
-            // and Done have no interactive content beyond the footer. No app
-            // hits for any of the three.
-            Step::Customize | Step::Write | Step::Done => {}
-        }
-
-        // ---- Footer (Back + primary) ----
-        let fy = v.y1 - FOOTER_H;
-        let by = fy + SECTION;
-        let mut back = None;
-        let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
-        if show_back {
-            let width = if self.compact_content(content) {
-                (content.width() - SIBLING) / 2.0
-            } else {
-                120.0
-            };
-            let r = Rect::new(content.x0, by, content.x0 + width, by + CONTROL_H);
-            hits.push((r, Hit::Back));
-            back = Some(r);
-        }
-        let p = self.primary_button_rect(content, by);
-        let hit = match self.step {
-            Step::Confirm => Hit::StartWrite,
-            Step::Write => Hit::CancelWrite,
-            Step::Done => Hit::WriteAnother,
-            _ => Hit::Next,
-        };
-        hits.push((p, hit));
-        let primary = Some(p);
-
-        Layout {
-            crumbs,
-            compact_crumbs,
-            back,
-            primary,
-            hits,
-            viewport_content: self.content_viewport_rect(),
-            content,
-        }
-    }
-
-    /// The primary action button rect, right-aligned in the footer.
-    fn primary_button_rect(&self, content: Rect, by: f64) -> Rect {
-        let has_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
-        let w = if has_back && self.compact_content(content) {
-            (content.width() - SIBLING) / 2.0
-        } else {
-            match self.step {
-                Step::Confirm => 250.0,
-                Step::Done => 190.0,
-                _ => 170.0,
-            }
-        };
-        Rect::new(content.x1 - w, by, content.x1, by + CONTROL_H)
-    }
-
-    /// Hit targets of the Source step, block by block in the measured bands
-    /// the painters fill ([`SourceMetrics`]). Every block starts at the
-    /// previous block's bottom plus its rhythm step: `SIBLING` between rows
-    /// and between the drop zone and its result card, `GROUP` before a new
-    /// section, whose caption band (`section_h`) then leads its list.
-    /// Returns the y just under the last block.
-    fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) -> f64 {
-        let x0 = content.x0;
-        let x1 = content.x1;
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let mut y = content.y0 + self.step_header_h(content);
-        // Browse drop-zone.
-        let browse = Rect::new(x0, y, x1, y + m.dropzone_h);
-        hits.push((browse, Hit::PickFile));
-        y = browse.y1;
-        if self.source.is_some() {
-            y += SIBLING + m.card_h(compact); // selected card
-        }
-        // Tilo releases: caption, then the zero-state card or the rows.
-        y += GROUP + m.section_h;
-        if self.releases().is_empty() {
-            y += m.zero_h;
-        }
-        for (i, _) in self.releases().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(x0, y, x1, y + m.release_row_h);
-            if self.release_download_index == Some(i) {
-                hits.push((r, Hit::CancelDownload));
-            } else if self.release_rx.is_none() {
-                hits.push((r, Hit::Release(i)));
-            }
-            y = r.y1;
-        }
-        // Recent list.
-        if !self.recent.is_empty() {
-            y += GROUP + m.section_h;
-            for (i, _) in self.recent.iter().enumerate().take(3) {
-                if i > 0 {
-                    y += SIBLING;
-                }
-                let r = Rect::new(x0, y, x1, y + m.recent_row_h);
-                if r.y1 > content.y1 {
-                    break;
-                }
-                hits.push((r, Hit::Recent(i)));
-                y = r.y1;
-            }
-        }
-        y
-    }
-
-    /// Height the Source step's blocks need at `viewport`'s width, measured
-    /// with the same arithmetic that places the hits, plus the bottom margin.
-    fn source_extent(&self, viewport: Rect) -> f64 {
-        let unbounded = Rect::new(viewport.x0, 0.0, viewport.x1, f64::INFINITY);
-        self.layout_source(unbounded, &mut Vec::new()) + SECTION
-    }
-
-    /// The Rescan button: top-right on the title line when the content is
-    /// wide, on its own line under the heading when compact.
-    fn drive_rescan_rect(&self, content: Rect) -> Rect {
-        let y = if self.compact_content(content) {
-            content.y0 + self.step_header_h(content)
-        } else {
-            content.y0
-        };
-        Rect::new(
-            content.x1 - self.bands.drive.rescan_w,
-            y,
-            content.x1,
-            y + SMALL_CONTROL_H,
-        )
-    }
-
-    /// Where the first drive card (or the zero-state card) starts.
-    fn drive_cards_top(&self, content: Rect) -> f64 {
-        let head = content.y0 + self.step_header_h(content);
-        if self.compact_content(content) {
-            head + SMALL_CONTROL_H + SIBLING
-        } else {
-            head
-        }
-    }
-
-    fn layout_drive(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        hits.push((self.drive_rescan_rect(content), Hit::Rescan));
-        let card_h = self.bands.drive.card_h;
-        let mut y = self.drive_cards_top(content);
-        for (i, (idx, _)) in self.visible_targets().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + card_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            hits.push((r, Hit::Target(*idx)));
-            y = r.y1;
-        }
-    }
-
-    fn drive_extent(&self, viewport: Rect) -> f64 {
-        let m = &self.bands.drive;
-        let top = self.drive_cards_top(viewport) - viewport.y0;
-        let n = self.visible_targets().len() as f64;
-        let body = if n == 0.0 {
-            m.empty_h
-        } else {
-            n * m.card_h + (n - 1.0) * SIBLING
-        };
-        top + body + SECTION
-    }
-
-    fn customize_extent(&self, viewport: Rect) -> f64 {
-        let head = self.step_header_h(viewport);
-        if self.customizable() {
-            self.customize.extent(viewport)
-        } else {
-            head + self.bands.plain_card_h + SECTION
-        }
-    }
-
-    fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        hits.push((self.confirm_field_rect(content), Hit::ConfirmField));
-    }
-
-    /// The review card's band on the Confirm step.
-    fn confirm_card_rect(&self, content: Rect) -> Rect {
-        let top = content.y0 + self.step_header_h(content);
-        Rect::new(content.x0, top, content.x1, top + self.bands.confirm.card_h)
-    }
-
-    /// The danger banner follows the card as its sibling.
-    fn confirm_banner_rect(&self, content: Rect) -> Rect {
-        let top = self.confirm_card_rect(content).y1 + SIBLING;
-        Rect::new(
-            content.x0,
-            top,
-            content.x1,
-            top + self.bands.confirm.banner_h,
-        )
-    }
-
-    /// Origin of the optional on-write setup form (Wi-Fi / enrollment).
-    fn write_setup_top(&self, content: Rect) -> f64 {
-        self.confirm_banner_rect(content).y1 + GROUP
-    }
-
-    /// The typed device-name confirmation field. It follows the danger banner
-    /// (and optional write-setup form) in reading order — review, warning,
-    /// optional network/identity, type the name, then the footer's primary
-    /// action — a `GROUP` below the previous block, under its caption line.
-    /// One rect for the hit layout and the painter.
-    fn confirm_field_rect(&self, content: Rect) -> Rect {
-        let m = &self.bands.confirm;
-        let after = if self.offers_write_setup() {
-            self.write_setup_top(content)
-                + self
-                    .write_setup
-                    .extent(content, self.write_setup_top(content))
-        } else {
-            self.confirm_banner_rect(content).y1 + GROUP
-        };
-        let top = after + m.label_h + LABEL;
-        Rect::new(content.x0, top, content.x1, top + CONTROL_H)
-    }
-
-    fn confirm_extent(&self, viewport: Rect) -> f64 {
-        let field = self.confirm_field_rect(viewport);
-        field.y1 + RELATED + self.bands.confirm.note_h + SECTION - viewport.y0
-    }
-
-    /// The rows of the Confirm review card, in reading order. Capacity is
-    /// only a row once both ends of the write are known.
-    fn confirm_rows(&self) -> Vec<ConfirmRow> {
-        let src_v = self.source.as_ref().map_or_else(
-            || "—".into(),
-            |s| format!("{}   ({})", s.name, fmt_size(s.size)),
-        );
-        let tgt_v = self.target().map_or_else(
-            || "—".into(),
-            |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)),
-        );
-        let mut rows = vec![
-            ConfirmRow {
-                key: "Image",
-                value: src_v,
-                size: 14.0,
-                weight: TextWeight::Semibold,
-                tone: if self.source.is_some() {
-                    RowTone::Primary
-                } else {
-                    RowTone::Danger
-                },
-            },
-            ConfirmRow {
-                key: "Drive",
-                value: tgt_v,
-                size: 14.0,
-                weight: TextWeight::Semibold,
-                tone: if self.target().is_some() {
-                    RowTone::Primary
-                } else {
-                    RowTone::Danger
-                },
-            },
-        ];
-        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            let (value, tone) = if tgt.fits(src.size) {
-                (
-                    format!(
-                        "fits — {} free afterwards",
-                        fmt_size(tgt.size.saturating_sub(src.size))
-                    ),
-                    RowTone::Success,
-                )
-            } else {
-                ("image is larger than the drive".into(), RowTone::Danger)
-            };
-            rows.push(ConfirmRow {
-                key: "Capacity",
-                value,
-                size: 13.0,
-                weight: TextWeight::Medium,
-                tone,
-            });
-        }
-        let act = match self.action {
-            Action::Install => format!(
-                "Install Tilo with your settings (host {}, user {})",
-                self.profile.hostname, self.profile.user.username
-            ),
-            Action::Flash => {
-                let mut parts = if self.customizable() {
-                    vec![format!(
-                        "Write Tilo, pre-configured (host {}, user {})",
-                        self.profile.hostname, self.profile.user.username
-                    )]
-                } else {
-                    vec!["Write the image, then read-back verify".to_string()]
-                };
-                if !self.profile.wifi_ssid.trim().is_empty() {
-                    parts.push(format!("Wi-Fi {}", self.profile.wifi_ssid.trim()));
-                }
-                if self.profile.enroll_local_identity {
-                    let label = self.profile.device_label.trim();
-                    if label.is_empty() {
-                        parts.push("enroll identity".into());
-                    } else {
-                        parts.push(format!("enroll as {label}"));
-                    }
-                }
-                parts.join(" · ")
-            }
-        };
-        rows.push(ConfirmRow {
-            key: "Action",
-            value: act,
-            size: 13.0,
-            weight: TextWeight::Medium,
-            tone: RowTone::Primary,
-        });
-        rows
-    }
-
-    /// The erase warning under the review card — louder for a fixed/internal
-    /// (install) target.
-    fn confirm_warning(&self) -> &'static str {
-        let internal = self.target().is_some_and(|d| !d.removable);
-        let system = self.target().is_some_and(|d| d.is_system);
-        if system {
-            "⚠  This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
-        } else if internal {
-            "⚠  This erases the entire internal disk. This cannot be undone."
-        } else {
-            "⚠  This permanently erases the drive. This cannot be undone."
-        }
-    }
-
-    /// The note under the confirmation field. Shot mode poses the field as
-    /// ready for documentation, but never enables the backend.
-    fn confirm_note(&self) -> &'static str {
-        if crate::write::write_available() || self.shot_confirmation_ready {
-            "Ready to write. Check the selected device before continuing."
-        } else {
-            "Writing is disabled in this preview."
-        }
-    }
-
-    /// Measure the Confirm step's bands for a content column `content_w` wide.
-    fn measure_confirm(&self, m: &mut dyn Measure, content_w: f64) -> ConfirmMetrics {
-        let rows = self.confirm_rows();
-        let key_w = rows
-            .iter()
-            .map(|row| m.width(row.key, 12.0, TextWeight::Semibold))
-            .fold(0.0, f64::max);
-        let value_x = SECTION + key_w + GROUP;
-        let value_w = (content_w - value_x - SECTION).max(1.0);
-        let key_h = m.line(12.0);
-        let mut row_top = Vec::with_capacity(rows.len());
-        let mut y = SECTION;
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            row_top.push(y);
-            y += key_h.max(m.para(&row.value, row.size, row.weight, value_w));
-        }
-        ConfirmMetrics {
-            value_x,
-            row_top,
-            card_h: y + SECTION,
-            banner_h: m.para(
-                self.confirm_warning(),
-                13.0,
-                TextWeight::Semibold,
-                (content_w - 2.0 * SECTION).max(1.0),
-            ) + 2.0 * SIBLING,
-            label_h: m.line(11.0),
-            note_h: m.line(11.0),
-        }
-    }
-
-    /// Measure the Done step's bands for a content column `content_w` wide,
-    /// in its wide or `compact` form.
-    fn measure_done(&self, m: &mut dyn Measure, content_w: f64, compact: bool) -> DoneMetrics {
-        let ok = self.progress.phase == JobPhase::Success;
-        let headline_h = m.line(26.0);
-        // The success copy wraps to the content width (`txt_para_centered`);
-        // the failure detail is bounded to two measured lines
-        // (`failure_detail_lines`), so the card sits below that band whether
-        // one or both are used and a longer cause never pushes it around.
-        let sub_h = if ok {
-            let (_, sub) = Self::done_ok_copy(self.action == Action::Install, compact);
-            m.para(sub, 14.0, TextWeight::Regular, content_w)
-        } else {
-            2.0 * m.line(13.5)
-        };
-        let value_x = SECTION
-            + ["Image", "Drive"]
-                .iter()
-                .map(|key| m.width(key, 12.0, TextWeight::Semibold))
-                .fold(0.0, f64::max)
-            + GROUP;
-        let row_h = m.line(13.5).max(m.line(12.0));
-        let headline_top = DoneMetrics::headline_top(0.0);
-        let card_top = headline_top + headline_h + RELATED + sub_h + GROUP;
-        DoneMetrics {
-            headline_h,
-            sub_h,
-            value_x,
-            row_h,
-            card_top,
-            card_h: SECTION + row_h + SIBLING + row_h + SECTION,
-        }
-    }
-}
-
-// =========================================================================
-// Header + breadcrumb
-// =========================================================================
-impl ImagerApp {
     fn draw_scrollbar(&self, scene: &mut Scene, theme: &Theme, t: Affine, lay: &Layout) {
         let max = self.max_scroll();
         if max <= 0.0 {
             return;
         }
         let viewport = lay.viewport_content;
+        let b = &self.bands;
+        let x0 = viewport.x1 + self.row_outset(viewport) + b.gaps.tight;
         let track = Rect::new(
-            viewport.x1 + RELATED,
+            x0,
             viewport.y0,
-            viewport.x1 + RELATED + LABEL,
+            x0 + f64::from(theme.tokens.metrics.scrollbar_gutter) / 2.0,
             viewport.y1,
         );
-        let thumb_h = (viewport.height() * viewport.height() / lay.content.height()).max(32.0);
-        let travel = (track.height() - thumb_h).max(0.0);
-        let y = track.y0 + travel * (self.scroll_y / max);
-        Self::fill_rr(
+        Scrollbar::vertical().draw(
             scene,
             t,
-            Rect::new(track.x0, y, track.x1, y + thumb_h),
-            LABEL / 2.0,
-            theme.tokens.colors.text_tertiary,
+            track,
+            ScrollMetrics::new(viewport.height() + max, viewport.height(), self.scroll_y),
+            theme,
+            false,
         );
     }
 
-    fn draw_header(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
+    fn draw_footer(&self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
         let v = self.rect;
-        // No in-app app-name header: the compositor owns the window chrome and
-        // shows the app's name. The app opens straight into the step indicator,
-        // with a slim status line tucked into the top-right margin.
-        if !self.status.is_empty() {
-            let col = match self.progress.phase {
-                JobPhase::Failed => c.semantic.danger,
-                JobPhase::Success => c.semantic.success,
-                _ => c.text_dim,
-            };
-            TextRun::new(
-                &self.status,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                col,
-            )
-            .draw_right(scene, tr, v.x1 - OUTER, v.y0 + RELATED);
-        }
+        let fy = self.footer_top();
+        let ground = ctx.theme.tokens.colors.surfaces.content;
+        surface::separator(ctx.scene, ctx.transform, v.x0, v.x1, fy, 0.0, ground);
 
-        // ---- Step indicator ----
-        let radius = theme.radius_standard;
-        for (i, (r, s)) in lay.crumbs.iter().enumerate() {
-            let done = self.step_completed(*s);
-            let current = *s == self.step;
-            let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
-            let bg = if current {
-                with_alpha(c.accent[5], 40)
-            } else if hov {
-                theme.bg_hover
-            } else {
-                Color::TRANSPARENT
-            };
-            if bg != Color::TRANSPARENT {
-                Self::fill_rr(scene, t, *r, radius, bg);
-            }
-            if current {
-                Self::stroke_rr(scene, t, *r, radius, c.accent[5], 1.4);
-            }
-            // Number disc / check, centred on the station's centre line.
-            // Compact layouts center the disc in its station and omit the
-            // label, keeping all six stations on-screen.
-            let disc_r = CRUMB_H / 2.0 - LABEL;
-            let disc_c = Point::new(
-                if lay.compact_crumbs {
-                    f64::midpoint(r.x0, r.x1)
-                } else {
-                    r.x0 + SIBLING + disc_r
-                },
-                f64::midpoint(r.y0, r.y1),
-            );
-            if done {
-                Self::check_disc(
-                    scene,
-                    t,
-                    disc_c,
-                    disc_r,
-                    c.semantic.success,
-                    Self::glyph_ink(theme, c.semantic.success),
-                );
-            } else {
-                let ring = if current { c.accent[5] } else { c.neutral[4] };
-                scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, disc_r));
-                TextRun::new(
-                    &format!("{}", s.index() + 1),
-                    TextStyle::new(12.0).with_weight(TextWeight::Bold),
-                    Self::ink_on(theme, ring),
-                )
-                .draw_center_v(
-                    scene,
-                    tr,
-                    disc_c.x,
-                    disc_c.y - disc_r,
-                    2.0 * disc_r,
-                );
-            }
-            if !lay.compact_crumbs {
-                let label_c = if current || done {
-                    c.text_primary
-                } else {
-                    c.text_dim
-                };
-                let weight = if current {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                };
-                let label_top =
-                    Self::line_top(tr, s.title(), 13.5, weight, disc_c.y - disc_r, 2.0 * disc_r);
-                TextRun::new(s.title(), TextStyle::new(13.5).with_weight(weight), label_c).draw(
-                    scene,
-                    tr,
-                    Point::new(disc_c.x + disc_r + RELATED, label_top),
-                    None,
-                );
-            }
-            // Connector to the next pill, inset a step from both stations.
-            if let Some(next) = lay.crumbs.get(i + 1) {
-                let nx0 = next.0.x0;
-                let midy = f64::midpoint(r.y0, r.y1);
-                let cc = if s.index() < self.step.index() {
-                    c.semantic.success
-                } else {
-                    c.neutral[3]
-                };
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    t,
-                    cc,
-                    None,
-                    &Line::new(
-                        Point::new(r.x1 + LABEL, midy),
-                        Point::new(nx0 - LABEL, midy),
-                    ),
-                );
-            }
-        }
-    }
-
-    fn draw_footer(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let v = self.rect;
-        let fy = v.y1 - FOOTER_H;
-        // The footer rule sits on `surfaces.base`, derived against it.
-        scene.fill(
-            Fill::NonZero,
-            t,
-            surface::edge_on(c.surfaces.base),
-            None,
-            &Rect::new(v.x0, fy - 0.5, v.x1, fy + 0.5),
-        );
-
-        // Back: the toolkit's neutral Button face — `Button::paint` shares
-        // `face_colors` with the retained widget, so it matches every other
-        // button. The keyboard focus ring is painted once for every hit by
-        // `draw`, not doubled here.
         if let Some(r) = lay.back {
             Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::new(r, "‹  Back")
-                    .radius(theme.radius_standard)
-                    .hovered(r.contains(self.last_mouse)),
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ButtonFace::new(r, "Back")
+                    .icon(Icon::ChevronLeft)
+                    .hovered(r.contains(self.last_mouse))
+                    .focused(self.keyboard_hit == Some(Hit::Back)),
             );
         }
-
-        // Primary.
         if let Some(r) = lay.primary {
-            self.draw_primary(scene, tr, theme, t, r);
+            self.draw_primary(ctx, r);
         }
 
-        // A hint between them (center) — e.g. what's still needed.
-        if !self.compact_content(lay.content)
-            && let Some(hint) = self.footer_hint()
-        {
-            TextRun::new(&hint, TextStyle::new(12.0), c.text_dim).draw_center_v(
-                scene,
-                tr,
-                f64::midpoint(v.x0, v.x1),
-                fy,
-                FOOTER_H,
-            );
+        // Between the two: what is still needed, or what just happened.
+        let content = lay.content;
+        if self.compact_content(content) {
+            return;
         }
+        let text = if self.status.is_empty() {
+            self.footer_hint()
+        } else {
+            Some(self.status.clone())
+        };
+        let Some(text) = text else {
+            return;
+        };
+        let b = &self.bands;
+        let left = lay.back.map_or(content.x0, |r| r.x1 + b.gaps.group);
+        let right = lay.primary.map_or(content.x1, |r| r.x0 - b.gaps.group);
+        let room = right - left;
+        if room <= 0.0 {
+            return;
+        }
+        let style = ctx.theme.text(TextRole::Caption);
+        let shown = ctx.text.elide_to_width_style(&text, room as f32, &style);
+        let w = f64::from(ctx.text.measure_style(&shown, None, &style).0);
+        let top = centered_text_top(fy, self.footer_h(), b.caption_h);
+        let dim = ctx.theme.text_dim;
+        ctx.text(
+            &shown,
+            &style,
+            dim,
+            Point::new(left + (room - w) / 2.0, top),
+            None,
+        );
     }
 
     fn footer_hint(&self) -> Option<String> {
         match self.step {
             Step::Source if self.source.is_none() => Some("Choose an image to continue".into()),
-            Step::Drive if self.selected.is_none() => Some("Select a drive to continue".into()),
+            Step::Drive if self.selected.is_none() => Some("Choose a drive to continue".into()),
             Step::Confirm if !self.confirm_matches() => self
                 .target()
-                .map(|d| format!("Type “{}” to unlock", d.name)),
-            Step::Write => Some("Keep the drive connected until this finishes…".into()),
+                .map(|d| format!("Type {} to unlock writing", d.name)),
+            Step::Write => Some("Keep the drive connected until this finishes".into()),
             _ => None,
         }
     }
 
-    fn draw_primary(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-    ) {
-        let hov = r.contains(self.last_mouse);
-        let (label, enabled, destructive) = match self.step {
+    fn draw_primary(&self, ctx: &mut PaintCtx<'_>, r: Rect) {
+        let (label, enabled, role) = match self.step {
             Step::Source => (
-                "Continue  ›".to_string(),
+                "Continue",
                 self.can_advance(Step::Source),
-                false,
+                ButtonRole::Primary,
             ),
             Step::Drive => (
-                "Continue  ›".to_string(),
+                "Continue",
                 self.can_advance(Step::Drive),
-                false,
+                ButtonRole::Primary,
             ),
-            Step::Customize => ("Continue  ›".to_string(), true, false),
-            Step::Confirm => {
-                let dev = self
-                    .target()
-                    .map(super::model::TargetDrive::dev_path)
-                    .unwrap_or_default();
-                // "Erase & write /dev/sdb" for a stick; "Erase & install
-                // /dev/nvme0n1" for a disk install — the verb reads plainly.
-                let label = if r.width() < 220.0 {
-                    format!("Erase & {}", self.action.verb().to_ascii_lowercase())
-                } else {
-                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase())
-                };
-                (
-                    label,
-                    self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
-                    true,
-                )
-            }
-            Step::Write => (
-                if self
+            Step::Customize => ("Continue", true, ButtonRole::Primary),
+            Step::Confirm => (
+                "Erase and write",
+                self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
+                ButtonRole::Destructive,
+            ),
+            Step::Write => {
+                let stopping = self
                     .job_control
                     .as_ref()
-                    .is_some_and(JobControl::is_cancelled)
-                {
-                    "Stopping…".to_string()
+                    .is_some_and(JobControl::is_cancelled);
+                (
+                    if stopping {
+                        "Stopping…"
+                    } else {
+                        "Cancel write"
+                    },
+                    self.job_control
+                        .as_ref()
+                        .is_some_and(|control| !control.is_cancelled()),
+                    ButtonRole::Secondary,
+                )
+            }
+            Step::Done => (
+                if self.progress.phase == JobPhase::Failed {
+                    "Review and retry"
                 } else {
-                    "Cancel write".to_string()
+                    "Start over"
                 },
-                self.job_control
-                    .as_ref()
-                    .is_some_and(|control| !control.is_cancelled()),
-                false,
+                true,
+                ButtonRole::Primary,
             ),
-            Step::Done => match self.progress.phase {
-                JobPhase::Failed => ("Review & retry".to_string(), true, false),
-                _ => ("Start over".to_string(), true, false),
-            },
         };
-        // The toolkit Button face (`Button::paint` shares `face_colors` with
-        // the retained widget): a disabled action is one opaque neutral face
-        // with quieter ink, never a dimmed accent that still reads as
-        // actionable; the enabled primary / danger fills carry ink resolved
-        // against them, and hover shifts the fill without touching the ink.
-        let face = ButtonFace::new(r, &label)
-            .radius(theme.radius_standard)
-            .weight(TextWeight::Bold)
-            .hovered(hov)
+        let hit = match self.step {
+            Step::Confirm => Hit::StartWrite,
+            Step::Write => Hit::CancelWrite,
+            Step::Done => Hit::WriteAnother,
+            _ => Hit::Next,
+        };
+        let face = ButtonFace::new(r, label)
+            .role(role)
+            .hovered(r.contains(self.last_mouse))
+            .focused(self.keyboard_hit == Some(hit))
             .disabled(!enabled);
-        let face = if destructive {
-            face.danger()
-        } else {
-            face.primary()
-        };
-        Button::paint(scene, t, tr, theme, &face);
+        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
     }
 }
 
@@ -2805,1449 +2027,564 @@ impl ImagerApp {
 // Step bodies
 // =========================================================================
 impl ImagerApp {
-    fn draw_step_title(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        title: &str,
-        sub: Option<&str>,
-    ) {
-        let c = &theme.tokens.colors;
-        let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        TextRun::new(
-            title,
-            TextStyle::new(19.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(content.x0, content.y0), None);
-        if let Some(sub) = sub {
-            TextRun::new(sub, TextStyle::new(13.0), c.text_dim).draw(
-                scene,
-                tr,
-                Point::new(content.x0, content.y0 + f64::from(title_h) + STEP_SUB_GAP),
-                Some(content.width() as f32),
-            );
+    fn draw_step_title(ctx: &mut PaintCtx<'_>, content: Rect, title: &str, max_w: f64) {
+        let style = ctx.theme.text(TextRole::Title);
+        let shown = ctx
+            .text
+            .elide_to_width_style(title, max_w.max(1.0) as f32, &style);
+        let ink = ctx.theme.text_primary;
+        ctx.text(&shown, &style, ink, content.origin(), None);
+    }
+
+    /// The step's title; the Drive step leaves room for its Rescan button.
+    fn step_title(&self) -> &'static str {
+        match self.step {
+            Step::Source => "Choose an image",
+            Step::Drive => "Choose a drive",
+            Step::Customize => "Prepare the setup",
+            Step::Confirm => match self.action {
+                Action::Install => "Review and install",
+                Action::Flash => "Review and write",
+            },
+            Step::Write => match (self.progress.phase == JobPhase::Verifying, self.action) {
+                (true, _) => "Verifying",
+                (false, Action::Install) => "Installing",
+                (false, Action::Flash) => "Writing",
+            },
+            Step::Done => "",
         }
     }
 
-    // ---- Source -----------------------------------------------------------
+    fn row_interaction(&self, rect: Rect, hit: Hit) -> Interaction {
+        Interaction {
+            hovered: rect.contains(self.last_mouse),
+            focused: self.keyboard_hit == Some(hit),
+            ..Interaction::default()
+        }
+    }
 
-    fn draw_source_step(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    // ---- Image -------------------------------------------------------------
+
+    fn draw_source_step(&self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
         let content = lay.content;
-        let (title, sub) = self.source_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let browse = self.draw_source_dropzone(scene, tr, theme, t, content);
-        let mut bottom = browse.y1;
-        if self.source.is_some() {
-            bottom = self.draw_source_selected_card(scene, tr, theme, t, content, bottom + SIBLING);
-        }
-        let bottom = self.draw_source_releases(scene, tr, theme, t, content, bottom + GROUP);
-        self.draw_source_recent(scene, tr, theme, t, content, bottom);
-    }
-
-    /// Draws the "Browse for an image…" drop-zone and returns its rect (the
-    /// selected-source card below it is anchored off `browse.y1`).
-    fn draw_source_dropzone(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) -> Rect {
-        let c = &theme.tokens.colors;
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let y = content.y0 + self.step_header_h(content);
-        let browse = Rect::new(content.x0, y, content.x1, y + m.dropzone_h);
-        let hov = browse.contains(self.last_mouse);
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            browse,
-            radius,
-            if hov {
-                theme.bg_hover
-            } else {
-                with_alpha(c.accent[5], 16)
-            },
-        );
-        Self::dashed_rr(
-            scene,
-            t,
-            browse,
-            radius,
-            if hov {
-                c.accent[6]
-            } else {
-                with_alpha(c.accent[5], 160)
-            },
-            1.6,
-        );
-        // Download/arrow glyph in an `ICON` box, inset a gutter from the edge
-        // and centred on the band.
-        let inset = if compact { SECTION } else { GROUP };
-        let gx = browse.x0 + inset + ICON / 2.0;
-        let gy = f64::midpoint(browse.y0, browse.y1);
-        let mut arr = BezPath::new();
-        arr.move_to((gx, gy - 14.0));
-        arr.line_to((gx, gy + 8.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &arr);
-        let mut head = BezPath::new();
-        head.move_to((gx - 7.0, gy + 1.0));
-        head.line_to((gx, gy + 9.0));
-        head.line_to((gx + 7.0, gy + 1.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &head);
-        scene.stroke(
-            &Stroke::new(2.4),
-            t,
-            c.accent[6],
-            None,
-            &Line::new(
-                Point::new(gx - ICON / 2.0, gy + 15.0),
-                Point::new(gx + ICON / 2.0, gy + 15.0),
-            ),
-        );
-        // Title + hint stacked and centred in the band (see `SourceMetrics`),
-        // a `SECTION` after the icon.
-        let text_x = gx + ICON / 2.0 + SECTION;
-        let text_w = (browse.x1 - text_x - SECTION).max(0.0) as f32;
-        TextRun::new(
-            "Browse for an image…",
-            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, browse.y0 + m.dz_title_top),
-            Some(text_w),
-        );
-        TextRun::new(
-            if compact {
-                "Choose an .iso, .img, or .raw file"
-            } else {
-                "Opens the system file picker · .iso, .img, .raw"
-            },
-            TextStyle::new(12.5),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, browse.y0 + m.dz_sub_top),
-            Some(text_w),
-        );
-        browse
-    }
-
-    /// Draws the selected-source summary card starting at `top`, returning
-    /// its bottom edge.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact and regular source-card variants intentionally share one renderer so their visual state cannot drift"
-    )]
-    fn draw_source_selected_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        top: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let Some(src) = &self.source else {
-            return top;
-        };
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let card = Rect::new(content.x0, top, content.x1, top + m.card_h(compact));
-        Self::fill_rr(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        Self::stroke_rr(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            with_alpha(c.semantic.success, 150),
-            1.4,
-        );
-        // The check disc sits a `SECTION` in; the badge band starts at the
-        // top padding and is as wide as its label needs. The compact check
-        // rides the badge line's centre, the wide one the card's.
-        let badge_top = card.y0 + SECTION;
-        let badge_h = m.card_badge_h;
-        let disc_x = card.x0 + if compact { RELATED } else { SECTION } + CHECK_R;
-        Self::check_disc(
-            scene,
-            t,
-            Point::new(
-                disc_x,
-                if compact {
-                    badge_top + badge_h / 2.0
-                } else {
-                    f64::midpoint(card.y0, card.y1)
-                },
-            ),
-            CHECK_R,
-            c.semantic.success,
-            Self::glyph_ink(theme, c.semantic.success),
-        );
-        let badge_x = disc_x + CHECK_R + if compact { RELATED } else { SIBLING };
-        let badge = Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(badge_x, badge_top),
-            badge_h,
-            src.kind.tag(),
-            source_color(theme, src.kind),
-        );
-        let title_x = badge.x1 + SIBLING;
-        let detail_x = if compact { badge_x } else { title_x };
-        let (summary_top, tag_top) = if compact {
-            (m.card_summary_top_compact, m.card_tag_top_compact)
-        } else {
-            (m.card_summary_top, m.card_tag_top)
-        };
-        let title_max_w = (card.x1 - title_x - SECTION).max(0.0) as f32;
-        let name = tr.elide_to_width_weighted(&src.name, 15.5, title_max_w, TextWeight::Semibold);
-        // The compact name shares the badge's centre line; the wide one sits
-        // on the card's top padding.
-        let title_top = if compact {
-            Self::line_top(
-                tr,
-                &name,
-                15.5,
-                TextWeight::Semibold,
-                badge.y0,
-                badge.height(),
-            )
-        } else {
-            card.y0 + SECTION
-        };
-        TextRun::new(
-            &name,
-            TextStyle::new(15.5).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(title_x, title_top), Some(title_max_w));
-        // One line: a long image path elides against the card instead of
-        // wrapping into the tag line beneath it.
-        let summary = if compact {
-            format!("{}  ·  {}", src.label, fmt_size(src.size))
-        } else {
-            src.summary()
-        };
-        let detail_max_w = (card.x1 - detail_x - SECTION).max(0.0) as f32;
-        let summary = tr.elide_to_width(&summary, 12.0, detail_max_w);
-        TextRun::new(&summary, TextStyle::new(12.0), c.text_dim).draw(
-            scene,
-            tr,
-            Point::new(detail_x, card.y0 + summary_top),
-            Some(detail_max_w),
-        );
-        let (tag, tag_c) = if self.source_is_official(src) {
-            (
-                "● Official Tilo release · catalog verified",
-                c.semantic.success,
-            )
-        } else {
-            ("Local image · unverified · written as-is", c.text_dim)
-        };
-        TextRun::new(
-            tag,
-            TextStyle::new(11.5).with_weight(TextWeight::Medium),
-            tag_c,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(detail_x, card.y0 + tag_top),
-            Some(detail_max_w),
-        );
-        card.y1
-    }
-
-    /// Draws the "Tilo release" caption, its zero-state or the list of known
-    /// releases from `top`, returning the bottom of the block.
-    fn draw_source_releases(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        top: f64,
-    ) -> f64 {
-        // Tilo releases. With none to choose between, the heading names the
-        // section rather than offering a choice that is not there.
-        let heading = if self.releases().is_empty() {
-            "Tilo RELEASES"
-        } else {
-            "OR CHOOSE A Tilo RELEASE"
-        };
-        Self::section_label(scene, tr, theme, heading, content.x0, top);
-        let mut y = top + self.bands.source.section_h;
-        if self.releases().is_empty() {
-            // Nothing is known to be on this machine, so nothing is offered.
-            // The honest zero-state says so rather than leaving a bare heading.
-            y = self.draw_no_releases_card(scene, tr, theme, t, content, y);
-        }
-        for (i, rel) in self.releases().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
+        Self::draw_step_title(ctx, content, self.step_title(), content.width());
+        let bands = self.source_bands(content);
+        for (i, (block, rect)) in bands.iter().enumerate() {
+            // Rows of one list run edge to edge with inset separators.
+            let next_row = bands.get(i + 1).and_then(|(next, _)| match next {
+                SourceBlock::Release(j) => Some(self.release_selected(*j)),
+                SourceBlock::Recent(j) => Some(self.recent_selected(*j)),
+                _ => None,
+            });
+            match *block {
+                SourceBlock::DropZone => self.draw_source_dropzone(ctx, *rect),
+                SourceBlock::Header(title) => {
+                    let ink = ctx.theme.text_primary;
+                    ctx.text_role(title, TextRole::Subheading, ink, rect.origin(), None);
+                }
+                SourceBlock::NoReleases => {
+                    let dim = ctx.theme.text_dim;
+                    ctx.text_role(
+                        NO_RELEASES,
+                        TextRole::Body,
+                        dim,
+                        rect.origin(),
+                        Some(rect.width() as f32),
+                    );
+                }
+                SourceBlock::Selected => {
+                    if let Some(source) = &self.source {
+                        let secondary = self.source_secondary(source);
+                        let size = fmt_size(source.size);
+                        ListRowFace::new(&source.name)
+                            .leading(RowLeading::Icon(Icon::File))
+                            .secondary(&secondary)
+                            .meta(&size)
+                            .selected(true)
+                            .paint(ctx, *rect);
+                    }
+                }
+                SourceBlock::Release(index) => {
+                    self.draw_release_row(ctx, *rect, index, next_row);
+                }
+                SourceBlock::Recent(index) => {
+                    if let Some(source) = self.recent.get(index) {
+                        let secondary = self.source_secondary(source);
+                        let size = fmt_size(source.size);
+                        let face = ListRowFace::new(&source.name)
+                            .leading(RowLeading::Icon(Icon::File))
+                            .secondary(&secondary)
+                            .meta(&size)
+                            .selected(self.recent_selected(index))
+                            .interaction(self.row_interaction(*rect, Hit::Recent(index)));
+                        let face = match next_row {
+                            Some(next) => face.separator(next),
+                            None => face,
+                        };
+                        face.paint(ctx, *rect);
+                    }
+                }
             }
-            let row = Rect::new(
-                content.x0,
-                y,
-                content.x1,
-                y + self.bands.source.release_row_h,
-            );
-            y = self.draw_release_row(&mut PaintCtx::new(scene, t, tr, theme), row, i, rel);
         }
-        y
     }
 
-    /// The empty-state card shown in place of the release list when nothing
-    /// is known to be on this machine. Returns its bottom edge.
-    fn draw_no_releases_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        y: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let card = Rect::new(content.x0, y, content.x1, y + self.bands.source.zero_h);
-        Self::dashed_card(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            c.surfaces.raised,
-            1.2,
+    /// The one fact under an image's name: what it is and whether it was
+    /// verified.
+    fn source_secondary(&self, source: &Source) -> String {
+        if self.source_is_official(source) {
+            "Official Tilo release, verified".into()
+        } else {
+            "Local image, written unchanged".into()
+        }
+    }
+
+    fn release_selected(&self, index: usize) -> bool {
+        self.releases()
+            .get(index)
+            .zip(self.source.as_ref())
+            .is_some_and(|(release, source)| release.matches_source(source))
+    }
+
+    fn recent_selected(&self, index: usize) -> bool {
+        self.recent
+            .get(index)
+            .zip(self.source.as_ref())
+            .is_some_and(|(recent, source)| {
+                recent.path == source.path && recent.name == source.name
+            })
+    }
+
+    fn draw_source_dropzone(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let b = &self.bands;
+        let face = DropZoneFace::new(DROP_TITLE)
+            .message(DROP_MESSAGE)
+            .icon(Icon::Download);
+        let slot = face.paint(ctx, rect, b.control_h);
+        let probe = ButtonFace::new(Rect::ZERO, DROP_ACTION);
+        let w = probe.intrinsic_width(ctx.text, ctx.theme);
+        let button = Rect::new(
+            slot.center().x - w / 2.0,
+            slot.y0,
+            slot.center().x + w / 2.0,
+            slot.y0 + b.control_h,
         );
-        let cx = f64::midpoint(card.x0, card.x1);
-        // Title + hint stack centred in the card's measured band.
-        let title_h = tr.line(14.0);
-        let sub_h = tr.line(12.0);
-        let stack_h = title_h + RELATED + sub_h;
-        let title_top = card.y0 + (card.height() - stack_h) / 2.0;
-        TextRun::new(
-            "No Tilo releases found",
-            TextStyle::new(14.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cx, title_top);
-        TextRun::new(
-            "Releases stored on this machine appear here.",
-            TextStyle::new(12.0),
-            c.text_dim,
-        )
-        .draw_center(scene, tr, cx, title_top + title_h + RELATED);
-        card.y1
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &ButtonFace::new(button, DROP_ACTION)
+                .hovered(rect.contains(self.last_mouse))
+                .focused(self.keyboard_hit == Some(Hit::PickFile)),
+        );
     }
 
-    /// One release row: selection badge, name, channel/size/location, and the
-    /// "installable" tag. Returns its bottom edge.
+    /// One release: its name, where it runs, and its size; a download in
+    /// flight says how far it is.
     fn draw_release_row(
         &self,
         ctx: &mut PaintCtx<'_>,
-        r: Rect,
+        rect: Rect,
         index: usize,
-        rel: &TiloRelease,
-    ) -> f64 {
-        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let c = &theme.tokens.colors;
-        let m = &self.bands.source;
-        let selected = self
-            .source
-            .as_ref()
-            .is_some_and(|source| rel.matches_source(source));
-        let hov = r.contains(self.last_mouse);
-        let radius = theme.radius_standard;
-        if selected {
-            Self::fill_rr(scene, t, r, radius, with_alpha(c.accent[5], 34));
-            Self::stroke_rr(scene, t, r, radius, c.accent[5], 1.4);
-        } else {
-            surface::card(scene, t, r, radius, Self::row_face(theme, hov));
-        }
-        // The kind badge on its band, centred in the row and as wide as its
-        // label needs; the text column starts a `SIBLING` after it.
-        let badge = Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(r.x0 + SECTION, r.y0 + (r.height() - m.card_badge_h) / 2.0),
-            m.card_badge_h,
-            "Tilo",
-            c.accent[5],
-        );
-        let text_x = badge.x1 + SIBLING;
-        let title = format!("Tilo {}", rel.version);
-        let (title_w, title_h) = tr.measure_weighted(&title, 14.5, None, TextWeight::Semibold);
-        let (inst_w, _) = tr.measure_weighted("installable", 11.0, None, TextWeight::Medium);
-        let title_max_w = (r.x1 - SECTION - f64::from(inst_w) - SIBLING - text_x)
-            .max(f64::from(title_w).min(72.0)) as f32;
-        TextRun::new(
-            &rel.display_name(),
-            TextStyle::new(14.5).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, r.y0 + RELATED),
-            Some(title_max_w),
-        );
+        next_selected: Option<bool>,
+    ) {
+        let Some(release) = self.releases().get(index) else {
+            return;
+        };
         let downloading = self.release_download_index == Some(index);
-        let where_ = if downloading {
-            self.release_download_stage.unwrap_or("preparing")
-        } else if rel.local_path.is_empty() {
-            "download"
+        let secondary = if downloading {
+            let stage = self.release_download_stage.unwrap_or("Preparing");
+            match self.release_download_progress {
+                Some((done, total)) if total > 0 => {
+                    format!("{stage} {}%, select to cancel", done * 100 / total)
+                }
+                _ => format!("{stage}, select to cancel"),
+            }
+        } else if release.local_path.is_empty() {
+            format!(
+                "{}, {} channel, downloads first",
+                release.target_label(),
+                release.channel
+            )
         } else {
-            "on disk"
+            format!("{}, {} channel", release.target_label(), release.channel)
         };
-        TextRun::new(
-            &format!(
-                "{}  ·  {}  ·  {}  ·  {}",
-                rel.target_label(),
-                rel.channel,
-                fmt_size(rel.size),
-                where_
-            ),
-            TextStyle::new(11.5),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, r.y0 + m.release_detail_top),
-            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
-        );
-        // The tag shares the title's centre line.
-        TextRun::new(
-            if downloading {
-                "Cancel"
+        let title = release.display_name();
+        let size = fmt_size(release.size);
+        let hit = if downloading {
+            Hit::CancelDownload
+        } else {
+            Hit::Release(index)
+        };
+        let face = ListRowFace::new(&title)
+            .leading(RowLeading::Icon(if release.local_path.is_empty() {
+                Icon::CloudDownload
             } else {
-                "official · verified"
-            },
-            TextStyle::new(11.0).with_weight(TextWeight::Medium),
-            if downloading {
-                c.semantic.danger
-            } else {
-                c.semantic.success
-            },
-        )
-        .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
-        if downloading {
-            let fraction = self
-                .release_download_progress
-                .and_then(|(done, total)| (total > 0).then_some(done as f64 / total as f64))
-                .unwrap_or(0.0)
-                .clamp(0.0, 1.0);
-            let track = Rect::new(r.x0 + 68.0, r.y1 - 5.0, r.x1 - 16.0, r.y1 - 2.0);
-            Self::fill_rr(scene, t, track, 1.5, c.border_standard);
-            if fraction > 0.0 {
-                Self::fill_rr(
-                    scene,
-                    t,
-                    Rect::new(
-                        track.x0,
-                        track.y0,
-                        track.x0 + track.width() * fraction,
-                        track.y1,
-                    ),
-                    1.5,
-                    c.accent[5],
-                );
-            }
-        }
-        r.y0 + 54.0 + 10.0
+                Icon::File
+            }))
+            .secondary(&secondary)
+            .meta(&size)
+            .selected(self.release_selected(index))
+            .interaction(self.row_interaction(rect, hit));
+        let face = match next_selected {
+            Some(next) => face.separator(next),
+            None => face,
+        };
+        face.paint(ctx, rect);
     }
 
-    /// Draws the "Recent" section (up to the three most recent sources) a
-    /// `GROUP` below `bottom`.
-    fn draw_source_recent(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        bottom: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        if self.recent.is_empty() {
-            return;
-        }
-        let m = &self.bands.source;
-        let top = bottom + GROUP;
-        Self::section_label(scene, tr, theme, "RECENT", content.x0, top);
-        let mut y = top + m.section_h;
-        for (i, src) in self.recent.iter().take(3).enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + m.recent_row_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            let hov = r.contains(self.last_mouse);
-            if hov {
-                Self::fill_rr(scene, t, r, theme.radius_standard, theme.bg_hover);
-            }
-            // Kind swatch: a `LABEL`-wide bar inset a `RELATED` from the row.
-            let sw = Rect::new(
-                r.x0 + RELATED,
-                r.y0 + RELATED,
-                r.x0 + RELATED + LABEL,
-                r.y1 - RELATED,
-            );
-            Self::fill_rr(scene, t, sw, LABEL / 2.0, source_color(theme, src.kind));
-            let text_x = sw.x1 + SIBLING;
-            let (tag_w, _) = tr.measure_weighted(src.kind.tag(), 10.5, None, TextWeight::Semibold);
-            TextRun::new(
-                &src.name,
-                TextStyle::new(13.0).with_weight(TextWeight::Medium),
-                c.text_primary,
-            )
-            .draw(
-                scene,
-                tr,
-                Point::new(text_x, r.y0 + RELATED),
-                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
-            );
-            TextRun::new(&fmt_size(src.size), TextStyle::new(11.0), c.text_dim).draw(
-                scene,
-                tr,
-                Point::new(text_x, r.y0 + m.recent_size_top),
-                None,
-            );
-            // The kind tag is centred on the row.
-            TextRun::new(
-                src.kind.tag(),
-                TextStyle::new(10.5).with_weight(TextWeight::Semibold),
-                c.text_tertiary,
-            )
-            .draw_right_v(scene, tr, r.x1 - SECTION, r.y0, r.height());
-            y = r.y1;
-        }
-    }
+    // ---- Drive -------------------------------------------------------------
 
-    // ---- Drive ------------------------------------------------------------
-
-    fn draw_drive_step(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
+    fn draw_drive_step(&self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
         let content = lay.content;
-        let (title, sub) = Self::drive_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let compact = self.compact_content(content);
-        // Rescan button, with the detected count on its centre line: to its
-        // left when wide, at the content's left edge when compact.
+        let b = &self.bands;
         let rescan = self.drive_rescan_rect(content);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(rescan, RESCAN_LABEL)
-                .radius(theme.radius_standard)
-                .text_size(12.5)
-                .hovered(rescan.contains(self.last_mouse)),
+        Self::draw_step_title(
+            ctx,
+            content,
+            self.step_title(),
+            rescan.x0 - b.gaps.sibling - content.x0,
         );
-        let detected = format!("{} removable", self.removable_count());
-        if compact {
-            let count_top = Self::line_top(
-                tr,
-                &detected,
-                11.5,
-                TextWeight::Medium,
-                rescan.y0,
-                rescan.height(),
-            );
-            TextRun::new(
-                &detected,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(content.x0, count_top), None);
-        } else {
-            TextRun::new(
-                &detected,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw_right_v(scene, tr, rescan.x0 - SIBLING, rescan.y0, rescan.height());
-        }
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &ButtonFace::new(rescan, RESCAN_LABEL)
+                .icon(Icon::Refresh)
+                .control_size(ControlSize::Small)
+                .hovered(rescan.contains(self.last_mouse))
+                .focused(self.keyboard_hit == Some(Hit::Rescan)),
+        );
 
-        let vis = self.visible_targets();
-        if vis.is_empty() {
-            self.draw_drive_empty(scene, tr, theme, t, content);
+        let visible = self.visible_targets();
+        if visible.is_empty() {
+            let content = EmptyStateContent {
+                icon: Some(Icon::HardDrive),
+                ..EmptyStateContent::new(EMPTY_DRIVES)
+            };
+            EmptyState::paint(
+                ctx,
+                self.drive_empty_rect(lay.content),
+                &content,
+                self.last_mouse,
+            );
             return;
         }
-        let card_h = self.bands.drive.card_h;
-        let mut y = self.drive_cards_top(content);
-        for (i, (idx, drive)) in vis.iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + card_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            self.draw_drive_card(scene, tr, theme, t, r, *idx, drive);
+        let mut y = self.body_top(content);
+        for (n, (idx, drive)) in visible.iter().enumerate() {
+            let r = self.row_rect(content, y);
+            let secondary = format!("{}, {}", drive.dev_path(), drive.contents_summary());
+            let size = fmt_size(drive.size);
+            let face = ListRowFace::new(&drive.model)
+                .leading(RowLeading::Icon(Icon::HardDrive))
+                .secondary(&secondary)
+                .meta(&size)
+                .selected(self.selected == Some(*idx))
+                .interaction(self.row_interaction(r, Hit::Target(*idx)));
+            let face = match visible.get(n + 1) {
+                Some((next, _)) => face.separator(self.selected == Some(*next)),
+                None => face,
+            };
+            face.paint(ctx, r);
             y = r.y1;
         }
     }
 
-    fn draw_drive_empty(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        let top = self.drive_cards_top(content);
-        let card = Rect::new(content.x0, top, content.x1, top + m.empty_h);
-        Self::dashed_card(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            c.surfaces.raised,
-            1.4,
-        );
-        let cx = f64::midpoint(card.x0, card.x1);
-        // A simple USB-stick glyph in the card's own ink tiers.
-        let gy = card.y0 + m.empty_glyph_top;
-        let cap = Rect::new(cx - 10.0, gy, cx + 10.0, gy + GLYPH_CAP_H);
-        Self::fill_rr(scene, t, cap, theme.tokens.radii.sm.into(), c.text_dim);
-        let body = Rect::new(cx - 16.0, cap.y1, cx + 16.0, cap.y1 + GLYPH_BODY_H);
-        Self::fill_rr(
-            scene,
-            t,
-            body,
-            theme.tokens.radii.sm.into(),
-            c.text_tertiary,
-        );
-        TextRun::new(
-            EMPTY_TITLE,
-            TextStyle::new(17.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cx, card.y0 + m.empty_title_top);
-        let para_w = (card.width() - 2.0 * GROUP).max(0.0);
-        TextRun::new(EMPTY_LINE_1, TextStyle::new(13.0), c.text_dim).draw_para_centered(
-            scene,
-            tr,
-            cx,
-            card.y0 + m.empty_line_top,
-            para_w,
-        );
-        TextRun::new(EMPTY_LINE_2, TextStyle::new(12.0), c.text_tertiary).draw_para_centered(
-            scene,
-            tr,
-            cx,
-            card.y0 + m.empty_line2_top,
-            para_w,
-        );
-    }
-
-    fn draw_drive_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-        idx: usize,
-        drive: &TargetDrive,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        let selected = self.selected == Some(idx);
-        let hover = self.hover_target == Some(idx) && !selected;
-        let danger = !drive.removable;
-        let radius = theme.radius_standard;
-        if selected {
-            Self::fill_rr(scene, t, r, radius, with_alpha(c.accent[5], 30));
-            Self::stroke_rr(scene, t, r, radius, c.accent[5], 2.0);
-        } else {
-            surface::card(scene, t, r, radius, Self::row_face(theme, hover));
-            if danger {
-                Self::stroke_rr(scene, t, r, radius, with_alpha(c.semantic.danger, 150), 1.0);
-            }
-        }
-
-        // Selection check on the left, on the card's centre line.
-        if selected {
-            Self::check_disc(
-                scene,
-                t,
-                Point::new(r.x0 + SECTION + CHECK_R, f64::midpoint(r.y0, r.y1)),
-                CHECK_R,
-                c.accent[5],
-                Self::glyph_ink(theme, c.accent[5]),
-            );
-        }
-        let left = if selected {
-            r.x0 + SECTION + 2.0 * CHECK_R + SIBLING
-        } else {
-            r.x0 + SECTION
-        };
-
-        // Kind badge: as wide as its label needs, on the badge band.
-        Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(left, r.y0 + SECTION),
-            m.badge_h,
-            drive.kind.tag(),
-            kind_color(theme, drive.kind),
-        );
-
-        self.draw_drive_card_details(scene, tr, theme, t, r, drive, left);
-    }
-
-    /// Draws the removable/fixed/system chip, the model + capacity line, and
-    /// the destructive-erase note for a drive card, each on its measured line.
-    fn draw_drive_card_details(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-        drive: &TargetDrive,
-        left: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        // Removable / fixed / system chip on the right, on the badge band.
-        let (chip_label, chip_c) = if drive.is_system {
-            ("SYSTEM DISK", c.semantic.danger)
-        } else if drive.removable {
-            ("REMOVABLE", c.semantic.success)
-        } else {
-            ("INTERNAL DISK", c.semantic.warning)
-        };
-        let (cw, _) = tr.measure_weighted(chip_label, 10.5, None, TextWeight::Bold);
-        let chip = Rect::new(
-            r.x1 - SECTION - f64::from(cw) - 2.0 * RELATED,
-            r.y0 + SECTION,
-            r.x1 - SECTION,
-            r.y0 + SECTION + m.badge_h,
-        );
-        Self::fill_rr(
-            scene,
-            t,
-            chip,
-            theme.tokens.radii.sm.into(),
-            with_alpha(chip_c, 40),
-        );
-        TextRun::new(
-            chip_label,
-            TextStyle::new(10.5).with_weight(TextWeight::Bold),
-            chip_c,
-        )
-        .draw_center_v(
-            scene,
-            tr,
-            f64::midpoint(chip.x0, chip.x1),
-            chip.y0,
-            chip.height(),
-        );
-
-        // Model + capacity, then the erase note: three single lines a `LABEL`
-        // apart on the bands `DriveMetrics` measured, each elided to the
-        // column — an unbounded `lsblk` model must never wrap into the line
-        // below it.
-        let max_w = (r.x1 - SECTION - left).max(0.0) as f32;
-        let model = tr.elide_to_width_weighted(&drive.model, 16.0, max_w, TextWeight::Semibold);
-        TextRun::new(
-            &model,
-            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(left, r.y0 + m.model_top), None);
-        let device = tr.elide_to_width_weighted(
-            &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)),
-            12.5,
-            max_w,
-            TextWeight::Regular,
-        );
-        TextRun::new(&device, TextStyle::new(12.5), c.text_dim).draw(
-            scene,
-            tr,
-            Point::new(left, r.y0 + m.dev_top),
-            None,
-        );
-        let erase = tr.elide_to_width_weighted(
-            &format!("⚠ Erases {}", drive.contents_summary()),
-            11.5,
-            max_w,
-            TextWeight::Medium,
-        );
-        TextRun::new(
-            &erase,
-            TextStyle::new(11.5).with_weight(TextWeight::Medium),
-            c.semantic.danger,
-        )
-        .draw(scene, tr, Point::new(left, r.y0 + m.erase_top), None);
-    }
-
-    // ---- Customize --------------------------------------------------------
+    // ---- Customize ---------------------------------------------------------
 
     fn draw_customize_step(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         lay: &Layout,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
         let content = lay.content;
-        let (title, sub) = self.customize_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
+        Self::draw_step_title(ctx, content, self.step_title(), content.width());
         if !self.customizable() {
-            let top = content.y0 + self.step_header_h(content);
-            let card = Rect::new(content.x0, top, content.x1, top + self.bands.plain_card_h);
-            surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-            let cx = f64::midpoint(card.x0, card.x1);
-            let title_h = tr.line(16.0);
-            TextRun::new(
-                PLAIN_TITLE,
-                TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-                c.text_primary,
-            )
-            .draw_center(scene, tr, cx, card.y0 + SECTION);
-            TextRun::new(PLAIN_BODY, TextStyle::new(13.0), c.text_dim).draw_para_centered(
-                scene,
-                tr,
-                cx,
-                card.y0 + SECTION + title_h + RELATED,
-                (card.width() - 2.0 * SECTION).max(0.0),
+            let top = self.body_top(content);
+            let dim = ctx.theme.text_dim;
+            ctx.text_role(
+                PLAIN_BODY,
+                TextRole::Body,
+                dim,
+                Point::new(content.x0, top),
+                Some(content.width() as f32),
             );
             return;
         }
-
-        // The whole form is the shared guided-customization panel.
-        self.customize
-            .draw(&mut PaintCtx::new(scene, t, tr, theme), presence, content);
+        self.customize.draw(ctx, presence, content);
     }
 
-    // ---- Confirm ----------------------------------------------------------
+    // ---- Confirm -----------------------------------------------------------
 
-    fn draw_confirm_step(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_confirm_step(&mut self, ctx: &mut PaintCtx<'_>, lay: &Layout, presence: &PresenceCtx) {
         let content = lay.content;
-        let (title, sub) = self.confirm_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        self.draw_confirm_review_card(scene, tr, theme, t, content);
-        self.draw_confirm_danger_banner(scene, tr, theme, t, content);
+        Self::draw_step_title(ctx, content, self.step_title(), content.width());
+
+        let review = self.review_rows();
+        let rows: Vec<PropertyRow<'_>> = review
+            .iter()
+            .map(|(label, value)| PropertyRow::new(label, value))
+            .collect();
+        PropertyListFace::new(&rows).paint(ctx, self.confirm_review_rect(content));
+
+        let warning = self.confirm_warning();
+        let _ = Banner::paint(
+            ctx,
+            self.confirm_banner_rect(content),
+            &BannerContent::new(BannerKind::Error, &warning.0).with_message(Some(warning.1)),
+            self.last_mouse,
+        );
+
         if self.offers_write_setup() {
             let top = self.write_setup_top(content);
-            self.write_setup.draw(
-                &mut PaintCtx::new(scene, t, tr, theme),
-                presence,
-                content,
-                top,
-                &self.profile,
-            );
+            let profile = self.profile.clone();
+            self.write_setup.draw(ctx, presence, content, top, &profile);
         }
-        self.draw_confirm_field(scene, tr, theme, t, content);
+        self.draw_confirm_field(ctx, content);
     }
 
-    /// The review card: key/value rows on the measured bands of
-    /// [`ConfirmMetrics`], key and value sharing one centre line per row.
-    fn draw_confirm_review_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.confirm;
-        let card = self.confirm_card_rect(content);
-        surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        let value_x = card.x0 + m.value_x;
-        let value_w = (card.x1 - SECTION - value_x).max(0.0) as f32;
-        for (row, top) in self.confirm_rows().iter().zip(m.row_top.iter()) {
-            let y = card.y0 + top;
-            let (_, kh) = tr.measure_weighted(row.key, 12.0, None, TextWeight::Semibold);
-            let (_, vh) = tr.measure_weighted(&row.value, row.size, Some(value_w), row.weight);
-            let key_top = y + (f64::from(vh) - f64::from(kh)).max(0.0) / 2.0;
-            let value_top = y + (f64::from(kh) - f64::from(vh)).max(0.0) / 2.0;
-            TextRun::new(
-                row.key,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
-            let col = match row.tone {
-                RowTone::Primary => c.text_primary,
-                RowTone::Success => c.semantic.success,
-                RowTone::Danger => c.semantic.danger,
-            };
-            TextRun::new(
-                &row.value,
-                TextStyle::new(row.size).with_weight(row.weight),
-                col,
-            )
-            .draw(scene, tr, Point::new(value_x, value_top), Some(value_w));
-        }
-    }
-
-    /// Danger banner below the review card — louder for a fixed/internal
-    /// (install) target.
-    fn draw_confirm_danger_banner(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let internal = self.target().is_some_and(|d| !d.removable);
-        let banner = self.confirm_banner_rect(content);
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            banner,
-            radius,
-            with_alpha(c.semantic.danger, if internal { 40 } else { 28 }),
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            banner,
-            radius,
-            with_alpha(c.semantic.danger, if internal { 170 } else { 130 }),
-            if internal { 1.4 } else { 1.0 },
-        );
-        TextRun::new(
-            self.confirm_warning(),
-            TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-            c.semantic.danger,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(banner.x0 + SECTION, banner.y0 + SIBLING),
-            Some((banner.width() - 2.0 * SECTION).max(0.0) as f32),
-        );
-    }
-
-    /// The typed confirmation field under its caption, and the write-gate
-    /// note below it.
-    fn draw_confirm_field(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.confirm;
+    /// The typed confirmation field under its caption, and its note.
+    fn draw_confirm_field(&mut self, ctx: &mut PaintCtx<'_>, content: Rect) {
+        let b = self.bands.clone();
         let field = self.confirm_field_rect(content);
-        let focused = self.confirm_input.is_focused();
-        let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        TextRun::new(
-            "CONFIRM THE TARGET DEVICE",
-            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(field.x0, field.y0 - LABEL - m.label_h),
+        let dim = ctx.theme.text_dim;
+        ctx.text_role(
+            &format!("Type {want} to confirm"),
+            TextRole::Label,
+            dim,
+            Point::new(field.x0, field.y0 - b.gaps.tight - b.label_h),
             None,
         );
-        // The field is the toolkit input's face — raised at rest, the active
-        // tint while focused — under the gate's own semantic edge: danger
-        // until the name matches, focus while typing, success once armed.
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            field,
-            radius,
-            if focused {
-                theme.bg_active
-            } else {
-                c.surfaces.raised
-            },
+        self.confirm_input.set_placeholder(&want);
+        self.confirm_input.apply_layout_external(field);
+        self.confirm_input.draw(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &PresenceCtx::empty(),
         );
-        Self::stroke_rr(
-            scene,
-            t,
-            field,
-            radius,
-            if matches {
-                c.semantic.success
-            } else if focused {
-                c.border_focus
-            } else {
-                with_alpha(c.semantic.danger, 160)
-            },
-            if focused || matches { 2.0 } else { 1.0 },
-        );
-        self.confirm_input
-            .set_placeholder(&format!("type “{want}” here"));
-        let (armed_w, _) = tr.measure_weighted("✓ armed", 12.5, None, TextWeight::Bold);
-        let text_right = if matches {
-            field.x1 - SECTION - f64::from(armed_w) - SIBLING
-        } else {
-            field.x1 - SIBLING
-        };
-        self.confirm_input.apply_layout_external(Rect::new(
-            field.x0 + SIBLING,
-            field.y0 + LABEL,
-            text_right,
-            field.y1 - LABEL,
-        ));
-        self.confirm_input
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
+
+        let note_top = self.confirm_note_top(content);
+        let matches = self.confirm_matches();
+        let mut x = field.x0;
         if matches {
-            TextRun::new(
-                "✓ armed",
-                TextStyle::new(12.5).with_weight(TextWeight::Bold),
-                c.semantic.success,
-            )
-            .draw_right_v(scene, tr, field.x1 - SECTION, field.y0, field.height());
+            let side = b.caption_h;
+            Icon::Check.draw(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(x, note_top, x + side, note_top + side),
+                ctx.theme.tokens.colors.semantic.success,
+            );
+            x += side + b.gaps.tight;
         }
-        TextRun::new(self.confirm_note(), TextStyle::new(11.0), c.text_tertiary).draw(
-            scene,
-            tr,
-            Point::new(field.x0, field.y1 + RELATED),
-            None,
+        let tertiary = ctx.theme.text_tertiary;
+        ctx.text_role(
+            self.confirm_note(),
+            TextRole::Caption,
+            tertiary,
+            Point::new(x, note_top),
+            Some((field.x1 - x).max(1.0) as f32),
         );
     }
 
-    // ---- Write ------------------------------------------------------------
+    // ---- Write -------------------------------------------------------------
 
-    fn draw_write_progress(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    fn draw_write_step(&mut self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
         let content = lay.content;
-        let (title, sub) = self.write_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let head = self.step_header_h(content);
-        self.draw_write_ring(scene, tr, theme, t, content, head);
-        self.draw_write_rate_eta(scene, tr, theme, content, head);
-        self.draw_write_phase_bars(scene, tr, theme, t, content, head);
-        self.draw_write_source_target_line(scene, tr, theme, content, head);
-    }
-
-    /// The big overall-progress ring with its percentage and phase caption
-    /// stacked and centred inside it.
-    fn draw_write_ring(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.write;
-        let p = &self.progress;
+        Self::draw_step_title(ctx, content, self.step_title(), content.width());
+        let p = self.progress.clone();
         let writing = p.phase == JobPhase::Writing;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let cyp = content.y0 + m.ring_cy(head);
-        let overall = p.overall();
-        scene.stroke(
-            &Stroke::new(RING_W),
-            t,
-            c.neutral[3],
-            None,
-            &Circle::new(Point::new(cxp, cyp), RING_R),
-        );
-        if overall > 0.0 {
-            let mut arc = BezPath::new();
-            let start = -std::f64::consts::FRAC_PI_2;
-            let sweep = overall * std::f64::consts::TAU;
-            let steps = (sweep.abs() / 0.08).ceil().max(1.0) as usize;
-            arc.move_to((cxp + RING_R * start.cos(), cyp + RING_R * start.sin()));
-            for i in 1..=steps {
-                let a = start + sweep * (i as f64 / steps as f64);
-                arc.line_to((cxp + RING_R * a.cos(), cyp + RING_R * a.sin()));
-            }
-            let ring_c = if writing {
-                c.semantic.info
-            } else {
-                c.accent[6]
-            };
-            scene.stroke(&Stroke::new(RING_W), t, ring_c, None, &arc);
-        }
-        let stack_h = m.pct_h + LABEL + m.small_h;
-        let pct_top = cyp - stack_h / 2.0;
-        TextRun::new(
-            &format!("{:.0}%", overall * 100.0),
-            TextStyle::new(30.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, pct_top);
+        let percent = format!("{:.0}%", p.overall() * 100.0);
         let caption = match (writing, self.action) {
-            (true, Action::Install) => "installing",
-            (true, Action::Flash) => "writing",
-            (false, _) => "verifying",
+            (true, Action::Install) => "Installing",
+            (true, Action::Flash) => "Writing",
+            (false, _) => "Verifying",
         };
-        TextRun::new(
-            caption,
-            TextStyle::new(12.0).with_weight(TextWeight::Medium),
-            c.text_dim,
-        )
-        .draw_center(scene, tr, cxp, pct_top + m.pct_h + LABEL);
-    }
+        ProgressRingFace::new(p.overall())
+            .value(&percent)
+            .caption(caption)
+            .size(ProgressRingSize::Large)
+            .paint(ctx, self.write_ring_rect(content));
 
-    /// The rate + ETA line below the ring, when either is known.
-    fn draw_write_rate_eta(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let p = &self.progress;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let mut meta = String::new();
+        // Rate and time left, when either is known.
+        let mut meta = Vec::new();
         if p.rate_bps > 0 {
-            meta.push_str(&fmt_rate(p.rate_bps));
+            meta.push(fmt_rate(p.rate_bps));
         }
         if let Some(src) = &self.source
             && let Some(eta) = p.eta_secs(src.size)
         {
-            if !meta.is_empty() {
-                meta.push_str("   ·   ");
-            }
-            let _ = write!(meta, "~{} left", fmt_eta(eta));
+            meta.push(format!("about {} left", fmt_eta(eta)));
         }
+        let style = ctx.theme.text(TextRole::Caption).numeric();
+        let dim = ctx.theme.text_dim;
         if !meta.is_empty() {
-            TextRun::new(
-                &meta,
-                TextStyle::new(13.0).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.meta_top(head));
+            Self::text_centered(
+                ctx,
+                &meta.join(", "),
+                &style,
+                dim,
+                content,
+                self.write_meta_top(content),
+            );
         }
-    }
 
-    /// The Write / Verify phase bars: a label line, its bar a `LABEL` below,
-    /// the next pair a `SIBLING` after.
-    fn draw_write_phase_bars(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.write;
-        let p = &self.progress;
-        let writing = p.phase == JobPhase::Writing;
-        let bx0 = content.x0 + REGION;
-        let bx1 = content.x1 - REGION;
-        let mut yy = content.y0 + m.bars_top(head);
-        for (label, frac, active, fill) in [
-            ("Write", p.write_frac, writing, c.semantic.info),
-            ("Verify", p.verify_frac, !writing, c.semantic.success),
-        ] {
-            TextRun::new(
-                label,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                if active { c.text_primary } else { c.text_dim },
-            )
-            .draw(scene, tr, Point::new(bx0, yy), None);
-            TextRun::new(
-                &format!("{:.0}%", frac * 100.0),
-                TextStyle::new(12.0),
-                c.text_dim,
-            )
-            .draw_right(scene, tr, bx1, yy);
-            let bar_top = yy + m.small_h + LABEL;
-            let bar = Rect::new(bx0, bar_top, bx1, bar_top + BAR_H);
-            Self::bar(scene, t, bar, frac, c.neutral[3], fill);
-            yy += m.bar_pitch();
-        }
-    }
-
-    /// The "image → drive" caption below the phase bars.
-    fn draw_write_source_target_line(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            TextRun::new(
-                &format!("{}  →  {}", src.name, tgt.dev_path()),
-                TextStyle::new(12.0),
-                c.text_tertiary,
-            )
-            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.foot_top(head));
-        }
-    }
-
-    // ---- Done -------------------------------------------------------------
-
-    fn draw_write_done(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        ok: bool,
-    ) {
-        let content = lay.content;
-        let install = self.action == Action::Install;
-        if ok {
-            self.draw_write_done_ok_hero(scene, tr, theme, t, content, install);
-        } else {
-            let headline = if install {
-                "Install failed"
+        let b = self.bands.clone();
+        let mut y = self.write_bars_top(content);
+        let label_style = ctx.theme.text(TextRole::Label);
+        for (index, (label, frac, active)) in [
+            ("Write", p.write_frac, writing),
+            ("Verify", p.verify_frac, !writing),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let ink = if active {
+                ctx.theme.text_primary
             } else {
-                "Write failed"
+                ctx.theme.text_dim
             };
+            ctx.text(label, &label_style, ink, Point::new(content.x0, y), None);
+            let pct = format!("{:.0}%", frac * 100.0);
+            let w = f64::from(ctx.text.measure_style(&pct, None, &style).0);
+            let pct_top = y + (b.label_h - b.caption_h) / 2.0;
+            ctx.text(&pct, &style, dim, Point::new(content.x1 - w, pct_top), None);
+            let bar_top = y + b.label_h + b.gaps.related;
+            let bar = Rect::new(content.x0, bar_top, content.x1, bar_top + b.gaps.related);
+            let phase_bar = &mut self.phase_bars[index];
+            phase_bar.set_progress(frac as f32);
+            phase_bar.apply_layout_external(bar);
+            phase_bar.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
+            );
+            y += self.write_bar_pitch();
+        }
+
+        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
+            let line = format!("{} to {}", src.name, tgt.dev_path());
+            let caption = ctx.theme.text(TextRole::Caption);
+            let tertiary = ctx.theme.text_tertiary;
+            Self::text_centered(
+                ctx,
+                &line,
+                &caption,
+                tertiary,
+                content,
+                self.write_foot_top(content),
+            );
+        }
+    }
+
+    /// One line centred on `content`, elided to its width.
+    fn text_centered(
+        ctx: &mut PaintCtx<'_>,
+        text: &str,
+        style: &TextStyle,
+        ink: vello::peniko::Color,
+        content: Rect,
+        top: f64,
+    ) {
+        let shown = ctx
+            .text
+            .elide_to_width_style(text, content.width().max(1.0) as f32, style);
+        let w = f64::from(ctx.text.measure_style(&shown, None, style).0);
+        ctx.text(
+            &shown,
+            style,
+            ink,
+            Point::new(content.center().x - w / 2.0, top),
+            None,
+        );
+    }
+
+    // ---- Done --------------------------------------------------------------
+
+    fn draw_done_step(&self, ctx: &mut PaintCtx<'_>, lay: &Layout) {
+        let content = lay.content;
+        let ok = self.progress.phase == JobPhase::Success;
+        let install = self.action == Action::Install;
+        let colors = &ctx.theme.tokens.colors;
+        let (icon, tone) = if ok {
+            (Icon::Check, colors.semantic.success)
+        } else {
+            (Icon::TriangleAlert, colors.semantic.danger)
+        };
+        icon.draw(ctx.scene, ctx.transform, self.done_icon_rect(content), tone);
+
+        let compact = self.compact_content(content);
+        let headline = if ok {
+            Self::done_ok_copy(install, compact).0
+        } else if install {
+            "The installation failed"
+        } else {
+            "Writing failed"
+        };
+        let large = ctx.theme.text(TextRole::LargeTitle);
+        let primary = ctx.theme.text_primary;
+        Self::text_centered(
+            ctx,
+            headline,
+            &large,
+            primary,
+            content,
+            self.done_headline_top(content),
+        );
+
+        let body = ctx.theme.text(TextRole::Body);
+        let dim = ctx.theme.text_dim;
+        let sub_top = self.done_sub_top(content);
+        if ok {
+            let (_, sub) = Self::done_ok_copy(install, compact);
+            let centred = body.clone().with_align(ParagraphAlign::Center);
+            ctx.text(
+                sub,
+                &centred,
+                dim,
+                Point::new(content.x0, sub_top),
+                Some(content.width() as f32),
+            );
+        } else {
             let reason = self
                 .progress
                 .error
                 .as_deref()
                 .unwrap_or("The drive may be incomplete. Review the plan before trying again.");
-            self.draw_write_done_failed_hero(scene, tr, theme, t, content, (headline, reason));
-        }
-        self.draw_write_done_summary(scene, tr, theme, t, content, ok);
-    }
-
-    /// The success hero's headline and sub-copy, shared by the painter and
-    /// the band measurement (`measure_done`).
-    fn done_ok_copy(install: bool, compact: bool) -> (&'static str, &'static str) {
-        match (install, compact) {
-            (true, false) => (
-                "Tilo is installed",
-                "The disk was written and verified — remove the media and reboot.",
-            ),
-            (true, true) => (
-                "Tilo is installed",
-                "Written and verified. Remove the media and reboot.",
-            ),
-            (false, false) => (
-                "Drive is ready",
-                "The image was written and verified — you can safely remove the drive.",
-            ),
-            (false, true) => (
-                "Drive is ready",
-                "Written and verified. You can safely remove the drive.",
-            ),
-        }
-    }
-
-    /// The success hero: check disc + headline + sub for the completed step.
-    fn draw_write_done_ok_hero(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        install: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let compact = self.compact_content(content);
-        Self::check_disc(
-            scene,
-            t,
-            Point::new(cxp, DoneMetrics::disc_cy(content.y0)),
-            HERO_DISC_R,
-            c.semantic.success,
-            Self::glyph_ink(theme, c.semantic.success),
-        );
-        let (headline, sub) = Self::done_ok_copy(install, compact);
-        TextRun::new(
-            headline,
-            TextStyle::new(26.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
-        TextRun::new(sub, TextStyle::new(14.0), c.text_dim).draw_para_centered(
-            scene,
-            tr,
-            cxp,
-            m.sub_top(content.y0),
-            content.width(),
-        );
-    }
-
-    /// The failure hero: danger disc with an "!", headline + measured detail.
-    fn draw_write_done_failed_hero(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        copy: (&str, &str),
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let cyp = DoneMetrics::disc_cy(content.y0);
-        let compact = self.compact_content(content);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.semantic.danger,
-            None,
-            &Circle::new(Point::new(cxp, cyp), HERO_DISC_R),
-        );
-        TextRun::new(
-            "!",
-            TextStyle::new(44.0).with_weight(TextWeight::Bold),
-            Self::glyph_ink(theme, c.semantic.danger),
-        )
-        .draw_center_v(scene, tr, cxp, cyp - HERO_DISC_R, 2.0 * HERO_DISC_R);
-        TextRun::new(
-            copy.0,
-            TextStyle::new(26.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
-        let max_width =
-            (content.width() - if compact { SECTION } else { 2.0 * HERO }).max(40.0) as f32;
-        let line_h = tr.line(13.5);
-        let sub_top = m.sub_top(content.y0);
-        for (index, line) in Self::failure_detail_lines(tr, copy.1, max_width, 2)
-            .iter()
-            .enumerate()
-        {
-            TextRun::new(line, TextStyle::new(13.5), c.text_dim).draw_center(
-                scene,
-                tr,
-                cxp,
-                sub_top + index as f64 * line_h,
-            );
-        }
-    }
-
-    /// The Image/Drive summary card below the hero, when both are known.
-    fn draw_write_done_summary(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        ok: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let (Some(src), Some(tgt)) = (&self.source, self.target()) else {
-            return;
-        };
-        let compact = self.compact_content(content);
-        let inset = if compact { 0.0 } else { HERO };
-        let top = content.y0 + m.card_top;
-        let card = Rect::new(content.x0 + inset, top, content.x1 - inset, top + m.card_h);
-        surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        let value_x = card.x0 + m.value_x;
-        let (verified_w, _) = tr.measure_weighted("✓ verified", 12.5, None, TextWeight::Bold);
-        let reserve = if ok {
-            f64::from(verified_w) + SIBLING
-        } else {
-            0.0
-        };
-        for (i, (key, value, reserve)) in [
-            ("Image", src.name.clone(), reserve),
-            ("Drive", format!("{} · {}", tgt.model, tgt.dev_path()), 0.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let row_top = card.y0 + SECTION + i as f64 * (m.row_h + SIBLING);
-            let key_top = Self::line_top(tr, key, 12.0, TextWeight::Semibold, row_top, m.row_h);
-            TextRun::new(
-                key,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
-            let value_top = Self::line_top(tr, &value, 13.5, TextWeight::Medium, row_top, m.row_h);
-            TextRun::new(
-                &value,
-                TextStyle::new(13.5).with_weight(TextWeight::Medium),
-                c.text_primary,
-            )
-            .draw(
-                scene,
-                tr,
-                Point::new(value_x, value_top),
-                Some((card.x1 - SECTION - reserve - value_x).max(0.0) as f32),
-            );
-            if ok && i == 0 {
-                TextRun::new(
-                    "✓ verified",
-                    TextStyle::new(12.5).with_weight(TextWeight::Bold),
-                    c.semantic.success,
-                )
-                .draw_right_v(scene, tr, card.x1 - SECTION, row_top, m.row_h);
+            let line_h = self.bands.body_h;
+            for (index, line) in
+                Self::failure_detail_lines(ctx.text, &body, reason, content.width() as f32, 2)
+                    .iter()
+                    .enumerate()
+            {
+                Self::text_centered(
+                    ctx,
+                    line,
+                    &body,
+                    dim,
+                    content,
+                    sub_top + index as f64 * line_h,
+                );
             }
+        }
+
+        let summary = self.summary_rows();
+        if !summary.is_empty() {
+            let rows: Vec<PropertyRow<'_>> = summary
+                .iter()
+                .map(|(label, value)| PropertyRow::new(label, value))
+                .collect();
+            PropertyListFace::new(&rows).paint(ctx, self.done_summary_rect(content));
         }
     }
 }
 
-// =========================================================================
-// Interaction / state mutation
-// =========================================================================
 impl ImagerApp {
     fn select_source(&mut self, state: &mut AutoCommit, src: &Source) {
         let previous = self
@@ -4272,18 +2609,7 @@ impl ImagerApp {
             tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
         );
         self.source = Some(src.clone());
-        self.set_status(
-            state,
-            &format!(
-                "Selected {} — {}",
-                src.name,
-                if self.source_is_official(src) {
-                    "official release verified"
-                } else {
-                    "local image, written as-is"
-                }
-            ),
-        );
+        self.set_status(state, "");
         self.dirty = true;
     }
 
@@ -4343,7 +2669,7 @@ impl ImagerApp {
         self.release_control = Some(job.control);
         self.release_download_index = Some(index);
         self.release_download_progress = None;
-        self.release_download_stage = Some("preparing");
+        self.release_download_stage = Some("Preparing");
         self.dirty = true;
     }
 
@@ -4374,18 +2700,18 @@ impl ImagerApp {
             match event {
                 crate::release::DownloadEvent::Downloading { received, total } => {
                     self.release_download_progress = Some((received, total));
-                    self.release_download_stage = Some("downloading");
+                    self.release_download_stage = Some("Downloading");
                     let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
                     self.set_status(state, &format!("Downloading Tilo installer… {percent}%"));
                 }
                 crate::release::DownloadEvent::Verifying => {
                     self.release_download_progress = None;
-                    self.release_download_stage = Some("verifying");
+                    self.release_download_stage = Some("Verifying");
                     self.set_status(state, "Cryptographically verifying the Tilo installer…");
                 }
                 crate::release::DownloadEvent::Expanding { written, total } => {
                     self.release_download_progress = Some((written, total));
-                    self.release_download_stage = Some("preparing image");
+                    self.release_download_stage = Some("Preparing the image");
                     self.set_status(state, "Preparing the verified Tilo installer image…");
                 }
                 crate::release::DownloadEvent::Finished(result) => {
@@ -4582,7 +2908,7 @@ impl ImagerApp {
             };
         let req = WriteRequest {
             source: src,
-            target: tgt.clone(),
+            target: tgt,
             action: self.action,
             profile: self.profile.clone(),
             handoff_stage: handoff_stage.clone(),
@@ -4605,25 +2931,17 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.set_status(
-                    state,
-                    &format!(
-                        "{} → {} (writing)",
-                        self.source
-                            .as_ref()
-                            .map(|s| s.name.clone())
-                            .unwrap_or_default(),
-                        tgt.dev_path()
-                    ),
-                );
+                self.set_status(state, "");
                 // The write has begun: move onto the live-progress station.
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                return refuse("Confirmation does not match — write refused.".into());
+                return refuse(
+                    "The confirmation does not match the drive name. Nothing was written.".into(),
+                );
             }
             crate::write::JobStart::TooSmall => {
-                return refuse("Image is larger than the drive — write refused.".into());
+                return refuse("The image is larger than the drive. Nothing was written.".into());
             }
             crate::write::JobStart::UnsafeTarget => {
                 return refuse(
@@ -4705,7 +3023,7 @@ impl ImagerApp {
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
                 let msg = if terminal_phase == JobPhase::Success {
-                    format!("Done — {name} {} and verified", self.action.past())
+                    format!("{name} {} and verified", self.action.past())
                 } else {
                     terminal_error.unwrap_or_else(|| {
                         format!(
@@ -4802,11 +3120,14 @@ impl ImagerApp {
                 return false;
             };
             self.apply_drive_inventory(t);
-            let n = self.targets.len();
             let removable = self.removable_count();
             self.set_status(
                 state,
-                &format!("Rescanned — {removable} removable, {n} total"),
+                &match removable {
+                    0 => "No USB drives or SD cards found".to_string(),
+                    1 => "Found 1 drive".to_string(),
+                    count => format!("Found {count} drives"),
+                },
             );
         } else {
             self.set_status(state, "Rescanned drives");
@@ -4851,11 +3172,6 @@ impl ImagerApp {
                 self.confirm_input.set_focus(true);
                 self.customize.clear_focus();
                 self.dirty = true;
-            }
-            Hit::StepJump(s) => {
-                if self.crumb_reachable(s) {
-                    self.goto(state, s);
-                }
             }
             Hit::Back => self.back(state),
             Hit::Next => self.advance(state),
@@ -4954,9 +3270,8 @@ impl Widget for ImagerApp {
         self.dirty = true;
     }
 
-    /// Measure the step heading group with the renderer that will paint it,
-    /// so the first content block starts below the real (scaled, wrapped)
-    /// title and description instead of a fixed 44px band.
+    /// Measure every band with the renderer that will paint it, so each
+    /// block sits on its real (scaled, wrapped) line boxes.
     fn adjust_layout_with_measure(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -4964,39 +3279,22 @@ impl Widget for ImagerApp {
         tr: &mut TextRenderer,
     ) -> bool {
         // Prefer the allocation being solved; before the first solve (or on a
-        // probe without one) fall back to the last applied rect rather than
-        // wrapping the description at zero width.
+        // probe without one) fall back to the last applied rect.
         let width = taffy
             .layout(node)
             .ok()
             .map(|layout| f64::from(layout.size.width))
             .filter(|w| *w > 0.0)
             .unwrap_or(self.rect.width());
-        let content_w = Self::content_width_for(width);
-        let measured = self.measure_step_heading(tr, width);
-        let heading = measured.map(|(_, group)| group);
-        let mut changed = match (self.step_heading_h, heading) {
-            (None, None) => false,
-            (Some(prev), Some(next)) => (prev - next).abs() > 0.5,
-            _ => true,
-        };
-        self.step_heading_h = heading;
-        if let Some((title_h, _)) = measured {
-            changed |= (self.title_h - title_h).abs() > 0.5;
-            self.title_h = title_h;
-        }
-        // Every step's bands, from the renderer that will paint them: one
-        // comparison, so no band can be left out of the change detection.
-        let text_scale = f64::from(tr.text_scale());
-        let bands = self.measure_bands(tr, content_w, text_scale);
-        changed |= bands != self.bands;
+        let theme = self.theme.clone();
+        let bands = self.measure_bands(tr, &theme, width);
+        let mut changed = bands != self.bands;
         self.bands = bands;
-        // The customization panel hangs off the measured heading and measures
-        // its own caption line and Preview button.
-        let probe = Rect::new(0.0, 0.0, content_w, 0.0);
-        let head = self.step_header_h(probe);
-        changed |= self.customize.measure(tr, head);
-        changed |= self.write_setup.measure(tr);
+        // The customization panel hangs off the step title and measures its
+        // own captions and Preview button.
+        let head = self.bands.title_h + self.bands.gaps.section;
+        changed |= self.customize.measure_layout(tr, &theme, head);
+        changed |= self.write_setup.measure_layout(tr, &theme);
         changed
     }
 
@@ -5006,9 +3304,9 @@ impl Widget for ImagerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The heading-to-content gap is the theme's `s3`; cache it here for
-        // the renderer hook, which measures the heading without a `Theme`.
-        self.heading_gap = f64::from(theme.tokens.spacing.s3);
+        // The measuring hook receives no `Theme`; keep the one this pass
+        // lays out with.
+        self.theme = theme.clone();
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see
         // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
@@ -5056,56 +3354,61 @@ impl Widget for ImagerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+        // The framework paints the window ground; the wizard paints only its
+        // composites on it.
         let lay = self.compute_layout();
-        let tr = text_renderer;
-
-        self.draw_header(scene, tr, theme, transform, &lay);
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &lay.viewport_content,
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_stepper(&mut ctx, &lay);
+        // The step body scrolls under a clip that spans the window's width,
+        // so row lifts and focus rings beside the column stay whole.
+        let clip = Rect::new(
+            self.rect.x0,
+            lay.viewport_content.y0,
+            self.rect.x1,
+            lay.viewport_content.y1,
         );
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
         match self.step {
-            Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
-            Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
-            Step::Customize => {
-                self.draw_customize_step(scene, tr, theme, transform, &lay, presence);
-            }
-            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay, presence),
-            Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
-            Step::Done => self.draw_write_done(
-                scene,
-                tr,
-                theme,
-                transform,
-                &lay,
-                self.progress.phase == JobPhase::Success,
-            ),
+            Step::Source => self.draw_source_step(&mut ctx, &lay),
+            Step::Drive => self.draw_drive_step(&mut ctx, &lay),
+            Step::Customize => self.draw_customize_step(&mut ctx, &lay, presence),
+            Step::Confirm => self.draw_confirm_step(&mut ctx, &lay, presence),
+            Step::Write => self.draw_write_step(&mut ctx, &lay),
+            Step::Done => self.draw_done_step(&mut ctx, &lay),
         }
-        scene.pop_layer();
-        self.draw_scrollbar(scene, theme, transform, &lay);
-        self.draw_footer(scene, tr, theme, transform, &lay);
-        if let Some(focused) = self.keyboard_hit
-            && let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == focused)
+        ctx.scene.pop_layer();
+        if self.keyboard_hit == Some(Hit::PickFile)
+            && let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == Hit::PickFile)
         {
-            Self::stroke_rr(
-                scene,
+            paint_focus_ring(
+                ctx.scene,
                 transform,
-                rect.inflate(2.0, 2.0),
-                theme.radius_standard + 2.0,
-                theme.tokens.colors.border_focus,
-                2.0,
+                *rect,
+                f64::from(theme.tokens.radii.tile),
+                theme,
             );
         }
+        self.draw_scrollbar(ctx.scene, theme, transform, &lay);
+        self.draw_footer(&mut ctx, &lay);
+    }
 
+    /// The top layer: an open choice list on Customize and the export sheet.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.step == Step::Customize && self.customizable() {
+            self.customize
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
         if self.export_dialog.is_open() {
-            self.export_dialog.layout_in(self.rect, theme, tr);
             self.export_dialog
-                .draw_detached(scene, transform, tr, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -5193,7 +3496,7 @@ impl Widget for ImagerApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, &lay);
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -5207,7 +3510,7 @@ impl Widget for ImagerApp {
             {
                 use winit::event::MouseScrollDelta;
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.bands.row_h,
                     MouseScrollDelta::PixelDelta(point) => point.y / ctx.scale_factor,
                 };
                 let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
@@ -5676,14 +3979,9 @@ impl ImagerApp {
     }
 
     /// Track the pointer and which drive card (if any) is under it.
-    fn handle_cursor_moved(&mut self, px: f64, py: f64, scale_factor: f64, lay: &Layout) {
+    fn handle_cursor_moved(&mut self, px: f64, py: f64, scale_factor: f64) {
         let p = Point::new(px / scale_factor, py / scale_factor);
         self.last_mouse = p;
-        let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
-            Hit::Target(i) if r.contains(p) => Some(*i),
-            _ => None,
-        });
-        self.hover_target = hover_now;
         // Repaint on move so buttons/cards light up under the pointer.
         self.dirty = true;
     }
@@ -6170,8 +4468,8 @@ mod tests {
 
             let tree = app.accessibility_tree();
             assert_eq!(tree.role, ui::a11y::Role::Window);
-            assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
-            let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
+            assert_eq!(tree.name.as_deref(), Some("Disk Imager"));
+            let heading = accessible_named(&tree, "Choose an image").expect("step heading");
             assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
             let selected = accessible_named(&tree, "Selected image").expect("selected image");
             assert!(
@@ -6181,12 +4479,11 @@ mod tests {
                     .is_some_and(|value| value.contains("Tilo"))
             );
 
+            let stepper = accessible_named(&tree, "Source").expect("stepper");
+            assert_eq!(stepper.role, ui::a11y::Role::ProgressBar);
+            assert_eq!(stepper.value.as_deref(), Some("Step 1 of 6"));
             let mut order = Vec::new();
             accessible_focus_order(&tree, &mut order);
-            assert_eq!(
-                order.first().map(String::as_str),
-                Some("Step 1 of 6: Source")
-            );
             let browse = order
                 .iter()
                 .position(|name| name == "Browse for an image")
@@ -6196,12 +4493,6 @@ mod tests {
                 .position(|name| name == "Continue")
                 .expect("continue in focus order");
             assert!(browse < continue_button);
-            assert!(
-                accessible_named(&tree, "Step 3 of 6: Customize")
-                    .expect("future customize step")
-                    .state
-                    .disabled
-            );
         }
 
         // Phase `hardware_variants_have_distinct_semantic_selection_and_review_labels`.
@@ -6418,68 +4709,31 @@ mod tests {
         }
     }
 
-    /// Step stations and headings at compact and wide layouts.
+    /// The stepper, the step body and the footer at compact and wide layouts.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn step_rail_keeps_six_stations_inside_the_viewport() {
-        // Phase `layout_has_six_step_stations`.
-        {
+    fn stepper_body_and_footer_stay_inside_the_viewport() {
+        // Phase `the_stepper_sits_in_the_content_column_at_every_width`.
+        for width in [1280.0, 800.0, 320.0] {
             let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.rect = Rect::new(0.0, 0.0, width, 640.0);
             let lay = app.compute_layout();
-            assert_eq!(lay.crumbs.len(), 6);
-            assert!(!lay.compact_crumbs);
-        }
-
-        // Phase `compact_layout_keeps_every_step_station_inside_the_viewport`.
-        {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-            let lay = app.compute_layout();
-
-            assert!(lay.compact_crumbs);
-            assert_eq!(lay.crumbs.len(), Step::all().len());
-            // A station is a pointer target (HIG §9.6): the token is the floor,
-            // not the layout's own constant.
-            let target = f64::from(Metrics::BASE.min_pointer_target);
-            assert!(lay.crumbs.iter().all(|(rect, _)| {
-                rect.x0 >= app.rect.x0
-                    && rect.x1 <= app.rect.x1
-                    && rect.width() >= 40.0
-                    && rect.height() >= target
-            }));
-            assert_eq!(
-                lay.crumbs.first().map(|(_, step)| *step),
-                Some(Step::Source)
+            assert!(lay.stepper.x0 >= app.rect.x0 && lay.stepper.x1 <= app.rect.x1);
+            assert!(lay.stepper.height() > 0.0);
+            assert!(
+                lay.viewport_content.y0 >= lay.stepper.y1,
+                "the body starts under the stepper at width {width}"
             );
-            assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
+            assert!(lay.content.width() <= READABLE_WIDTH + 1e-6);
         }
 
-        // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
-            let lay = app.compute_layout();
-
-            for (rect, step) in &lay.crumbs {
-                if app.crumb_reachable(*step) {
-                    assert!(lay.hits.iter().any(|(hit_rect, hit)| {
-                        hit_rect == rect
-                            && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
-                    }));
-                }
-            }
-        }
-
-        // Phase `step_content_starts_below_the_measured_heading_group`.
-        // The Source drop zone starts below the measured heading group plus the
-        // heading-to-content gap, at 1× and at 2×, and the Confirm review card
-        // follows the same rule; the 1× floors the compact test pins still hold.
+        // Phase `step_content_starts_below_the_measured_title`.
+        // The Image drop zone starts below the measured title line plus the
+        // title-to-content gap, at 1× and at 2×, and the Confirm review
+        // follows the same rule.
         {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
@@ -6496,69 +4750,84 @@ mod tests {
                     .unwrap();
                 browse.y0 - lay.content.y0
             };
-            let unmeasured = browse_top(&app);
-            assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
-
-            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-            let (title, sub) = app.source_heading();
-            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let title = f64::from(
+                tr.measure_style("Ag", None, &app.theme.text(TextRole::Title))
+                    .1,
+            );
             let at_1x = browse_top(&app);
             assert!(
-                (at_1x - needed).abs() < 1e-6,
-                "drop zone starts after the measured heading"
-            );
-            assert!(
-                at_1x > unmeasured,
-                "the measured group needs more than the 1x floor"
+                (at_1x - (title + app.bands.gaps.section)).abs() < 1e-6,
+                "drop zone starts after the measured title"
             );
 
-            tr.set_text_scale(2.0);
+            app.theme = Theme::dark().with_text_scale(2.0);
             assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
             let at_2x = browse_top(&app);
             assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
 
+            app.theme = Theme::dark();
             app.goto(&mut doc, Step::Confirm);
-            tr.set_text_scale(1.0);
             app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-            let (title, sub) = app.confirm_heading();
-            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
             let lay = app.compute_layout();
-            assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
-            // The scroll extent grows by the same amount, so the bottom-anchored
-            // confirmation field cannot ride up into the review card.
+            assert!(
+                (app.confirm_review_rect(lay.content).y0 - app.body_top(lay.content)).abs() < 1e-6
+            );
+            // The scroll extent covers the field and its note, so the
+            // confirmation field cannot ride up into the review.
             let extent = app.content_extent(app.content_viewport_rect());
             let confirm_field = lay
                 .hits
                 .iter()
                 .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
                 .unwrap();
-            let card_bottom = app.confirm_card_rect(lay.content).y1;
             assert!(
-                lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
-                "the extent covers the field and its note"
+                lay.content.y0 + extent >= app.confirm_note_top(lay.content) + app.bands.caption_h
             );
-            assert!(
-                confirm_field.y0 >= card_bottom + SIBLING,
-                "field stays below the review card"
-            );
+            assert!(confirm_field.y0 >= app.confirm_banner_rect(lay.content).y1);
+        }
+
+        // Phase `compact_footer_actions_share_the_column_without_touching`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+            for step in [Step::Drive, Step::Customize, Step::Confirm] {
+                app.goto(&mut doc, step);
+                let lay = app.compute_layout();
+                let back = lay.back.unwrap();
+                let primary = lay.primary.unwrap();
+                assert!(back.x0 >= lay.content.x0);
+                assert!(primary.x1 <= lay.content.x1);
+                assert!(back.x1 + app.bands.gaps.sibling <= primary.x0 + 1e-6);
+                assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+            }
+        }
+
+        // Phase `wide_footer_actions_are_as_wide_as_their_labels`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.goto(&mut doc, Step::Drive);
+            let lay = app.compute_layout();
+            let back = lay.back.unwrap();
+            let primary = lay.primary.unwrap();
+            assert!((back.width() - app.bands.back_w).abs() < 1e-6);
+            assert!((primary.width() - app.bands.primary_w).abs() < 1e-6);
+            assert!((back.height() - app.bands.control_h).abs() < 1e-6);
         }
     }
 
-    /// Body blocks, banners, footers, scrolling and failure detail layout.
+    /// Body blocks, footers, scrolling and failure detail layout.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn step_body_and_footer_reflow_without_overlap() {
-        // Phase `source_blocks_follow_the_text_scale_without_overlapping`.
-        // The Source blocks keep their 1× bands exactly and grow with the type at
-        // 2×: every hit rect is the measured band, consecutive rows never
-        // overlap, and the scroll extent covers the taller content.
+        // Phase `image_blocks_follow_the_text_scale_without_overlapping`.
+        // Every hit rect is a measured band, consecutive blocks never
+        // overlap, the selected release is not shown twice and the scroll
+        // extent covers the taller content.
         {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
@@ -6566,137 +4835,63 @@ mod tests {
             let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
-            let rects = |app: &ImagerApp| {
+            let blocks = |app: &ImagerApp| {
                 let lay = app.compute_layout();
-                let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
-                    let mut v: Vec<Rect> = lay
-                        .hits
-                        .iter()
-                        .filter_map(|(r, h)| f(h).then_some(*r))
-                        .collect();
-                    v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-                    v
-                };
-                (
-                    pick(&|h| matches!(h, Hit::PickFile))[0],
-                    pick(&|h| matches!(h, Hit::Release(_))),
-                    pick(&|h| matches!(h, Hit::Recent(_))),
-                )
+                let mut v: Vec<(Rect, Hit)> = lay
+                    .hits
+                    .iter()
+                    .filter(|(_, h)| matches!(h, Hit::PickFile | Hit::Release(_) | Hit::Recent(_)))
+                    .copied()
+                    .collect();
+                v.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
+                v
             };
-
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-            // Every band is its measured line boxes plus rhythm steps — a row is
-            // two lines a `LABEL` apart under `RELATED` padding — the hit rects
-            // are exactly the bands the painters fill, and no two neighbouring
-            // blocks come closer than a `LABEL` step at 1×.
-            let m = app.bands.source.clone();
-            let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
-            assert!(
-                (m.release_row_h - row).abs() < 1e-6,
-                "release row is measured"
-            );
-            // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
-            // every measured band equals its unmeasured estimate: the probe frame
-            // and the painted frame place the blocks identically.
-            let floors = SourceMetrics::default();
-            for (got, want) in [
-                (m.dropzone_h, floors.dropzone_h),
-                (m.card_h, floors.card_h),
-                (m.card_h_compact, floors.card_h_compact),
-                (m.release_row_h, floors.release_row_h),
-                (m.recent_row_h, floors.recent_row_h),
-                (m.section_h, floors.section_h),
-                (m.zero_h, floors.zero_h),
-            ] {
+            for scale in [1.0, 2.0] {
+                app.theme = Theme::dark().with_text_scale(scale);
+                app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+                let all = blocks(&app);
+                assert_eq!(
+                    all.iter()
+                        .filter(|(_, h)| matches!(h, Hit::Release(_)))
+                        .count(),
+                    2
+                );
+                // The recent list leaves out the release that is listed
+                // above it.
+                assert_eq!(
+                    all.iter()
+                        .filter(|(_, h)| matches!(h, Hit::Recent(_)))
+                        .count(),
+                    2
+                );
+                let target = f64::from(app.theme.tokens.metrics.min_pointer_target);
+                for (rect, hit) in &all {
+                    if !matches!(hit, Hit::PickFile) {
+                        assert!((rect.height() - app.bands.row_h).abs() < 1e-6);
+                    }
+                    assert!(rect.height() >= target);
+                }
+                for pair in all.windows(2) {
+                    assert!(
+                        pair[1].0.y0 >= pair[0].0.y1 - 1e-6,
+                        "Image blocks never overlap at {scale}×"
+                    );
+                }
+                let viewport = app.content_viewport_rect();
+                let last = all.last().unwrap().0;
+                let lay = app.compute_layout();
                 assert!(
-                    (got - want).abs() < 1e-6,
-                    "1× band {got} equals its estimate {want}"
+                    lay.content.y0 + app.content_extent(viewport)
+                        >= last.y1 + app.bands.gaps.section - 1e-6
                 );
             }
-            let (browse, releases, recents) = rects(&app);
-            // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
-            // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
-            // 52.5 px, a recent row 50 px — and every block at least a pointer
-            // target tall.
-            let target = f64::from(Metrics::BASE.min_pointer_target);
-            assert!(
-                (browse.height() - 91.625).abs() < 1e-6,
-                "{}",
-                browse.height()
-            );
-            assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
-            assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
-            assert!(
-                releases
-                    .iter()
-                    .chain(&recents)
-                    .all(|r| r.height() >= target)
-            );
-            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-            assert!(
-                releases
-                    .iter()
-                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-            );
-            assert!(
-                recents
-                    .iter()
-                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-            );
-            assert!(!releases.is_empty() && !recents.is_empty());
-            let mut blocks: Vec<Rect> = std::iter::once(browse)
-                .chain(releases.iter().copied())
-                .chain(recents.iter().copied())
-                .collect();
-            blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-            for pair in blocks.windows(2) {
-                assert!(
-                    pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
-                    "Source blocks keep a token gap at 1× ({} → {})",
-                    pair[0].y1,
-                    pair[1].y0
-                );
-            }
-
-            tr.set_text_scale(2.0);
-            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-            let m = app.bands.source.clone();
-            assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
-            let (browse, releases, recents) = rects(&app);
-            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-            assert!(
-                releases
-                    .iter()
-                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-            );
-            assert!(
-                recents
-                    .iter()
-                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-            );
-            let mut all: Vec<Rect> = std::iter::once(browse)
-                .chain(releases.iter().copied())
-                .chain(recents.iter().copied())
-                .collect();
-            all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-            for pair in all.windows(2) {
-                assert!(
-                    pair[1].y0 >= pair[0].y1,
-                    "Source blocks never overlap at 2×"
-                );
-            }
-            // The content extent covers the last block plus the bottom margin.
-            let viewport = app.content_viewport_rect();
-            let last = all.last().unwrap();
-            let lay = app.compute_layout();
-            assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
         }
 
-        // Phase `confirm_field_follows_the_danger_banner`.
+        // Phase `confirm_field_follows_the_warning`.
         // The Confirm blocks stack on their measured bands at both content
-        // widths: the banner is the card's sibling, the field follows the banner
-        // a group later under its caption, rows never overlap, and the hit rect
-        // is the painted rect — the layout and the painter read one function.
+        // widths: the warning follows the review, the field follows the
+        // warning and the write-setup form under its caption, and the hit
+        // rect is the painted rect.
         {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
@@ -6713,55 +4908,32 @@ mod tests {
                     .iter()
                     .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
                     .unwrap();
-                let m = app.bands.confirm.clone();
-                let card = app.confirm_card_rect(lay.content);
+                let review = app.confirm_review_rect(lay.content);
                 let banner = app.confirm_banner_rect(lay.content);
-                assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
+                let g = app.bands.gaps;
+                assert!((banner.y0 - (review.y1 + g.group)).abs() < 1e-6);
+                let setup = app
+                    .write_setup
+                    .extent(lay.content, app.write_setup_top(lay.content));
                 assert!(
-                    (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
-                    "banner is the card's sibling at width {width}"
+                    (field.y0 - (banner.y1 + g.group + setup + app.bands.label_h + g.tight)).abs()
+                        < 1e-6,
+                    "field follows the warning and write-setup form at width {width}"
                 );
-                let setup = if app.offers_write_setup() {
-                    app.write_setup
-                        .extent(lay.content, app.write_setup_top(lay.content))
-                } else {
-                    0.0
-                };
-                assert!(
-                    (field.y0 - (banner.y1 + GROUP + setup + m.label_h + LABEL)).abs() < 1e-6,
-                    "field follows the banner and write-setup form under its caption at width {width}"
-                );
-                assert!((field.height() - CONTROL_H).abs() < 1e-6);
+                assert!((field.height() - app.bands.control_h).abs() < 1e-6);
                 assert_eq!(field, app.confirm_field_rect(lay.content));
-                // Measured rows: one per review line, each at least a key line
-                // and a `SIBLING` apart, the card wrapping the last with padding.
-                assert_eq!(app.confirm_rows().len(), m.row_top.len());
-                assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
-                for pair in m.row_top.windows(2) {
-                    assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
-                }
-                assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
-                // It still fits inside the step's extent (no scroll needed for
-                // the field itself on a tall window).
-                let extent = app.content_extent(app.content_viewport_rect());
-                assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
+                assert_eq!(
+                    app.review_rows().len(),
+                    6,
+                    "image, size, drive, device, space, setup"
+                );
             }
         }
 
-        // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
+        // Phase `compact_drive_controls_never_touch`.
         {
             let (mut app, mut doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-            let source = app.compute_layout();
-            let browse = source
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-                .unwrap();
-            assert!(browse.y0 >= source.content.y0 + 64.0);
-            assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
-
             app.goto(&mut doc, Step::Drive);
             let drive = app.compute_layout();
             let rescan = drive
@@ -6774,25 +4946,8 @@ mod tests {
                 .iter()
                 .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
                 .unwrap();
-            assert!(rescan.y0 >= drive.content.y0 + 52.0);
-            assert!(target.y0 >= rescan.y1 + 12.0);
-        }
-
-        // Phase `compact_footer_actions_never_overlap`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-            for step in [Step::Drive, Step::Customize, Step::Confirm] {
-                app.goto(&mut doc, step);
-                let lay = app.compute_layout();
-                let back = lay.back.unwrap();
-                let primary = lay.primary.unwrap();
-                assert!(back.x0 >= lay.content.x0);
-                assert!(primary.x1 <= lay.content.x1);
-                assert!(back.x1 + 12.0 <= primary.x0);
-                assert!(back.width() >= 130.0 && primary.width() >= 130.0);
-            }
+            assert!(rescan.x1 <= drive.content.x1 + 1e-6);
+            assert!(target.y0 >= rescan.y1);
         }
 
         // Phase `short_viewport_scrolls_body_without_moving_sticky_footer`.
@@ -6816,9 +4971,11 @@ mod tests {
         // Phase `failure_detail_is_measured_bounded_and_visible_at_compact_width`.
         {
             let mut renderer = TextRenderer::new();
+            let style = Theme::dark().text(TextRole::Body);
             let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
             let max_width = 280.0;
-            let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+            let lines =
+                ImagerApp::failure_detail_lines(&mut renderer, &style, detail, max_width, 2);
 
             assert_eq!(
                 lines.len(),
@@ -6826,12 +4983,9 @@ mod tests {
                 "compact failure copy uses both visible lines"
             );
             assert!(
-                lines.iter().all(|line| {
-                    renderer
-                        .measure_weighted(line, 13.5, None, TextWeight::Regular)
-                        .0
-                        <= max_width
-                }),
+                lines
+                    .iter()
+                    .all(|line| renderer.measure_style(line, None, &style).0 <= max_width),
                 "no failure-detail line paints beyond its content bounds"
             );
             assert!(
@@ -7022,7 +5176,7 @@ mod tests {
             app.release_control = Some(crate::release::DownloadControl::default());
             app.release_download_index = Some(0);
             app.release_download_progress = Some((25, 100));
-            app.release_download_stage = Some("downloading");
+            app.release_download_stage = Some("Downloading");
 
             let layout = app.compute_layout();
             assert!(

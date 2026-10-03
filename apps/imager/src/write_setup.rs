@@ -6,27 +6,25 @@
 //! profile only records the network name, device label, and whether to enroll.
 
 use automerge::AutoCommit;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::Metrics;
-use ui::widget::{TextInput, Toggle, ToggleFace, Widget};
+use ui::tokens::TextRole;
+use ui::widget::{ButtonFace, ControlSize, TextInput, TextInputKind, Toggle, ToggleFace, Widget};
 
+use crate::Gaps;
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
 use crate::model::InstallProfile;
-use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
-const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
-const TOGGLE_H: f64 = Metrics::BASE.bar_control_height as f64;
-const TOGGLE_W: f64 = Metrics::BASE.bar_control_height as f64 + Metrics::BASE.icon_lg as f64;
+/// The section's title.
+const SECTION_TITLE: &str = "Network and identity";
+/// What enrolling does, beside its switch.
+const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on this computer.";
 
 /// One control on the write-setup panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +48,7 @@ impl SetupField {
             Self::WifiSsid => "Wi-Fi network",
             Self::WifiPsk => "Wi-Fi password",
             Self::DeviceLabel => "Device name",
-            Self::Enroll => "Enroll this machine's identity",
+            Self::Enroll => "Enroll as a new device",
         }
     }
 
@@ -99,7 +97,32 @@ pub struct WriteSetupPanel {
     device_label: TextInput,
     focused: Option<SetupField>,
     last_mouse: Point,
+    metrics: SetupMetrics,
+}
+
+/// What the host measures for the panel from its renderer and theme.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SetupMetrics {
+    section_h: f64,
     label_h: f64,
+    field_h: f64,
+    /// The switch: a small control's height, a pointer target wide.
+    toggle: (f64, f64),
+    gaps: Gaps,
+}
+
+impl Default for SetupMetrics {
+    /// The unmeasured estimate on the unscaled scale.
+    fn default() -> Self {
+        let gaps = Gaps::default();
+        Self {
+            section_h: gaps.group,
+            label_h: gaps.section,
+            field_h: gaps.region,
+            toggle: (gaps.group + gaps.group, gaps.group + gaps.tight),
+            gaps,
+        }
+    }
 }
 
 impl Default for WriteSetupPanel {
@@ -110,20 +133,13 @@ impl Default for WriteSetupPanel {
 
 impl WriteSetupPanel {
     pub fn new() -> Self {
-        let field = || {
-            let mut input = TextInput::local();
-            input.set_plain_chrome(true);
-            input
-        };
-        let mut wifi_psk = field();
-        wifi_psk = wifi_psk.with_secret(true);
         Self {
-            wifi_ssid: field(),
-            wifi_psk,
-            device_label: field(),
+            wifi_ssid: TextInput::local(),
+            wifi_psk: TextInput::local().with_secret(true),
+            device_label: TextInput::local().with_kind(TextInputKind::Name),
             focused: None,
             last_mouse: Point::ZERO,
-            label_h: 14.0,
+            metrics: SetupMetrics::default(),
         }
     }
 
@@ -135,16 +151,29 @@ impl WriteSetupPanel {
         self.focused.is_some()
     }
 
-    pub fn measure(&mut self, tr: &mut TextRenderer) -> bool {
-        let next = f64::from(tr.measure("Hg", 11.0, None).1);
-        let changed = (next - self.label_h).abs() > 0.5;
-        self.label_h = next;
+    pub fn measure_layout(&mut self, tr: &mut TextRenderer, theme: &Theme) -> bool {
+        let line = |tr: &mut TextRenderer, role: TextRole| {
+            f64::from(tr.measure_style("Ag", None, &theme.text(role)).1)
+        };
+        let metrics = &theme.tokens.metrics;
+        let next = SetupMetrics {
+            section_h: line(tr, TextRole::Subheading),
+            label_h: line(tr, TextRole::Label),
+            field_h: ButtonFace::height(ControlSize::Regular, theme),
+            toggle: (
+                f64::from(metrics.bar_control_height + metrics.icon_lg),
+                f64::from(metrics.bar_control_height),
+            ),
+            gaps: Gaps::of(&theme.tokens.spacing),
+        };
+        let changed = next != self.metrics;
+        self.metrics = next;
         changed
     }
 
     /// Height occupied below `top` inside `content`.
     pub fn extent(&self, content: Rect, top: f64) -> f64 {
-        self.geom(content, top).enroll.y1 - top + GROUP
+        self.geom(content, top).enroll.y1 - top + self.metrics.gaps.group
     }
 
     pub fn sync(&mut self, profile: &InstallProfile, wifi_psk: &str) {
@@ -164,22 +193,26 @@ impl WriteSetupPanel {
     fn geom(&self, content: Rect, top: f64) -> SetupGeom {
         let x0 = content.x0;
         let x1 = content.x1;
-        let caption = self.label_h + LABEL;
-        let row = FIELD_H + SECTION + caption;
+        let m = &self.metrics;
+        let g = m.gaps;
+        let fh = m.field_h;
+        let caption = m.label_h + g.tight;
+        let row = fh + g.section + caption;
         let section_y = top;
-        let ssid_y = section_y + self.label_h + RELATED + caption;
-        let wifi_ssid = Rect::new(x0, ssid_y, x1, ssid_y + FIELD_H);
+        let ssid_y = section_y + m.section_h + g.related + caption;
+        let wifi_ssid = Rect::new(x0, ssid_y, x1, ssid_y + fh);
         let psk_y = ssid_y + row;
-        let wifi_psk = Rect::new(x0, psk_y, x1, psk_y + FIELD_H);
+        let wifi_psk = Rect::new(x0, psk_y, x1, psk_y + fh);
         let label_y = psk_y + row;
-        let device_label = Rect::new(x0, label_y, x1, label_y + FIELD_H);
+        let device_label = Rect::new(x0, label_y, x1, label_y + fh);
         let enroll_y = label_y + row;
-        let enroll = Rect::new(x0, enroll_y, x1, enroll_y + FIELD_H);
+        let enroll = Rect::new(x0, enroll_y, x1, enroll_y + fh);
+        let (toggle_w, toggle_h) = m.toggle;
         let enroll_toggle = Rect::new(
-            x1 - TOGGLE_W,
-            enroll_y + (FIELD_H - TOGGLE_H) / 2.0,
+            x1 - toggle_w,
+            enroll_y + (fh - toggle_h) / 2.0,
             x1,
-            enroll_y + (FIELD_H - TOGGLE_H) / 2.0 + TOGGLE_H,
+            enroll_y + (fh - toggle_h) / 2.0 + toggle_h,
         );
         SetupGeom {
             section_y,
@@ -238,47 +271,6 @@ impl WriteSetupPanel {
         }
     }
 
-    fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r, radius),
-        );
-    }
-
-    fn stroke_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        scene.stroke(
-            &Stroke::new(w),
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
-        );
-    }
-
-    fn txt(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        s: &str,
-        size: f32,
-        color: Color,
-        x: f64,
-        top: f64,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            Affine::translate((x, top)),
-            None,
-            weight,
-        );
-    }
-
     /// Draw the panel starting at `top` inside `content`.
     pub fn draw(
         &mut self,
@@ -289,115 +281,66 @@ impl WriteSetupPanel {
         profile: &InstallProfile,
     ) {
         let g = self.geom(content, top);
-        let c = &ctx.theme.tokens.colors;
-        Self::txt(
-            ctx.text,
-            ctx.scene,
-            "ON THIS WRITE",
-            11.0,
-            c.text_dim,
-            content.x0,
-            g.section_y,
-            TextWeight::Semibold,
+        let ink = ctx.theme.text_primary;
+        ctx.text_role(
+            SECTION_TITLE,
+            TextRole::Subheading,
+            ink,
+            Point::new(content.x0, g.section_y),
+            None,
         );
         for field in [
             SetupField::WifiSsid,
             SetupField::WifiPsk,
             SetupField::DeviceLabel,
         ] {
-            self.draw_text_field(
-                ctx.scene,
-                ctx.text,
-                ctx.theme,
-                ctx.transform,
-                presence,
-                field,
-                g.field(field),
-            );
+            let r = g.field(field);
+            self.draw_caption(ctx, field.label(), r);
+            if let Some(input) = self.input(field) {
+                input.apply_layout_external(r);
+                Widget::draw(
+                    input,
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    ctx.theme,
+                    presence,
+                );
+            }
         }
-        self.draw_enroll(
-            ctx.scene,
-            ctx.text,
-            ctx.theme,
-            ctx.transform,
-            &g,
-            profile.enroll_local_identity,
+        self.draw_enroll(ctx, &g, profile.enroll_local_identity);
+    }
+
+    /// A field's caption on its own line box a `tight` step above it.
+    fn draw_caption(&self, ctx: &mut PaintCtx<'_>, label: &str, field: Rect) {
+        let m = &self.metrics;
+        let dim = ctx.theme.text_dim;
+        ctx.text_role(
+            label,
+            TextRole::Label,
+            dim,
+            Point::new(field.x0, field.y0 - m.gaps.tight - m.label_h),
+            None,
         );
     }
 
-    fn draw_text_field(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        presence: &PresenceCtx,
-        field: SetupField,
-        r: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let label_top = r.y0 - LABEL - self.label_h;
-        Self::txt(
-            tr,
-            scene,
-            field.label(),
-            11.0,
-            c.text_dim,
-            r.x0,
-            label_top,
-            TextWeight::Semibold,
-        );
-        let focused = self.focused == Some(field);
-        let radius = theme.radius_standard;
-        if focused {
-            Self::fill_rr(scene, t, r, radius, theme.bg_active);
-            Self::stroke_rr(scene, t, r, radius, c.border_focus, 2.0);
-        } else {
-            surface::card(scene, t, r, radius, c.surfaces.raised);
-        }
-        let inner = Rect::new(r.x0 + SIBLING, r.y0, r.x1 - SIBLING, r.y1);
-        if let Some(input) = self.input(field) {
-            input.apply_layout_external(inner);
-            Widget::draw(input, scene, t, tr, theme, presence);
-        }
-    }
-
-    fn draw_enroll(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        g: &SetupGeom,
-        on: bool,
-    ) {
-        let c = &theme.tokens.colors;
+    fn draw_enroll(&self, ctx: &mut PaintCtx<'_>, g: &SetupGeom, on: bool) {
         let r = g.enroll;
-        let label_top = r.y0 - LABEL - self.label_h;
-        Self::txt(
-            tr,
-            scene,
-            SetupField::Enroll.label(),
-            11.0,
-            c.text_dim,
+        self.draw_caption(ctx, SetupField::Enroll.label(), r);
+        let room = (g.enroll_toggle.x0 - self.metrics.gaps.section - r.x0).max(1.0);
+        let dim = ctx.theme.text_dim;
+        ctx.text_role_in_band(
+            ENROLL_NOTE,
+            TextRole::Caption,
+            dim,
             r.x0,
-            label_top,
-            TextWeight::Semibold,
-        );
-        Self::txt(
-            tr,
-            scene,
-            "Certify a new device; the root secret stays on this machine.",
-            11.0,
-            c.text_dim,
-            r.x0,
-            r.y0 + (FIELD_H - self.label_h) / 2.0,
-            TextWeight::Regular,
+            r,
+            Some(room as f32),
         );
         Toggle::paint(
-            scene,
-            t,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
             &ToggleFace::new(g.enroll_toggle, on)
                 .hovered(g.enroll_toggle.contains(self.last_mouse))
                 .focused(self.focused == Some(SetupField::Enroll)),
@@ -422,12 +365,7 @@ impl WriteSetupPanel {
                 if let Some(field) = self.focused
                     && let Some(input) = self.input(field)
                 {
-                    let inner = Rect::new(
-                        g.field(field).x0 + SIBLING,
-                        g.field(field).y0,
-                        g.field(field).x1 - SIBLING,
-                        g.field(field).y1,
-                    );
+                    let inner = g.field(field);
                     input.apply_layout_external(inner);
                     let (mut handled, mut focus_target) = (false, None);
                     input.handle_event(
@@ -542,7 +480,7 @@ impl WriteSetupPanel {
             };
         }
         let rect = g.field(field);
-        let inner = Rect::new(rect.x0 + SIBLING, rect.y0, rect.x1 - SIBLING, rect.y1);
+        let inner = rect;
         let Some(input) = self.input(field) else {
             return SetupResponse::default();
         };
@@ -588,7 +526,7 @@ impl WriteSetupPanel {
         let Some(input) = self.input(field) else {
             return;
         };
-        let inner = Rect::new(rect.x0 + SIBLING, rect.y0, rect.x1 - SIBLING, rect.y1);
+        let inner = rect;
         input.set_focus(true);
         input.apply_layout_external(inner);
         let (mut handled, mut focus_target) = (false, None);
@@ -637,7 +575,7 @@ impl WriteSetupPanel {
         nodes.push(
             AccessNode::new(Role::Switch)
                 .with_name(SetupField::Enroll.label())
-                .with_description("Certify a new device; the root secret stays on this machine.")
+                .with_description(ENROLL_NOTE)
                 .with_state(AccessState {
                     focused: self.focused == Some(SetupField::Enroll),
                     focusable: true,
