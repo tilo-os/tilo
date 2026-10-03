@@ -6,6 +6,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
+use ui::widget::EditableLabel;
 
 use super::icon_button;
 use crate::model::Artwork;
@@ -20,16 +21,26 @@ const READOUT: f32 = 52.0; // "6400%" in the caption face: a text width, not spa
 
 /// The header.
 pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    let title = cx
-        .input(
-            |art: &Artwork| art.title.clone(),
-            ArtworkResource::SET_TITLE,
-        )
-        .with_plain_chrome()
-        .with_font_family(FontChoice::Serif)
-        .with_font_size(17.0)
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-artwork-title"));
+    // The title reads as a title until it is clicked; the edit lands as
+    // one step when Enter or a click away ends it, not one per letter.
+    let titled = cx.value(|art: &Artwork| art.title.clone());
+    let title = cx.switch(&titled, |cx, title| {
+        Box::new(
+            cx.actions().bind(
+                EditableLabel::new(title)
+                    .edits_on_click()
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
+                    .with_font_family(FontChoice::Serif)
+                    .with_font_size(17.0)
+                    .with_id("canvas-title")
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-artwork-title",
+                    ))
+                    .filling(),
+                ArtworkResource::SET_TITLE,
+            ),
+        ) as Element
+    });
     let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
         Row::new()
@@ -44,7 +55,7 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_no_padding()
                     .with_flex_grow()
                     .with_min_width(TITLE)
-                    .with_child(Box::new(title)),
+                    .with_child(title),
             ))
             .push(Box::new(icon_button(
                 cx,
