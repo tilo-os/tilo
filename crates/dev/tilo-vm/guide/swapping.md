@@ -71,12 +71,20 @@ starts.
 
 ## CI builds (`--from sha:` / `--from ci:`)
 
-CI publishes `registry.tilo.so/tilo/tilo:main-<sha7>` for main commits and
-`:<version>` for releases. `sha:<commit>` means `ci:main-<sha7>`. The
-component's manifest `files` are copied out of that image into a layer with
-`authority = "ci"`. The VM pulls it when its image has podman; otherwise this
-host does (needs podman here). Tilo images on `registry.tilo.so` are public,
-so neither pull needs a login.
+`sha:<commit>` means `ci:main-<sha7>`. The component's manifest `files` are
+copied out of CI's dev image of that build,
+`registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci` (`pr-<n>-<sha7>-ci` for pull
+requests), the image `vm upgrade --from sha:<commit>` moves a VM onto: the CI OS
+image's binaries with the dev-overrides rebuilds (the shell) on top, so
+`control` and `shot` work. Each tag is one index over the architectures that
+built, and the copy is for the VM's (or device's) own architecture, into a
+layer with `authority = "ci"`. The VM pulls it when its image has podman;
+otherwise this host does (needs podman here). Tilo images on
+`registry.tilo.so` are public, so neither pull needs a login. Whether a
+commit built your architecture:
+`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`
+lists the platforms; the aarch64 lane builds the newest main commit only, so
+an older one may lack arm64.
 
 ## Apps (`app:<dir>`)
 

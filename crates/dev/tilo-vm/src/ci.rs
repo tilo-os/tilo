@@ -1,10 +1,15 @@
 //! `swap --from sha:<commit>` and `--from ci:<tag>`: take a component's
-//! files out of the published CI image `registry.tilo.so/tilo/tilo:<tag>`.
+//! files out of CI's dev image of that build,
+//! `registry.tilo.so/tilo/tilo-vm:<tag>-ci`, the image `vm upgrade --from
+//! sha:` moves a VM onto. It holds the CI OS image's binaries with the
+//! dev-overrides rebuilds (the shell) on top, and dev images accept it
+//! (os/dev-image's container policy rejects the bare `tilo-ci` OS image).
 //!
-//! CI tags main commits `main-<sha7>` (`build-image.yml`, docker
-//! metadata-action `type=sha,prefix=main-`) and releases `<version>`.
-//! The pull happens inside the VM when its image has podman; otherwise on
-//! this host with podman, and the layer is uploaded.
+//! CI tags main commits `main-<sha7>` and pull requests `pr-<n>-<sha7>`
+//! (`build-image.yml`), each an index of the architectures that built, so a
+//! pull takes the one the VM or device runs. The pull happens inside the VM
+//! when its image has podman; otherwise on this host with podman, for the
+//! VM's architecture, and the layer is uploaded.
 
 use std::path::Path;
 
@@ -12,7 +17,7 @@ use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-pub const IMAGE: &str = "registry.tilo.so/tilo/tilo";
+pub const IMAGE: &str = "registry.tilo.so/tilo/tilo-vm";
 
 /// What `--from` names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +78,9 @@ pub fn parse(from: &str, worktree: Option<&Worktree>) -> Result<Source, CliError
     Err(CliError::InvalidSource(from.into()))
 }
 
+/// CI's dev image of build `tag` (`main-1a2b3c4`, or with its `-ci`).
 pub fn image(tag: &str) -> String {
-    format!("{IMAGE}:{tag}")
+    format!("{IMAGE}:{}-ci", tag.strip_suffix("-ci").unwrap_or(tag))
 }
 
 /// podman's name for an architecture.
@@ -245,8 +251,8 @@ mod tests {
             assert_eq!(
                 text,
                 [
-                    "podman pull --arch arm64 registry.tilo.so/tilo/tilo:main-1a2b3c4",
-                    "podman create --name c1 registry.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
+                    "podman pull --arch arm64 registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci",
+                    "podman create --name c1 registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci /bin/true",
                     "podman cp c1:/usr/bin/app /s/tree/usr/bin/app",
                     "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
                 ]

@@ -10,15 +10,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
-    Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, GcResult,
-    HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult, LayerSource,
-    LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, OutputSpec, Owner,
-    PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
-    SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult, StatusResult, Storage,
-    TestIdentity, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, DEVICE_SLOT,
+    GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult,
+    LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest,
+    OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult,
+    ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult,
+    StatusResult, Storage, TestIdentity, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
-use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
+use crate::apply::{self, Apply, GREETER_UNIT, Session, SessionChange};
 use crate::error::DaemonError;
 use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
@@ -109,10 +109,13 @@ pub fn restore_slots(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) ->
     let mut issues = reconcile_seats(slots, locks, apply);
     let failed: BTreeSet<String> = issues.iter().map(|i| i.slot.clone()).collect();
     for record in slots.list().unwrap_or_default() {
-        if record.user().is_none() || failed.contains(&record.name) {
+        let Some(session) = record.session() else {
+            continue;
+        };
+        if failed.contains(&record.name) {
             continue;
         }
-        if let Err(error) = apply.start_unit(&session_unit(&record.name)) {
+        if let Err(error) = apply.start_unit(&session.unit) {
             issues.push(Issue {
                 slot: record.name.clone(),
                 problem: format!("its session did not start at boot: {error}"),
@@ -270,38 +273,43 @@ impl Daemon {
         self
     }
 
-    fn parity(&mut self, slot: &str) -> Option<String> {
-        let process = self.apply.session_process(slot)?;
+    /// How a slot's session differs from a greetd login; the device's own
+    /// session is the production one and is not compared.
+    fn parity(&mut self, session: &Session) -> Option<String> {
+        if !session.stand_in {
+            return None;
+        }
+        let process = self.apply.session_process(session)?;
         apply::parity_problem(&process, &self.expected_domain)
     }
 
-    /// After starting sessions: refuse to report success for one that is
-    /// not equivalent to a production greetd session.
-    fn verify_parity<'a>(
+    /// After starting sessions: refuse to report success for one that did
+    /// not come up, or is not equivalent to a production greetd session.
+    fn verify_parity(
         &mut self,
-        slots: impl IntoIterator<Item = &'a str>,
+        sessions: impl IntoIterator<Item = Session>,
     ) -> Result<(), DaemonError> {
-        for slot in slots {
-            if let Err(state) = self.apply.wait_session_ready(slot) {
+        for session in sessions {
+            if let Err(state) = self.apply.wait_session_ready(&session) {
                 let log = self
                     .apply
                     .journal(
                         &[
-                            format!("_SYSTEMD_UNIT={}", session_unit(slot)),
-                            format!("SYSLOG_IDENTIFIER=tilo-session-{slot}"),
+                            format!("_SYSTEMD_UNIT={}", session.unit),
+                            format!("SYSLOG_IDENTIFIER=tilo-session-{}", session.slot),
                         ],
                         12,
                     )
                     .unwrap_or_default();
                 return Err(DaemonError::SessionFailed {
-                    slot: slot.to_owned(),
+                    slot: session.slot,
                     state,
                     log: log.trim_end().to_owned(),
                 });
             }
-            if let Some(detail) = self.parity(slot) {
+            if let Some(detail) = self.parity(&session) {
                 return Err(DaemonError::SessionParity {
-                    slot: slot.to_owned(),
+                    slot: session.slot,
                     detail,
                 });
             }
@@ -309,14 +317,38 @@ impl Daemon {
         Ok(())
     }
 
-    fn user_slots(&self) -> Result<Vec<String>, DaemonError> {
+    /// The sessions of every slot that has one.
+    fn sessions(&self) -> Result<Vec<Session>, DaemonError> {
         Ok(self
             .slots
             .list()?
-            .into_iter()
-            .filter(|r| r.user().is_some())
-            .map(|r| r.name)
+            .iter()
+            .filter_map(SlotRecord::session)
             .collect())
+    }
+
+    /// Every slot on disk, and the `device` slot wherever the machine runs
+    /// its own session, swapped into or not.
+    fn listed_slots(&mut self) -> Result<Vec<SlotRecord>, DaemonError> {
+        let mut records = self.slots.list()?;
+        if let Some(device) = self.apply.device_session() {
+            match records.iter_mut().find(|r| r.name == DEVICE_SLOT) {
+                Some(record) => record.device = Some(device),
+                None => records.push(self.slots.load_with(DEVICE_SLOT, Some(device))?),
+            }
+            records.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        Ok(records)
+    }
+
+    /// Load a slot, finding the machine's own session for the `device` slot.
+    fn load_slot(&mut self, name: &str) -> Result<SlotRecord, DaemonError> {
+        let device = if name == DEVICE_SLOT {
+            self.apply.device_session()
+        } else {
+            None
+        };
+        self.slots.load_with(name, device)
     }
 
     /// Bring every slot back after the VM boots; see [`restore_slots`].
@@ -372,7 +404,7 @@ impl Daemon {
                 to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, p.identity)?)
             }
             Request::SlotList(_) => {
-                let records = self.slots.list()?;
+                let records = self.listed_slots()?;
                 to_value(
                     &records
                         .iter()
@@ -405,7 +437,7 @@ impl Daemon {
                 to_value(&self.rollback(&p.slot, p.to)?)
             }
             Request::Logs(p) => {
-                let record = self.slots.load(&p.slot)?;
+                let record = self.load_slot(&p.slot)?;
                 let matches = self.journal_matches(&record)?;
                 to_value(&LogsResult {
                     text: self.apply.journal(&matches, p.lines)?,
@@ -422,15 +454,15 @@ impl Daemon {
                 to_value(&self.release(&p.slot)?)
             }
             Request::Shot(p) => {
-                let (record, user) = self.user_slot(&p.slot)?;
-                let png = self.apply.shot(&record.name, &user)?;
+                let (_, session) = self.user_slot(&p.slot)?;
+                let png = self.apply.shot(&session)?;
                 to_value(&ShotResult {
                     png: STANDARD.encode(png),
                 })
             }
             Request::Control(p) => {
-                let (record, user) = self.user_slot(&p.slot)?;
-                to_value(&self.apply.control(&record.name, &user, &p.args)?)
+                let (_, session) = self.user_slot(&p.slot)?;
+                to_value(&self.apply.control(&session, &p.args)?)
             }
             Request::Gc(p) => {
                 let _vm = self.locks.vm_exclusive()?;
@@ -493,7 +525,8 @@ impl Daemon {
         slot: &str,
         source: LayerSource,
     ) -> Result<AppInstallResult, DaemonError> {
-        let (record, user) = self.user_slot(slot)?;
+        let (record, session) = self.user_slot(slot)?;
+        let user = session.user;
         let (path, uploaded) = match source {
             LayerSource::Upload(id) => (
                 self.uploads
@@ -519,8 +552,8 @@ impl Daemon {
 
     fn status(&mut self, slot: Option<String>) -> Result<StatusResult, DaemonError> {
         let records = match slot {
-            Some(name) => vec![self.slots.load(&name)?],
-            None => self.slots.list()?,
+            Some(name) => vec![self.load_slot(&name)?],
+            None => self.listed_slots()?,
         };
         let slots = records
             .iter()
@@ -616,12 +649,12 @@ impl Daemon {
         }
     }
 
-    pub(crate) fn user_slot(&self, name: &str) -> Result<(SlotRecord, String), DaemonError> {
-        let record = self.slots.load(name)?;
-        let user = record
-            .user()
+    pub(crate) fn user_slot(&mut self, name: &str) -> Result<(SlotRecord, Session), DaemonError> {
+        let record = self.load_slot(name)?;
+        let session = record
+            .session()
             .ok_or_else(|| DaemonError::NoSession(name.to_owned()))?;
-        Ok((record, user))
+        Ok((record, session))
     }
 
     fn storage(&mut self) -> Storage {
@@ -648,8 +681,8 @@ impl Daemon {
                     hint: format!("re-run the swap, or re-apply the current generation: tilo-vm slot restart {}", record.name),
                 });
             }
-            if record.user().is_some() {
-                let state = self.apply.unit_state(&session_unit(&record.name));
+            if let Some(session) = record.session() {
+                let state = self.apply.unit_state(&session.unit);
                 if state != "active" && state != "activating" {
                     issues.push(Issue {
                         slot: record.name.clone(),
@@ -659,7 +692,7 @@ impl Daemon {
                             record.name, record.name
                         ),
                     });
-                } else if let Some(detail) = self.parity(&record.name) {
+                } else if let Some(detail) = self.parity(&session) {
                     let error = DaemonError::SessionParity {
                         slot: record.name.clone(),
                         detail,
@@ -677,15 +710,13 @@ impl Daemon {
 
     fn info(&mut self, record: &SlotRecord) -> Result<SlotInfo, DaemonError> {
         let generation = self.slots.generation(&record.name, record.current)?;
-        let session = if record.user().is_some() {
-            self.apply.unit_state(&session_unit(&record.name))
-        } else {
-            "n/a".into()
-        };
-        let parity = if session == "active" {
-            self.parity(&record.name)
-        } else {
-            None
+        let unit = record.session();
+        let session = unit
+            .as_ref()
+            .map_or_else(|| "n/a".into(), |s| self.apply.unit_state(&s.unit));
+        let parity = match &unit {
+            Some(unit) if session == "active" => self.parity(unit),
+            _ => None,
         };
         Ok(SlotInfo {
             name: record.name.clone(),
@@ -727,14 +758,14 @@ impl Daemon {
         timeout: Duration,
         max_bytes: u64,
     ) -> Result<crate::exec::Ended, DaemonError> {
-        let (record, user) = self.user_slot(name)?;
+        let (record, session) = self.user_slot(name)?;
         let pid = self
             .apply
-            .session_pid(&record.name)
+            .session_pid(&session)
             .ok_or_else(|| DaemonError::SessionStopped(record.name.clone()))?;
-        let env = self.apply.session_environment(&record.name);
+        let env = self.apply.session_environment(&session);
         crate::exec::run_bounded(
-            crate::exec::in_session(pid, &user, &env, args),
+            crate::exec::in_session(pid, &session.user, &env, args),
             timeout,
             max_bytes,
             std::io::stdout(),
@@ -745,7 +776,7 @@ impl Daemon {
 
     /// The slot and every file its current generation's layers add.
     fn show(&mut self, name: &str) -> Result<SlotShowResult, DaemonError> {
-        let record = self.slots.load(name)?;
+        let record = self.load_slot(name)?;
         let generation = self.slots.generation(name, record.current)?;
         let mut files = Vec::new();
         for (component, entry) in &generation.components {
@@ -783,7 +814,10 @@ impl Daemon {
         identity: bool,
     ) -> Result<SlotCreateResult, DaemonError> {
         let (mut record, created) = self.slots.create(name, kind, owner, outputs)?;
-        let running = self.apply.unit_state(&session_unit(name)) == "active";
+        let session = record
+            .session()
+            .ok_or_else(|| DaemonError::NoSession(name.to_owned()))?;
+        let running = self.apply.unit_state(&session.unit) == "active";
         let mut actions = if created || !running {
             let generation = self.slots.generation(name, record.current)?;
             let layers = self.layer_paths(&generation)?;
@@ -797,7 +831,7 @@ impl Daemon {
                 SessionChange::Ensure,
             )?;
             self.slots.save(&record)?;
-            self.verify_parity([name])?;
+            self.verify_parity([session])?;
             actions
         } else {
             Vec::new()
@@ -847,17 +881,18 @@ impl Daemon {
             slot: name.to_owned(),
             detail,
         };
-        let user = record
-            .user()
+        let session = record
+            .session()
             .ok_or_else(|| fail("the slot has no user".into()))?;
-        self.apply.wait_session_ready(name).map_err(fail)?;
+        let user = session.user.clone();
+        self.apply.wait_session_ready(&session).map_err(fail)?;
         let args = [
             "raw".to_owned(),
             r#"{"op":"provision_test_identity"}"#.to_owned(),
         ];
         let asked = Instant::now();
         let reply = loop {
-            let reply = self.apply.control(name, &user, &args)?;
+            let reply = self.apply.control(&session, &args)?;
             // tilo-control exits 2 when it cannot reach the socket, which a
             // session that has only just started has not bound yet.
             if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
@@ -879,21 +914,22 @@ impl Daemon {
             created: identity.created,
         }];
         if identity.created {
-            let session = session_unit(name);
-            self.apply.stop_unit(&session)?;
-            actions.push(Action::StopUnit { unit: session });
+            self.apply.stop_unit(&session.unit)?;
+            actions.push(Action::StopUnit {
+                unit: session.unit.clone(),
+            });
             self.apply.reset_desktop_state(&user)?;
             actions.push(Action::ResetDesktopState);
-            let uid = self.apply.ensure_user(&user)?;
-            actions.extend(apply::restart_session(self.apply.as_mut(), name, uid)?);
-            self.apply.wait_session_ready(name).map_err(fail)?;
-            self.verify_parity([name])?;
+            let uid = apply::session_uid(self.apply.as_mut(), &session)?;
+            actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
+            self.apply.wait_session_ready(&session).map_err(fail)?;
+            self.verify_parity([session])?;
         }
         Ok((identity, actions))
     }
 
     fn restart(&mut self, name: &str) -> Result<ApplyResult, DaemonError> {
-        let mut record = self.slots.load(name)?;
+        let mut record = self.load_slot(name)?;
         let generation = self.slots.generation(name, record.current)?;
         let layers = self.layer_paths(&generation)?;
         let (policy, units) = if record.kind == SlotKind::Vm {
@@ -919,10 +955,10 @@ impl Daemon {
         self.slots.clear_pending(name)?;
         if record.kind == SlotKind::Vm {
             actions.extend(self.restart_all_sessions()?);
-            let slots = self.user_slots()?;
-            self.verify_parity(slots.iter().map(String::as_str))?;
+            let sessions = self.sessions()?;
+            self.verify_parity(sessions)?;
         } else {
-            self.verify_parity([name])?;
+            self.verify_parity(record.session())?;
         }
         Ok(ApplyResult {
             slot: record.name,
@@ -938,6 +974,9 @@ impl Daemon {
     fn remove(&mut self, name: &str) -> Result<SlotRmResult, DaemonError> {
         if name == VM_SLOT {
             return Err(DaemonError::ReservedName(name.to_owned()));
+        }
+        if name == DEVICE_SLOT {
+            return Err(DaemonError::DeviceSlot("removed".into()));
         }
         let record = match self.slots.load(name) {
             Ok(record) => record,
@@ -990,7 +1029,7 @@ impl Daemon {
         layer: &str,
         info: Option<ComponentInfo>,
     ) -> Result<ApplyResult, DaemonError> {
-        let mut record = self.slots.load(name)?;
+        let mut record = self.load_slot(name)?;
         self.layers.require(layer)?;
         let provenance = self
             .layers
@@ -1011,7 +1050,7 @@ impl Daemon {
     }
 
     fn rollback(&mut self, name: &str, target: Option<u64>) -> Result<ApplyResult, DaemonError> {
-        let mut record = self.slots.load(name)?;
+        let mut record = self.load_slot(name)?;
         let (from, to) = self.slots.rollback_target(&record, target)?;
         if from.number == to.number {
             return Ok(unchanged(record));
@@ -1043,8 +1082,8 @@ impl Daemon {
             Policy::VmRefresh => {
                 self.slots.set_current(record, to.number)?;
                 actions.extend(self.restart_all_sessions()?);
-                let slots = self.user_slots()?;
-                self.verify_parity(slots.iter().map(String::as_str))?;
+                let sessions = self.sessions()?;
+                self.verify_parity(sessions)?;
             }
             Policy::Reboot => {
                 // The kernel's modules are merged now; its boot entry is next.
@@ -1077,7 +1116,7 @@ impl Daemon {
             }
             Policy::SessionRestart => {
                 self.slots.set_current(record, to.number)?;
-                self.verify_parity([record.name.as_str()])?;
+                self.verify_parity(record.session())?;
             }
             Policy::NoRestart => self.slots.set_current(record, to.number)?,
         }
@@ -1096,26 +1135,27 @@ impl Daemon {
     /// `/usr` reaches them only through a restart.
     fn restart_all_sessions(&mut self) -> Result<Vec<Action>, DaemonError> {
         let mut actions = Vec::new();
-        for record in self.slots.list()? {
-            let Some(user) = record.user() else { continue };
-            let uid = self.apply.ensure_user(&user)?;
-            actions.extend(apply::restart_session(
-                self.apply.as_mut(),
-                &record.name,
-                uid,
-            )?);
+        for session in self.sessions()? {
+            let uid = apply::session_uid(self.apply.as_mut(), &session)?;
+            actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
         }
         Ok(actions)
     }
 
     fn journal_matches(&mut self, record: &SlotRecord) -> Result<Vec<String>, DaemonError> {
         let mut matches = Vec::new();
-        if let Some(user) = record.user() {
+        if let Some(session) = record.session() {
             // PAM moves the session into session-N.scope, so its output is
             // found by the unit's SyslogIdentifier, not by the unit name.
-            let uid = self.apply.ensure_user(&user)?;
-            matches.push(format!("SYSLOG_IDENTIFIER=tilo-session-{}", record.name));
-            matches.push(format!("UNIT={}", session_unit(&record.name)));
+            // The device's session runs its compositor in units it starts:
+            // everything its account runs is the session's.
+            let uid = apply::session_uid(self.apply.as_mut(), &session)?;
+            if session.stand_in {
+                matches.push(format!("SYSLOG_IDENTIFIER=tilo-session-{}", record.name));
+            } else {
+                matches.push(format!("_SYSTEMD_UNIT={}", session.unit));
+            }
+            matches.push(format!("UNIT={}", session.unit));
             matches.push(format!("_UID={uid}"));
         } else {
             let generation = self.slots.generation(&record.name, record.current)?;
@@ -1147,12 +1187,15 @@ impl Daemon {
             SessionChange::Restart,
         )?;
         self.slots.save(record)?;
-        self.verify_parity([record.name.as_str()])?;
+        self.verify_parity(record.session())?;
         Ok(actions)
     }
 
     fn claim(&mut self, name: &str, owner: Owner, steal: bool) -> Result<SeatResult, DaemonError> {
         let (mut record, _) = self.user_slot(name)?;
+        if record.kind == SlotKind::Device {
+            return Err(DaemonError::DeviceSlot("moved between seats".into()));
+        }
         if record.seat0.is_some() {
             return Ok(SeatResult {
                 slot: record.name,
@@ -1204,6 +1247,9 @@ impl Daemon {
 
     fn release(&mut self, name: &str) -> Result<SeatResult, DaemonError> {
         let (mut record, _) = self.user_slot(name)?;
+        if record.kind == SlotKind::Device {
+            return Err(DaemonError::DeviceSlot("moved between seats".into()));
+        }
         let own_seat = |r: &SlotRecord| r.seat.clone().unwrap_or_else(|| "none".into());
         if record.seat0.is_none() {
             return Ok(SeatResult {
@@ -1319,6 +1365,7 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apply::session_unit;
 
     #[test]
     fn creating_with_outputs_applies_the_layout_every_time() {

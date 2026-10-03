@@ -148,25 +148,114 @@ pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) ->
     provenance
 }
 
-/// Everything that identifies a host build of `component`.
+/// Everything that identifies a host build of `component`, laid out in
+/// `tree`. Its target and toolchain are read from the binaries themselves,
+/// so a cargo drop-in that builds elsewhere (another architecture, another
+/// machine) is recorded as what it built; this host's `rustc` answers only
+/// when the layer has no binary that says.
 pub fn provenance(
     runner: &mut dyn Runner,
     worktree: &Worktree,
     component: &Component,
     features: Vec<String>,
+    tree: &Path,
 ) -> Provenance {
     let mut provenance = source_provenance(worktree, &component.name, "host");
     provenance.cargo_profile = Some(component.profile.clone());
     provenance.features = features;
-    provenance.toolchain = first_line(runner, &CommandLine::new("rustc", &["--version"]));
-    if let Ok(output) = runner.output(&CommandLine::new("rustc", &["-vV"])) {
-        provenance.target = output
+    let built = first_elf(tree).unwrap_or_default();
+    provenance.toolchain = built
+        .toolchain
+        .or_else(|| first_line(runner, &CommandLine::new("rustc", &["--version"])));
+    provenance.target = built.target.or_else(|| {
+        runner
+            .output(&CommandLine::new("rustc", &["-vV"]))
+            .ok()?
             .stdout
             .lines()
             .find_map(|l| l.strip_prefix("host: "))
-            .map(|t| t.trim().to_owned());
-    }
+            .map(|t| t.trim().to_owned())
+    });
     provenance
+}
+
+/// What a built binary says about its build.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ElfFacts {
+    /// `<arch>-unknown-linux-gnu`, from the ELF machine.
+    pub target: Option<String>,
+    /// `rustc <version> (<hash> <date>)`, as `rustc --version` prints it,
+    /// from the `.comment` section rustc writes.
+    pub toolchain: Option<String>,
+}
+
+/// The facts of the first ELF file under `tree`, in path order.
+pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(tree)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    entries.into_iter().find_map(|path| {
+        let meta = std::fs::symlink_metadata(&path).ok()?;
+        if meta.is_dir() {
+            first_elf(&path)
+        } else if meta.is_file() {
+            elf_facts(&std::fs::read(&path).ok()?)
+        } else {
+            None
+        }
+    })
+}
+
+/// Machine and rustc of a little-endian ELF64 file; `None` for anything else.
+pub fn elf_facts(bytes: &[u8]) -> Option<ElfFacts> {
+    let field = |at: usize, len: usize| bytes.get(at..at.checked_add(len)?);
+    let u16_at = |at: usize| Some(u16::from_le_bytes(field(at, 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_le_bytes(field(at, 4)?.try_into().ok()?));
+    let u64_at =
+        |at: usize| usize::try_from(u64::from_le_bytes(field(at, 8)?.try_into().ok()?)).ok();
+    if bytes.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let arch = match u16_at(0x12)? {
+        0x3e => Some("x86_64"),
+        0xb7 => Some("aarch64"),
+        0xf3 => Some("riscv64gc"),
+        _ => None,
+    };
+    let section = |index: usize| -> Option<(usize, usize, usize)> {
+        let header = u64_at(0x28)?.checked_add(index.checked_mul(usize::from(u16_at(0x3a)?))?)?;
+        Some((
+            usize::try_from(u32_at(header)?).ok()?,
+            u64_at(header.checked_add(0x18)?)?,
+            u64_at(header.checked_add(0x20)?)?,
+        ))
+    };
+    let toolchain = (|| {
+        let (_, names, names_size) = section(usize::from(u16_at(0x3e)?))?;
+        let names = bytes.get(names..names.checked_add(names_size)?)?;
+        (0..usize::from(u16_at(0x3c)?)).find_map(|index| {
+            let (name, offset, size) = section(index)?;
+            let name = names.get(name..)?.split(|b| *b == 0).next()?;
+            if name != b".comment" {
+                return None;
+            }
+            bytes
+                .get(offset..offset.checked_add(size)?)?
+                .split(|b| *b == 0)
+                .find_map(|line| {
+                    let line = std::str::from_utf8(line).ok()?;
+                    line.strip_prefix("rustc version ")
+                        .map(|version| format!("rustc {version}"))
+                })
+        })
+    })();
+    Some(ElfFacts {
+        target: arch.map(|arch| format!("{arch}-unknown-linux-gnu")),
+        toolchain,
+    })
 }
 
 /// Cache hit and miss totals from `sccache --show-stats --stats-format=json`.
@@ -315,6 +404,82 @@ mod tests {
             .into_values()
             .next()
             .unwrap()
+    }
+
+    /// A minimal ELF64: header, a `.comment` and the section-name table.
+    fn elf(machine: u16, comment: &[u8]) -> Vec<u8> {
+        let names = b"\0.comment\0.shstrtab\0";
+        let mut bytes = vec![0_u8; 64];
+        bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        bytes[0x12..0x14].copy_from_slice(&machine.to_le_bytes());
+        let len = |b: &[u8]| u64::try_from(b.len()).unwrap();
+        let comment_at = len(&bytes);
+        bytes.extend_from_slice(comment);
+        let names_at = len(&bytes);
+        bytes.extend_from_slice(names);
+        let headers_at = len(&bytes);
+        bytes[0x28..0x30].copy_from_slice(&headers_at.to_le_bytes());
+        bytes[0x3a..0x3c].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[0x3c..0x3e].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[0x3e..0x40].copy_from_slice(&2_u16.to_le_bytes());
+        for (name, offset, size) in [
+            (0_u32, 0_u64, 0_u64),
+            (1, comment_at, len(comment)),
+            (10, names_at, len(names)),
+        ] {
+            let mut header = vec![0_u8; 64];
+            header[..4].copy_from_slice(&name.to_le_bytes());
+            header[0x18..0x20].copy_from_slice(&offset.to_le_bytes());
+            header[0x20..0x28].copy_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&header);
+        }
+        bytes
+    }
+
+    /// A host build's target and toolchain come from the binary it made,
+    /// so a build for another architecture is recorded as that one.
+    #[test]
+    fn provenance_reads_target_and_rustc_from_the_built_binary() {
+        let comment =
+            b"Linker: LLD 22\0rustc version 1.98.0 (88d9e12ae 2026-08-18)\0GCC: (GNU) 16\0";
+        assert_eq!(
+            elf_facts(&elf(0xb7, comment)),
+            Some(ElfFacts {
+                target: Some("aarch64-unknown-linux-gnu".into()),
+                toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+            })
+        );
+        assert_eq!(
+            elf_facts(&elf(0x3e, b"GCC: (GNU) 16\0")),
+            Some(ElfFacts {
+                target: Some("x86_64-unknown-linux-gnu".into()),
+                toolchain: None,
+            })
+        );
+        assert_eq!(elf_facts(b"#!/bin/sh\n"), None);
+        assert_eq!(
+            elf_facts(&elf(0xb7, comment)[..40]).map(|f| f.toolchain),
+            Some(None)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/share/x")).unwrap();
+        std::fs::write(dir.path().join("usr/share/x/readme"), b"text").unwrap();
+        std::fs::write(dir.path().join("usr/bin/shell"), elf(0xb7, comment)).unwrap();
+        assert_eq!(
+            first_elf(dir.path()).and_then(|f| f.target).as_deref(),
+            Some("aarch64-unknown-linux-gnu")
+        );
+        // The real binary of this test says what this host builds.
+        #[cfg(target_os = "linux")]
+        {
+            let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+            assert_eq!(
+                elf_facts(&me).and_then(|f| f.target),
+                Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+            );
+        }
     }
 
     /// Packing keeps /usr and symlinks, and sccache JSON totals parse.

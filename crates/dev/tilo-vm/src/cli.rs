@@ -105,7 +105,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -657,6 +657,17 @@ pub enum VmCommand {
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
+    /// Register a device that already runs a Tilo dev image (a board), reached over SSH.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108\n  tilo-vm vm add opi --ssh root@opi.lan:2222\n  tilo-vm vm use opi\n  tilo-vm swap --slot device shell --from sha:1a2b3c4\n\nThe device keeps running what it runs; nothing is installed on it. vm add makes\nthe device's own root key (keys/<name>_ed25519 beside vms.toml) and prints the\none command that installs it with the dev account's password. Every VM command\nthen works on it, but for the ones that need a hypervisor: tilo-vm cannot\npower a device on, so vm restart reboots it over SSH. Its own session is the\n`device` slot. Details: tilo-vm guide devices."
+    )]
+    Add {
+        /// The name to register the device under.
+        name: String,
+        /// `root@host[:port]`: where the device's SSH server answers (tilo-vmd runs as root).
+        #[arg(long)]
+        ssh: String,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
@@ -1258,6 +1269,18 @@ mod tests {
                 "{help}"
             );
             assert!(help.contains("dev-overrides"), "{help}");
+        }
+
+        // Phase: vm_add_takes_a_name_and_an_address.
+        {
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
+                    .unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Vm(VmCommand::Add { ref name, ref ssh })) if name == "opi" && ssh == "root@10.0.0.108")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
+            assert!(writes_receipt(cli.command.as_ref()));
         }
 
         // Phase: swap_takes_an_optional_slot.

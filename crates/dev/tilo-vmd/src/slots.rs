@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::display::format_outputs;
 use tilo_vm_protocol::{
-    ComponentInfo, Lease, OutputSpec, Owner, SlotKind, VM_SLOT, valid_slot_name,
+    ComponentInfo, DEVICE_SLOT, Lease, OutputSpec, Owner, SlotKind, VM_SLOT, valid_slot_name,
 };
 
 use crate::error::DaemonError;
@@ -44,6 +44,26 @@ pub struct SlotRecord {
     /// one output at the compositor's defaults.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
+    /// The `device` slot only: the machine's own session, as found when
+    /// the slot was last loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceSession>,
+}
+
+/// The session a machine runs for its account without a greeter (a board
+/// image's always-on session), which the `device` slot swaps into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSession {
+    /// The system unit that runs it, e.g. `tilo-board-headless-session@quickuser.service`.
+    pub unit: String,
+    /// The account it runs as.
+    pub account: String,
+    /// Units `unit` starts for the session's own processes; they get the
+    /// slot's layers too.
+    #[serde(default)]
+    pub units: Vec<String>,
+    /// The compositor's control socket (`TILO_TEST_CONTROL`).
+    pub control_socket: PathBuf,
 }
 
 impl SlotRecord {
@@ -54,8 +74,14 @@ impl SlotRecord {
 }
 
 impl SlotRecord {
+    /// The user the slot's session runs as: `tds-<slot>`, the device
+    /// session's account, or none for the `vm` slot.
     pub fn user(&self) -> Option<String> {
-        (self.kind != SlotKind::Vm).then(|| format!("tds-{}", self.name))
+        match self.kind {
+            SlotKind::Vm => None,
+            SlotKind::Device => self.device.as_ref().map(|d| d.account.clone()),
+            SlotKind::Headful | SlotKind::Headless => Some(format!("tds-{}", self.name)),
+        }
     }
 }
 
@@ -126,6 +152,9 @@ impl SlotStore {
         if name == VM_SLOT || kind == SlotKind::Vm {
             return Err(DaemonError::ReservedName(name.to_owned()));
         }
+        if name == DEVICE_SLOT || kind == SlotKind::Device {
+            return Err(DaemonError::DeviceSlot("created".into()));
+        }
         Self::check_name(name)?;
         if !outputs.is_empty() {
             if kind != SlotKind::Headful {
@@ -162,17 +191,41 @@ impl SlotStore {
             seat: None,
             seat0: None,
             outputs: outputs.to_vec(),
+            device: None,
         };
         self.save(&record)?;
         Ok((record, true))
     }
 
-    /// Load a slot; the `vm` pseudo-slot always exists.
+    /// Load a slot; the `vm` pseudo-slot always exists, and the `device`
+    /// pseudo-slot exists wherever `device` (the machine's own session) is
+    /// given, with that session recorded in it.
     ///
     /// # Errors
-    /// [`DaemonError::SlotNotFound`] and I/O failures.
-    pub fn load(&self, name: &str) -> Result<SlotRecord, DaemonError> {
+    /// [`DaemonError::SlotNotFound`], [`DaemonError::NoDeviceSession`] and
+    /// I/O failures.
+    pub fn load_with(
+        &self,
+        name: &str,
+        device: Option<DeviceSession>,
+    ) -> Result<SlotRecord, DaemonError> {
         Self::check_name(name)?;
+        if name == DEVICE_SLOT {
+            let device = device.ok_or(DaemonError::NoDeviceSession)?;
+            let mut record = self.try_load(name)?.unwrap_or_else(|| SlotRecord {
+                name: DEVICE_SLOT.into(),
+                kind: SlotKind::Device,
+                owner: Owner::default(),
+                created_at: now(),
+                current: 0,
+                seat: None,
+                seat0: None,
+                outputs: Vec::new(),
+                device: None,
+            });
+            record.device = Some(device);
+            return Ok(record);
+        }
         if let Some(record) = self.try_load(name)? {
             return Ok(record);
         }
@@ -186,9 +239,18 @@ impl SlotStore {
                 seat: None,
                 seat0: None,
                 outputs: Vec::new(),
+                device: None,
             });
         }
         Err(DaemonError::SlotNotFound(name.to_owned()))
+    }
+
+    /// [`Self::load_with`] for a machine without a session of its own.
+    ///
+    /// # Errors
+    /// As [`Self::load_with`].
+    pub fn load(&self, name: &str) -> Result<SlotRecord, DaemonError> {
+        self.load_with(name, None)
     }
 
     fn try_load(&self, name: &str) -> Result<Option<SlotRecord>, DaemonError> {

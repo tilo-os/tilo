@@ -62,6 +62,10 @@ pub enum DaemonError {
     ControlMissing(String),
     #[error("'{0}' has no session")]
     NoSession(String),
+    #[error("this machine runs no session of its own, so it has no device slot")]
+    NoDeviceSession,
+    #[error("the device slot is the machine's own session; it cannot be {0}")]
+    DeviceSlot(String),
     #[error("slot '{0}' has no running session to run the command in")]
     SessionStopped(String),
     #[error("{step} failed: {detail}")]
@@ -124,7 +128,8 @@ impl DaemonError {
             | Self::UnknownApp { .. }
             | Self::SourceMissing(_)
             | Self::ImageNotFound { .. }
-            | Self::MissingInImage { .. } => code::NOT_FOUND,
+            | Self::MissingInImage { .. }
+            | Self::NoDeviceSession => code::NOT_FOUND,
             Self::SlotKindConflict { .. }
             | Self::SlotOutputsConflict { .. }
             | Self::SeatBusy { .. }
@@ -135,6 +140,7 @@ impl DaemonError {
             | Self::InvalidLayer(_)
             | Self::NoEarlierGeneration(_)
             | Self::NoSession(_)
+            | Self::DeviceSlot(_)
             | Self::SessionStopped(_)
             | Self::HeadlessInput(_)
             | Self::OutputsNeedHeadful(_)
@@ -230,6 +236,8 @@ impl DaemonError {
             Self::AbiMismatch { .. } => {
                 "rebuild against this VM's base (tilo-vm vm upgrade first if the VM is older than your worktree)".into()
             }
+            Self::NoDeviceSession => "only an image that runs its own session without a greeter (a board dev image) has a device slot; on this machine use your own slot: tilo-vm swap <component>".into(),
+            Self::DeviceSlot(_) => "swap into it (tilo-vm swap --slot device <component>) and undo every swap with tilo-vm rollback --slot device --to 0; its session comes and goes with the machine".into(),
             Self::NoSession(_) => "use a headful or headless slot: tilo-vm slot list   (the vm slot's layers are the VM's own /usr: tilo-vm vm ssh -- <command>)".into(),
             Self::SessionStopped(slot) => format!(
                 "start it again: tilo-vm slot restart --slot {slot}   (tilo-vm logs --slot {slot} says why it stopped)"
@@ -269,7 +277,7 @@ impl DaemonError {
                 "Tilo images on registry.tilo.so are public and need no login, so the registry refusing this pull means the reference is not a published Tilo image: check its name (registry.tilo.so/tilo/<image>:<tag>)".into()
             }
             Self::ImageNotFound { .. } => {
-                "check the tag: CI publishes registry.tilo.so/tilo/tilo:main-<sha7> for main commits and :<version> for releases".into()
+                "check the tag and that it built this architecture: CI publishes its dev image registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci for main commits (skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci lists the platforms)".into()
             }
             Self::MissingInImage { .. } => {
                 "that image does not ship this component (an optional one, or an older image); pick another tag or build it: --from worktree".into()
@@ -323,6 +331,7 @@ impl DaemonError {
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
+            Self::NoDeviceSession | Self::DeviceSlot(_) => Some("tilo-vm guide devices"),
             Self::VersionMismatch { .. }
             | Self::HelloRequired
             | Self::InvalidParams(_)
@@ -421,6 +430,8 @@ mod tests {
                 vm: "b".into(),
             },
             DaemonError::NoSession("vm".into()),
+            DaemonError::NoDeviceSession,
+            DaemonError::DeviceSlot("removed".into()),
             DaemonError::SessionStopped("a".into()),
             DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
             DaemonError::Apply {
@@ -513,6 +524,8 @@ mod tests {
                 | DaemonError::Busy(_)
                 | DaemonError::AbiMismatch { .. }
                 | DaemonError::NoSession(_)
+                | DaemonError::NoDeviceSession
+                | DaemonError::DeviceSlot(_)
                 | DaemonError::SessionStopped(_)
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }

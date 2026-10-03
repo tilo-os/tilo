@@ -505,7 +505,10 @@ pub fn pull_error(image: &str, output: &str) -> DaemonError {
         DaemonError::RegistryAuth {
             image: image.to_owned(),
         }
-    } else if lower.contains("manifest unknown") || lower.contains("not found") {
+    } else if lower.contains("manifest unknown")
+        || lower.contains("not found")
+        || lower.contains("no image found in manifest list")
+    {
         DaemonError::ImageNotFound {
             image: image.to_owned(),
         }
@@ -598,6 +601,13 @@ mod tests {
             ));
             assert!(matches!(
                 pull_error("i", "manifest unknown: manifest unknown"),
+                DaemonError::ImageNotFound { .. }
+            ));
+            assert!(matches!(
+                pull_error(
+                    "i",
+                    "Error: choosing an image from manifest list docker://i: no image found in manifest list for architecture \"arm64\", variant \"v8\", OS \"linux\""
+                ),
                 DaemonError::ImageNotFound { .. }
             ));
             assert!(matches!(
