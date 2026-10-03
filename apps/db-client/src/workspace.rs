@@ -48,10 +48,10 @@ impl DataHeader {
                 .dimmed(),
             previous: Button::icon_only("db.data.previous", Icon::ChevronLeft, "Previous rows")
                 .control_size(ControlSize::Small)
-                .on_click(move || back.ask(Intent::PreviousPage)),
+                .on_view(move || back.ask(Intent::PreviousPage)),
             next: Button::icon_only("db.data.next", Icon::ChevronRight, "Next rows")
                 .control_size(ControlSize::Small)
-                .on_click(move || forward.ask(Intent::NextPage)),
+                .on_view(move || forward.ask(Intent::NextPage)),
             frame: Frame::default(),
             structure_dirty: false,
         }

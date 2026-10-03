@@ -97,7 +97,7 @@ impl QueryToolbar {
         let run = Button::new("db.query.run", "Run", None)
             .role(ButtonRole::Primary)
             .shortcut_hint(Shortcut::command("Enter"))
-            .on_click(move || {
+            .on_effect(move || {
                 let sql = run_link.sql();
                 run_link.ask(Intent::Run(sql));
             });
