@@ -444,6 +444,9 @@ fn apply_spec<R: Resource>() -> ActionSpec {
             }
         },
     )
+    .with_description(
+        "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+    )
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
@@ -472,6 +475,9 @@ fn group_spec<R: Resource>() -> ActionSpec {
                 .unwrap_or_else(|error| refused::<R>(&error.to_string())),
             Err(reason) => refused::<R>(&reason),
         },
+    )
+    .with_description(
+        "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
     )
     // One group is one undo step, like any other document action.
     .reversible()
