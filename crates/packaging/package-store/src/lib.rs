@@ -37,10 +37,17 @@ pub mod registry;
 #[cfg(feature = "store")]
 mod content;
 #[cfg(feature = "store")]
+mod image;
+#[cfg(feature = "store")]
 mod store;
 
 pub use catalog::{
     Catalog, CatalogError, SystemStore, display_name_for_package_id, find_installed, list_installed,
+};
+#[cfg(feature = "store")]
+pub use image::{
+    ImageTrust, MaterializeError, SYSTEM_IMAGE_PUBLISHERS_FILE, Store, check_tool_runtime,
+    materialized_tree, tool_runtime,
 };
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
