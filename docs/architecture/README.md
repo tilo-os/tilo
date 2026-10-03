@@ -77,6 +77,13 @@ UI is a suggestion for presenting resources and actions, not the interface itsel
 can open a resource it never defined and it opens in the right application: URLs or
 intents for everything, above and below file granularity.
 
+Opening something is a record and actions, not a second launcher. A launch that names a
+path, a URL or a handed file asks the `ResourceApp` which record that is (the file's own
+record, one derived from it) and which of its resource's actions the launch takes there;
+those go through the dispatcher like any control. `definition()` of every app is the
+framework's, so the browser desktop and agent hosts mount the same app the native
+launcher runs.
+
 Displaying a resource is not destructive. Taking an action needs a permission, confirmed
 by the user by default.
 

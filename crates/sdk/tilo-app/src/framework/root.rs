@@ -200,6 +200,11 @@ impl<R: Resource> ResourceRoot<R> {
         &self.live
     }
 
+    /// The dispatcher the root's views submit through, which the host drains.
+    pub(crate) fn dispatcher(&self) -> &Dispatcher<R> {
+        &self.dispatch
+    }
+
     /// The view as a stored PNG, at `scale` pixels per point.
     #[cfg(not(target_family = "wasm"))]
     fn render(

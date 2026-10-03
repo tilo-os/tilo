@@ -10,9 +10,10 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
     RestoreInput,
 };
+use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
-use ui_core::record::RecordKind;
+use ui_core::record::{RecordId, RecordKind};
 use ui_core::widget::{Element, IconDescriptor};
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
@@ -26,10 +27,11 @@ use {
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{Actor, PermissionContext, Role, UserId},
-    ui_core::record::{RecordCheckout, RecordId},
+    ui_core::record::RecordCheckout,
 };
 
 use super::dispatch::Dispatcher;
+use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
 use super::stage::Stages;
@@ -56,6 +58,12 @@ pub trait ResourceApp: 'static {
         autofocus_on_structure_change: false,
         appearance_reconcile: false,
     };
+    /// Media types (`type/subtype`, lowercase) of the files the app opens
+    /// when a host hands it one; [`Self::launch`] receives the file.
+    const OPENS: &'static [&'static str] = &[];
+    /// How many arguments (paths, URLs) a launch may name;
+    /// [`Self::launch_record`] and [`Self::launch`] receive them.
+    const ARGUMENTS: usize = 0;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -75,6 +83,39 @@ pub trait ResourceApp: 'static {
     /// resource's own history, not a toggle beside it.
     fn local_operations() -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
+    }
+
+    /// The record a launch naming `input` opens: the file's own record
+    /// ([`RecordId::identify_file`]), a record derived from it
+    /// ([`RecordId::derived`]), a minted one. `None`, the default, opens the
+    /// record the app would open anyway: the one the window showed last, else
+    /// the room's default. Asked by a launcher that picks the record (the
+    /// command line, a test host), before the record is opened, so it must
+    /// not depend on anything but `input`.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        let _ = input;
+        None
+    }
+
+    /// The actions a launch naming `input` takes once its record is open;
+    /// `created` when this launch created the record, so actions that fill
+    /// a new record (the source of a new project) are taken only then. They
+    /// go through the same door as every control: checked against the
+    /// participant's permissions, attributed, undoable and in history.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
+        let _ = (input, created);
+        Vec::new()
+    }
+
+    /// The commands the app's binary runs instead of opening a window.
+    fn commands() -> &'static [Command] {
+        &[]
+    }
+
+    /// The app's message catalog, loaded before its view is built in every
+    /// host that mounts the app, so the view's lookups find its messages.
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        None
     }
 
     /// Named screenshot scenarios for `--shots --scenario NAME`.
@@ -133,7 +174,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
         optional: vec![],
-        opens: &[],
+        opens: A::OPENS,
         create: create::<A>,
     })
 }
@@ -143,16 +184,6 @@ fn icon<A: ResourceApp>() -> IconDescriptor {
         A::ICON
             .unwrap_or_else(|| A::ID.rsplit('.').next().unwrap_or(A::ID))
             .to_owned(),
-    )
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// The record a standalone launch opens: one stable default per app and
-/// workspace, created empty on first launch.
-pub(crate) fn default_record<A: ResourceApp>() -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(0)),
-        RecordKind::new(<A::Resource as Resource>::KIND),
     )
 }
 
@@ -223,7 +254,11 @@ fn create<A: ResourceApp>(
     target: LaunchTarget,
     _restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
-    if matches!(target, LaunchTarget::New) {
+    if let Some(catalog) = A::catalog() {
+        catalog.ensure();
+    }
+    let created = matches!(target, LaunchTarget::New);
+    if created {
         context
             .initialize_new_record(|doc| {
                 <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())
@@ -236,6 +271,14 @@ fn create<A: ResourceApp>(
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let root = build_root::<A>(reader, Editing::Live(permissions));
+    let file = context.take_open_file();
+    let arguments = context.take_launch_arguments();
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
+    }
+    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+        root.dispatcher().invoke(invoke);
+    }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
@@ -288,16 +331,60 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
 
-/// The record a standalone launch opens: the default one of the definition's kind.
+/// Prepare `definition` on `host`: the record a launch named, else the one
+/// the instance showed last, else the room's default.
 #[cfg(not(target_arch = "wasm32"))]
-fn default_record_of(definition: &ApplicationDefinition) -> RecordCheckout {
-    RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone())
+pub(crate) fn prepare_on(
+    host: &mut ApplicationHost,
+    definition: &ApplicationDefinition,
+    instance: u64,
+    named: Option<RecordId>,
+    inputs: ComponentRunnerInputs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    let kind = definition.record_kind.clone();
+    match named {
+        Some(id) => {
+            host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
+        }
+        None => host.prepare_default(
+            definition,
+            instance,
+            RecordCheckout::new(RecordId::room_default(), kind),
+            None,
+            inputs,
+        ),
+    }
+}
+
+/// Prepare `A` for a launch: the record its arguments name, and the
+/// arguments handed to the component for [`ResourceApp::launch`].
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_app<A: ResourceApp>(
+    definition: &ApplicationDefinition,
+    args: &LaunchArgs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    let arguments = args.positionals();
+    let named = A::launch_record(&LaunchInput::new(arguments, None));
+    let mut prepared = prepare_named(definition, args, named)?;
+    prepared
+        .context
+        .provide_launch_arguments(arguments.to_vec());
+    Ok(prepared)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    prepare_named(definition, args, None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_named(
+    definition: &ApplicationDefinition,
+    args: &LaunchArgs,
+    named: Option<RecordId>,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
     // Captures, audits and headless driving never touch the user's profile:
@@ -322,13 +409,7 @@ fn prepare_definition(
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
-        return host.prepare_default(
-            definition,
-            CAPTURE_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        );
+        return prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs);
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -337,23 +418,18 @@ fn prepare_definition(
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        return host.prepare_default(
-            definition,
-            DATA_DIR_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        );
+        return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs);
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    native.host_mut().prepare_default(
-        definition,
-        instance,
-        default_record_of(definition),
-        None,
-        inputs,
-    )
+    prepare_on(native.host_mut(), definition, instance, named, inputs)
+}
+
+/// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
+/// first idle tick does, before anything else drives the harness.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn settle_launch(harness: &mut FrameHarness) {
+    harness.wait_until(ui_core::time::Duration::ZERO, |_| true);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -361,6 +437,7 @@ fn capture<A: ResourceApp>(
     harness: &mut FrameHarness,
     args: &LaunchArgs,
 ) -> Result<(), LaunchError> {
+    settle_launch(harness);
     super::stage::stage::<A>(harness, args.scenario.as_deref())
 }
 
@@ -370,16 +447,45 @@ fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
 }
 
 #[cfg(tilo_native_runner)]
+struct LiveOptionsKey<A>(std::marker::PhantomData<A>);
+
+/// The options a live launch of `A` takes: its profile and its commands.
+#[cfg(tilo_native_runner)]
+fn live_options<A: ResourceApp>() -> &'static [&'static str] {
+    leaked(TypeId::of::<LiveOptionsKey<A>>(), || {
+        let mut options = vec!["--data-dir"];
+        options.extend(A::commands().iter().map(|command| command.option));
+        options
+    })
+    .as_slice()
+}
+
+/// Run the command a launch of `A` names, if it names one.
+#[cfg(tilo_native_runner)]
+fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
+    for command in A::commands() {
+        if let Some(value) = args.value(command.option) {
+            (command.run)(value)
+                .map_err(|error| LaunchError::Operation(format!("{}: {error}", command.option)))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     LaunchSpec::from_definition(definition::<A>())
-        .component_host(prepare_definition)
+        .component_host(prepare_app::<A>)
         .native_services()
         .capture_scenario(capture::<A>)
         .shot_viewport(shot_viewport::<A>)
         .scenarios(A::scenarios())
+        .max_positionals(A::ARGUMENTS)
+        .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
-        .allowed_live_options(&["--data-dir"])
+        .allowed_live_options(live_options::<A>())
 }
 
 #[cfg(not(tilo_native_runner))]

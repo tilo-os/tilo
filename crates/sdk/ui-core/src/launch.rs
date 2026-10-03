@@ -686,10 +686,10 @@ impl LaunchSpec {
     ///
     /// This keeps developer utilities such as fixture generation and benchmark
     /// drivers in the standard parser without making them part of the normal
-    /// screenshot or live-window lifecycle.
+    /// screenshot or live-window lifecycle. A component's in-process hosts
+    /// never run it: commands belong to the app's own process.
     #[must_use]
     pub fn command_handler(mut self, handler: CommandHandler) -> Self {
-        self.legacy_setup_override = true;
         self.command_handler = Some(handler);
         self
     }
@@ -1266,6 +1266,11 @@ fn run_with_args_with_attachment(
     });
 
     if spec.definition.is_some() {
+        if let Some(handler) = spec.command_handler
+            && handler(&args)?
+        {
+            return Ok(());
+        }
         if args.headless.is_none()
             && args.shots.is_none()
             && args.responsive_matrix.is_none()
@@ -3397,6 +3402,19 @@ mod tests {
                 panic!("handled command attached runtime")
             })
             .unwrap();
+            // A component's command runs before anything is prepared: no
+            // record, no window, no runtime.
+            CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
+            let spec = LaunchSpec::from_definition(
+                crate::application_test_support::runner_probe_definition(),
+            )
+            .component_host(fail_prepare)
+            .command_handler(custom_command);
+            run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
+                panic!("handled component command attached runtime")
+            })
+            .unwrap();
+            assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
         }
 
         // Case `explicit_runtime_attachment_policy_skips_bootstrap_for_native_launch`.
