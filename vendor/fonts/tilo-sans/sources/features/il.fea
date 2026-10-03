@@ -26,6 +26,14 @@ lookup IL_capital {
 	sub Idotbelow.ss01 by Idotbelow.ss01.ss13;
 	sub Idieresis.ss01 by Idieresis.ss01.ss13;
 	sub Idotaccent.ss01 by Idotaccent.ss01.ss13;
+	# the same capital in Greek and Cyrillic: a bare stem beside a serif
+	# Latin I would be ambiguous again
+	sub Iota by Iota.ss13;
+	sub Iotatonos by Iotatonos.ss13;
+	sub Iotadieresis by Iotadieresis.ss13;
+	sub Iotadieresis.ss01 by Iotadieresis.ss01.ss13;
+	sub I-cy by I-cy.ss13;
+	sub Yi-cy by Yi-cy.ss13;
 } IL_capital;
 
 lookup IL_lower {

@@ -26,6 +26,13 @@ are compared as horizontal profiles in 4-unit bands, the left glyph's
 widened by the minimum gap in every direction, so a tone mark that comes
 near a neighbour's ascender diagonally counts as well as one that touches.
 
+The distinct forms are checked the same way with ss13 and zero on: every
+I shape (Latin, its accented forms, Greek Ι Ϊ Ί, Cyrillic І Ї) and every
+precomposed l, both ways, beside the neighbours above plus the lowercase i
+accents, the apostrophe carons, ¿ ¡ and each other. Such a pair collides
+when it comes closer than MIN_GAP and closer than the same pair with ss13
+off; scripts/il_kern.py owns its kerning (and keeps it much further apart).
+
 A pair whose inks come closer than MIN_GAP (font units) is a collision.
 scripts/kerning.py opens the colliding pairs, by kerning group, to
 MIN_GAP + FIX_MARGIN at the masters, so the instances between them stay
@@ -77,6 +84,12 @@ CONTEXT = (
     + UNTONED + UNTONED.upper()
     + "‘’“”«»–—…·"
 )
+
+
+# With ss13 on: the forms that change (every I shape, every l) and the
+# neighbours that reach over or under a serif or tail.
+DISTINCT = "IÍÌÎÏĪĮİĨỈỊĲlĺľļłΙΪΊІЇ"
+DISTINCT_NEIGHBOURS = "ìíîïīĩĭǐỉťďľř¿¡ÍÎÏ0"
 
 
 class _Spans(BasePen):
@@ -184,15 +197,15 @@ def added_letters(font: TTFont) -> list[str]:
             if cp in by_cp and by_cp[cp] not in upstream and unicodedata.category(chr(cp))[0] in "LS"]
 
 
-def shape_pair(hbfont, text):
+def shape_pair(hbfont, text, features=None):
     buf = hb.Buffer()
     buf.add_str(text)
     buf.guess_segment_properties()
-    hb.shape(hbfont, buf, {"kern": True, "liga": False, "calt": False})
+    hb.shape(hbfont, buf, {"kern": True, "liga": False, "calt": False, **(features or {})})
     return buf.glyph_infos, buf.glyph_positions
 
 
-def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, show: int = 0):
+def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, show: int = 0, features=None):
     path = FONTS / font_file
     tt = TTFont(path)
     order = tt.getGlyphOrder()
@@ -211,7 +224,7 @@ def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, sho
                 cache[gid] = (left, right, dilate_right(right, min_gap), dilate_right(right, min_gap + FIX_MARGIN))
             return cache[gid]
         for text in pairs:
-            infos, poss = shape_pair(hbfont, text)
+            infos, poss = shape_pair(hbfont, text, features)
             if len(infos) != 2:
                 continue
             a, b = infos[0].codepoint, infos[1].codepoint
@@ -272,9 +285,27 @@ def pair_set(font_file: str) -> list[str]:
     return sorted(p for p in pairs if not (p[0].islower() and p[1].isupper()))
 
 
+def distinct_pair_set(font_file: str) -> list[str]:
+    """The serif I and the tailed l (ss13), every precomposed form and every
+    script's I, beside the context, the lowercase accents and apostrophe
+    carons, ¿ ¡ and each other, both ways."""
+    cmap = TTFont(FONTS / font_file).getBestCmap()
+    forms = [c for c in DISTINCT if ord(c) in cmap]
+    ctx = sorted(c for c in set(CONTEXT + DISTINCT_NEIGHBOURS + DISTINCT) if ord(c) in cmap)
+    pairs = set()
+    for v in forms:
+        for c in ctx:
+            if letter_script(c) not in (None, letter_script(v)):
+                continue
+            pairs.add(v + c)
+            pairs.add(c + v)
+    return sorted(pairs)
+
+
 def run(texts=(), min_gap=MIN_GAP, show=0, quiet=False, families=("upright", "italic"), between=True) -> list[str]:
     """Check the given families at the masters (and the instances between
-    them); returns the collisions."""
+    them), with the default forms and with the distinct forms (ss13, zero);
+    returns the collisions."""
     problems = []
     for key, (font_file, masters) in (("upright", UPRIGHT), ("italic", ITALIC)):
         if key not in families:
@@ -287,6 +318,17 @@ def run(texts=(), min_gap=MIN_GAP, show=0, quiet=False, families=("upright", "it
         for gap, master, text, need, *_ in results:
             if need > 0.5:
                 problems.append(f"{key:7s} {master:20s} {text!r:8s}: gap {gap:.0f}, kern +{math.ceil(need)} to reach {min_gap:g}")
+        if not texts:
+            # with ss13 on, a pair collides when it comes closer than the
+            # minimum and closer than the same pair with ss13 off (a pair the
+            # distinct forms do not change, such as '~ĺ', is upstream's)
+            distinct = distinct_pair_set(font_file)
+            plain = {(m, t): g for g, m, t, *_ in check(font_file, locations, distinct, min_gap)}
+            ss13 = sorted(check(font_file, locations, distinct, min_gap, features={"ss13": True, "zero": True}))
+            for gap, master, text, need, *_ in ss13:
+                if need > 0.5 and gap < plain.get((master, text), math.inf) - 0.5:
+                    problems.append(f"{key:7s} {master:20s} {text!r:8s} with ss13: gap {gap:.0f}, kern +{math.ceil(need)}"
+                                    f" to reach {min_gap:g} (scripts/il_kern.py owns these pairs)")
         if show and not quiet:
             print(f"-- {font_file}: tightest pairs")
             for gap, master, text, *_ in results[:show]:

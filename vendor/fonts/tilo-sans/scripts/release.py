@@ -44,8 +44,8 @@ HELD_BACK = {
         "features": [],
     },
     # Distinct I and l (ss13, cv01, cv02) and the slashed zero: held back
-    # until the serif I keeps its distance from 1, 4, ¿ and the accents
-    # diagonally, not only side by side.
+    # until review approves the diagonal clearances (serif I against 1, 4,
+    # ¿ and the accents) and I1 at 12-14 px (proofs/sheets/il-sheet/).
     "il": {
         "codepoints": [],
         "features": ["ss13", "cv01", "cv02", "zero"],

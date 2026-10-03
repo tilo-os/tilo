@@ -153,6 +153,12 @@
       <string>Ihookabove.ss13</string>
       <string>Idotbelow.ss13</string>
       <string>Idotbelow.ss01.ss13</string>
+      <string>Iota.ss13</string>
+      <string>Iotadieresis.ss13</string>
+      <string>Iotadieresis.ss01.ss13</string>
+      <string>I-cy.ss13</string>
+      <string>Yi-cy.ss13</string>
+      <string>Iotatonos.ss13</string>
     </array>
     <key>public.kern1.KO_Iacute</key>
     <array>
@@ -1244,6 +1250,11 @@
       <string>Ihookabove.ss13</string>
       <string>Idotbelow.ss13</string>
       <string>Idotbelow.ss01.ss13</string>
+      <string>Iota.ss13</string>
+      <string>Iotadieresis.ss13</string>
+      <string>Iotadieresis.ss01.ss13</string>
+      <string>I-cy.ss13</string>
+      <string>Yi-cy.ss13</string>
     </array>
     <key>public.kern2.KO_J</key>
     <array>
