@@ -13180,6 +13180,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-bluez",
+ "tilo-browser-peer",
  "tilo-callstream",
  "tilo-cli-kit",
  "tilo-clock",
