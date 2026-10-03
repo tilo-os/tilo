@@ -142,3 +142,43 @@ fn a_wrong_file_or_size_says_what_is_wrong() {
         .to_string();
     assert!(error.contains("not a Canvas artwork"), "{error}");
 }
+
+#[test]
+fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lands() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-welcome-close").unwrap();
+    let canvas = app.harness().targets()["canvas"];
+    let rail = app.harness().targets()["Tool"];
+    let (x, y) = (canvas.center().x, canvas.center().y);
+    // Click the select tool in the rail (its top segment), so the rail has
+    // the focus; then R picks up the rectangle anyway.
+    app.harness().click_at(rail.center().x, rail.y0 + 20.0);
+    app.harness().key("r");
+    app.harness()
+        .drag_at((x - 60.0, y - 40.0), (x + 60.0, y + 40.0));
+    let art = app.state();
+    assert_eq!(
+        art.marks
+            .iter()
+            .filter(|mark| mark.shape.kind() == "rect")
+            .count(),
+        1,
+        "R after a click in the rail drew a rectangle"
+    );
+    // Right after a drag on the canvas, a click on the ellipse (third in
+    // the rail) is taken, and the next drag draws an ellipse.
+    app.harness()
+        .drag_at((x - 100.0, y - 100.0), (x - 80.0, y - 80.0));
+    let segment = rail.height() / 8.0;
+    app.harness()
+        .click_at(rail.center().x, rail.y0 + segment * 3.5);
+    app.harness()
+        .drag_at((x + 80.0, y + 60.0), (x + 160.0, y + 120.0));
+    assert!(
+        app.state()
+            .marks
+            .iter()
+            .any(|mark| mark.shape.kind() == "ellipse"),
+        "the ellipse tool clicked right after a drag drew an ellipse"
+    );
+}
