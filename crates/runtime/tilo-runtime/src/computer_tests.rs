@@ -494,3 +494,33 @@ fn a_screenshot_after_input_is_one_request_the_compositor_settles() {
     );
     assert_eq!(ops.last().map(String::as_str), Some("snapshot"));
 }
+
+#[test]
+fn a_key_held_down_spans_the_steps_until_it_is_let_go() {
+    let fake = with_window();
+    let key = |action: &str| {
+        in_canvas(Action {
+            text: Some("space".into()),
+            ..act(action)
+        })
+    };
+    let drag = in_canvas(Action {
+        start_coordinate: Some([10.0, 20.0]),
+        coordinate: Some([300.0, 400.0]),
+        no_screenshot: Some(true),
+        ..act("left_click_drag")
+    });
+    fake.computer
+        .run(&[key("key_down"), drag, key("key_up")], true)
+        .unwrap();
+    let ops: Vec<String> = fake
+        .ops()
+        .iter()
+        .filter(|op| !matches!(op["op"].as_str(), Some("agent_seat" | "snapshot")))
+        .map(|op| format!("{} {}", op["op"].as_str().unwrap(), op["key"]))
+        .collect();
+    assert_eq!(
+        ops,
+        vec!["key_down \"Space\"", "drag null", "key_up \"Space\""]
+    );
+}
