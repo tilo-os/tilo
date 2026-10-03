@@ -157,7 +157,7 @@ fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> ui::headl
     driver
 }
 
-/// Press the History control the window presents: NavShell apps carry it in
+/// Press the History control the window presents: `NavShell` apps carry it in
 /// their header row, other apps in the window's History bar.
 fn click_history_opener(driver: &mut ui::headless::Driver) {
     let opener = ["nav-shell-history", "history-open"]
