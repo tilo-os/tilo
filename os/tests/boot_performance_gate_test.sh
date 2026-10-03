@@ -33,6 +33,8 @@ case "${2:-}" in
   --property=UserspaceTimestampMonotonic) printf '%s\n' "${TILO_TEST_USERSPACE_US:-}" ;;
   graphical.target) printf '%s\n' "${TILO_TEST_GRAPHICAL_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
   greetd.service) printf '%s\n' "${TILO_TEST_GREETD_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
+  ldconfig.service|systemd-hwdb-update.service)
+    case " ${TILO_TEST_REBUILT:-} " in *" $2 "*) echo yes ;; *) echo no ;; esac ;;
   *) exit 1 ;;
 esac
 EOF
@@ -68,6 +70,13 @@ chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
 grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
+
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_REBUILT=systemd-hwdb-update.service \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/rebuilt"; then
+  echo 'boot performance gate accepted a first boot that rebuilt the hardware database' >&2
+  exit 1
+fi
+grep -Fq 'this boot rebuilt caches the image already carries: systemd-hwdb-update.service' "$work/rebuilt"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/fail.out" 2>"$work/fail.err"; then
@@ -474,8 +483,19 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   exit 1
 fi
 
-grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile" || {
-  echo 'first boot regenerates the linker cache on the login critical chain' >&2
+# bootc drops /etc/.updated from every deployment, so the caches the image
+# builds must not hang on ConditionNeedsUpdate=/etc.
+dropin="$repo/os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf"
+{ grep -Fxq 'ConditionNeedsUpdate=' "$dropin" \
+    && grep -Fxq 'ConditionFileNotEmpty=|!/etc/ld.so.cache' "$dropin" \
+    && grep -Fq 'COPY os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf ' "$repo/os/Containerfile" \
+    && grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment regenerates the linker cache on the login critical chain' >&2
+  exit 1
+}
+{ grep -Fq '&& systemd-hwdb update --usr' "$repo/os/Containerfile" \
+    && grep -Fq '&& rm -f /etc/udev/hwdb.bin' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment rebuilds the hardware database' >&2
   exit 1
 }
 
