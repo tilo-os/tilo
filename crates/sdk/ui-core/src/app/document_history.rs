@@ -2,7 +2,7 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
-use crate::search::SEARCH_OPERATION;
+use crate::search::request::SEARCH_OPERATION;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
 use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
