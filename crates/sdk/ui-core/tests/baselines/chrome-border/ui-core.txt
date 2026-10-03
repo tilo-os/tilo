@@ -7,7 +7,6 @@ crates/sdk/ui-core/src/widget/category_chart.rs declared_border 1
 crates/sdk/ui-core/src/widget/context_menu.rs declared_border 1
 crates/sdk/ui-core/src/widget/distribution_chart.rs declared_border 1
 crates/sdk/ui-core/src/widget/divider.rs declared_border 1
-crates/sdk/ui-core/src/widget/floating_surface.rs declared_border 1
 crates/sdk/ui-core/src/widget/heatmap.rs declared_border 1
 crates/sdk/ui-core/src/widget/radar_chart.rs declared_border 3
-crates/sdk/ui-core/src/widget/video_player.rs declared_border 2
+crates/sdk/ui-core/src/widget/video_player.rs declared_border 1

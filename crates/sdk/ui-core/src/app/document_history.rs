@@ -547,6 +547,9 @@ impl App {
         let _ = self.history_local_resources();
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        self.document_history.set_app_presents_button(
+            crate::standalone_history_host::presents_history_button(self.root_widget.as_ref()),
+        );
         let layout = self.document_history.build_layout(
             app,
             &mut self.layout.taffy,

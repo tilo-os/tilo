@@ -297,14 +297,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 viewport,
                 shot_theme().with_text_scale(scale),
             );
-            harness.render_window_png(&output.join(format!("{mode}-{name}.png")));
+            harness.render_png(&output.join(format!("{mode}-{name}.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
             )?;
             harness.click_at(5.0, 5.0);
             harness.scroll(0.0, -10000.0);
-            harness.render_window_png(&output.join(format!("{mode}-{name}-end.png")));
+            harness.render_png(&output.join(format!("{mode}-{name}-end.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}-end.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
@@ -320,7 +320,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut resized =
             FrameHarness::new_with_theme(State::new(), root, (1080, 800), shot_theme());
         resized.resize((340, 800))?;
-        resized.render_window_png(&output.join(format!("{mode}-resized-narrow.png")));
+        resized.render_png(&output.join(format!("{mode}-resized-narrow.png")));
         std::fs::write(
             output.join(format!("{mode}-resized-narrow.json")),
             resized.inspection_json()?,
