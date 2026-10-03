@@ -150,6 +150,8 @@ fn main() {
                 "--error",
                 "--image-object",
                 "--blank",
+                "--outline",
+                "--margins",
             ])
             .shot_handler(run_shot)
             .prepare_legacy_with_args(prepare_launch),
@@ -216,6 +218,12 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     }
     if args.has("--styles") {
         wp.set_styles_panel_open(true);
+    }
+    if args.has("--outline") {
+        wp.set_outline_open(true);
+    }
+    if args.has("--margins") {
+        wp.set_margins_mode();
     }
     if args.has("--error") {
         wp.stage_error_for_shot();
@@ -476,9 +484,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     );
     state.commit_action(None, None);
 
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    // The clock a person reads, which a capture pins.
+    let now = ui::clock::local_now().timestamp();
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.
