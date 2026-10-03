@@ -184,18 +184,11 @@ impl ActionKind {
             ActionKind::Eject => format!("Eject {target}?"),
         }
     }
-    fn confirm_body(self, target: &str, live: bool) -> String {
+    fn confirm_body(self, target: &str) -> String {
         match self {
-            // In the live binary Format really erases the device; only the
-            // hermetic build is a no-op, so the reassurance that nothing is
-            // written must never appear when we can actually destroy data.
-            ActionKind::Format if live => {
+            ActionKind::Format => {
                 format!("Formatting erases all data on {target}. This cannot be undone.")
             }
-            ActionKind::Format => format!(
-                "Formatting erases all data on {target}. This cannot be undone. \
-                 Live disk access is off, so nothing will be written."
-            ),
             ActionKind::Unmount => {
                 format!("Detach {target} from the filesystem. Programs using it may lose access.")
             }
@@ -469,12 +462,6 @@ impl DisksApp {
             .built
             .is_some_and(|b| b.topology == key.topology && b.selected == key.selected);
         self.built = Some(key);
-        let Some(drive) = self.topo.drives.get(self.selected) else {
-            self.shell.set_sidebar(None);
-            self.shell.set_content_title("");
-            self.shell.set_content(view::empty_state(&self.intents));
-            return;
-        };
         if !listed_before {
             self.shell.set_sidebar(Some(Box::new(view::drive_list(
                 &self.topo,
@@ -482,6 +469,11 @@ impl DisksApp {
                 &self.intents,
             ))));
         }
+        let Some(drive) = self.topo.drives.get(self.selected) else {
+            self.shell.set_content_title("");
+            self.shell.set_content(view::empty_state(&self.intents));
+            return;
+        };
         let mut enabled = [false; 5];
         for (slot, kind) in enabled.iter_mut().zip(ActionKind::bar()) {
             *slot = self.action_enabled(drive, kind);
@@ -602,7 +594,7 @@ impl DisksApp {
         let target = self.pending_target_name(pending);
         let leaf = self.pending_target_leaf(pending);
         let title = pending.action.confirm_title(&target);
-        let body = pending.action.confirm_body(&target, self.live);
+        let body = pending.action.confirm_body(&target);
         let danger = pending.action.destructive();
         let ready = self.confirm_ready();
         let spacing = &theme.tokens.spacing;
@@ -763,8 +755,8 @@ impl DisksApp {
         }
     }
 
-    /// Actually perform (or, without live access, say why not) an action. Live
-    /// runs spawn a worker thread whose result is drained in `sync`.
+    /// Actually perform an action. Live runs spawn a worker thread whose
+    /// result is drained in `sync`.
     fn dispatch_action(&mut self, state: &mut AutoCommit, action: ActionKind, part: Option<usize>) {
         // Snapshot the target as owned strings so the drive borrow ends before
         // we mutate `self` / spawn a thread.
@@ -802,13 +794,9 @@ impl DisksApp {
                 format!("{} {dev}…", action.gerund()),
                 StatusTone::Info,
             );
-        } else {
-            self.report(
-                state,
-                format!("Live disk access is off, so nothing was changed on {dev}."),
-                StatusTone::Info,
-            );
         }
+        // A session without disk access (a capture, a test) changes nothing
+        // and has nothing to report.
         self.dirty = true;
     }
 
@@ -1190,7 +1178,7 @@ impl ui::widget::Decorator for DisksApp {
             let target = format!("/dev/{expected}");
             let mut dialog = AccessNode::new(Role::Dialog)
                 .with_name(pending.action.confirm_title(&target))
-                .with_description(pending.action.confirm_body(&target, self.live))
+                .with_description(pending.action.confirm_body(&target))
                 .with_bounds(modal.layout.card)
                 .with_hashed_key("disks.confirmation-dialog")
                 .with_state(AccessState::new().modal(true));
@@ -1519,7 +1507,7 @@ impl DisksApp {
             .ok_or_else(|| "missing device".to_string())?
             .clone();
         if !self.live {
-            return Err("live disk access is disabled".into());
+            return Err("disk operations are not available in this session".into());
         }
         // Re-check against the locally probed inventory immediately before
         // execution. This rejects stale remote/search invocations and ignores
@@ -1656,15 +1644,12 @@ mod tests {
             assert!(DisksDoc::pending(&doc).starts_with("format:"));
         }
 
-        // --- phase: non_destructive_action_reports_with_a_toast_and_no_sheet ---
+        // --- phase: non_destructive_action_opens_no_sheet ---
         {
             let (mut app, mut doc) = seeded_app();
-            // Benchmark always applies, so it reports on the toast with no sheet.
+            // Benchmark always applies, so it opens no sheet.
             app.trigger_action(&mut doc, ActionKind::Benchmark);
             assert!(app.pending.is_none());
-            assert!(!DisksDoc::status(&doc).is_empty());
-            let toast = app.toast.as_ref().expect("the result shows as a toast");
-            assert_eq!(toast.tone, StatusTone::Info);
         }
 
         // --- phase: confirm_requires_typed_name_then_clears_pending ---
@@ -1686,8 +1671,8 @@ mod tests {
             app.confirm_pending(&mut doc);
             assert!(app.pending.is_none(), "confirming clears the sheet");
             assert_eq!(DisksDoc::pending(&doc), "");
-            // Without live access nothing runs, and the result says so.
-            assert!(DisksDoc::status(&doc).contains("nothing was changed"));
+            // Without disk access nothing runs and nothing is reported.
+            assert!(DisksDoc::status(&doc).is_empty());
         }
 
         // --- phase: worker_results_become_terminal_updates_and_toasts ---
@@ -1892,7 +1877,7 @@ mod tests {
             assert!(app.confirm_ready());
             Framed::harness_mut(&mut app).key("Enter");
             assert!(app.pending.is_none(), "an exact match confirms");
-            assert!(DisksDoc::status(doc_of(&app)).contains("nothing was changed"));
+            assert!(DisksDoc::status(doc_of(&app)).is_empty());
         }
     }
 
@@ -1961,22 +1946,17 @@ mod tests {
         }
     }
 
-    /// The confirm sheet names the target, is honest about live access and gates on the typed name.
+    /// The confirm sheet names the target and warns that erasing cannot be undone.
     #[test]
-    fn the_confirm_sheet_is_honest_about_live_access() {
-        let demo = ActionKind::Format.confirm_body("/dev/sdz1", false);
+    fn the_confirm_sheet_warns_that_formatting_is_destructive() {
+        let body = ActionKind::Format.confirm_body("/dev/sdz1");
         assert!(
-            demo.contains("nothing will be written"),
-            "without live access the sheet says nothing is written: {demo}"
-        );
-        let live = ActionKind::Format.confirm_body("/dev/sdz1", true);
-        assert!(
-            !live.contains("nothing will be written"),
-            "the live sheet must not claim the format is inert: {live}"
+            body.contains("/dev/sdz1") && body.contains("erases all data"),
+            "the sheet names what it erases: {body}"
         );
         assert!(
-            live.contains("erases all data") && live.contains("cannot be undone"),
-            "the live sheet still warns the format is destructive: {live}"
+            body.contains("cannot be undone"),
+            "the sheet warns the format is destructive: {body}"
         );
     }
 
@@ -2021,7 +2001,7 @@ mod tests {
         // --- phase: empty_probe_shows_the_empty_state_not_a_sample ---
         {
             // The live path finding nothing must NOT fall back to fabricated
-            // devices: the list goes away and the empty state offers Rescan.
+            // devices: the list is empty and the empty state offers Rescan.
             let (mut app, mut doc) = seeded_app();
             DisksDoc::write_topology(&mut doc, &Topology::default());
             Widget::sync(&mut app, &mut doc, &ui::automerge::ROOT);
@@ -2031,8 +2011,8 @@ mod tests {
             );
             assert!(app.drive().is_none());
             assert!(
-                !app.shell.has_sidebar(),
-                "no drive list when there are no drives"
+                app.shell.has_sidebar(),
+                "the drive list stays, empty, so the window keeps its shape"
             );
         }
 

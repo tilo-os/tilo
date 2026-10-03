@@ -277,7 +277,7 @@ pub(crate) fn effect_operation_spec(
         } else {
             Availability::Unavailable {
                 code: "live_access_disabled".into(),
-                reason: "Live disk access is disabled".into(),
+                reason: "Disk operations are not available in this session".into(),
             }
         },
         permission: PermissionRequirement::Admin,
@@ -347,7 +347,9 @@ impl ResourceApp for DisksShell {
 
     fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
         match name {
-            "narrow" | "drawer" => Some((800, 600)),
+            "narrow" => Some((800, 600)),
+            // Narrow enough that the drive list collapses into a drawer.
+            "drawer" => Some((640, 600)),
             _ if name.starts_with("phone") => Some((520, 820)),
             _ => None,
         }

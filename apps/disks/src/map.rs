@@ -4,8 +4,9 @@
 //! device), so it paints itself; everything around it is the toolkit's: the
 //! "Whole disk" chip is a [`ChipFace`], the legend is measured by the renderer
 //! and wraps, and every colour, radius and gap comes from the theme.
-//! Partitions take their colour from the presence series, the same one every
-//! chart uses.
+//! A partition is not someone's presence, so the bar carries no hue: each block
+//! is a neutral lift whose darker share is the part of the filesystem in use,
+//! and the unallocated tail is an outline.
 
 use std::collections::HashMap;
 
@@ -18,12 +19,15 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::tokens::colors::Colors;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::vello::peniko::Color;
 use ui::widget::{AppModel, ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
+
+/// Opacity of the outline that marks space no partition claims.
+const OUTLINE_ALPHA: u8 = 0x59;
 
 /// One block of the bar: a partition, or the unallocated tail.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +40,8 @@ pub struct MapEntry {
     pub label: String,
     /// Bytes the block spans.
     pub size: u64,
+    /// Share of the block's filesystem in use, when it is known.
+    pub used: Option<f64>,
 }
 
 /// What the pointer is over.
@@ -50,7 +56,6 @@ enum Hover {
 #[derive(Clone, Debug, Default)]
 struct Geometry {
     chip: Rect,
-    track: Rect,
     segments: Vec<Rect>,
     legend: Vec<Rect>,
     height: f64,
@@ -145,16 +150,15 @@ impl PartitionMap {
         let height = legend.iter().map(|r| r.y1).fold(track.y1, f64::max);
         Geometry {
             chip,
-            track,
             segments,
             legend,
             height,
         }
     }
 
-    /// One entry per block (swatch, then its label in `Caption`), measured by
-    /// the renderer and wrapped before the trailing edge so a long label never
-    /// overlaps its neighbour.
+    /// One entry per block (its label in `Caption`), measured by the renderer
+    /// and wrapped before the trailing edge so a long label never overlaps its
+    /// neighbour.
     fn lay_out_legend(
         &self,
         width: f64,
@@ -163,7 +167,6 @@ impl PartitionMap {
         theme: &Theme,
     ) -> Vec<Rect> {
         let style = theme.text(TextRole::Caption);
-        let swatch = f64::from(theme.tokens.spacing.s2);
         let gap = f64::from(theme.tokens.spacing.rhythm.section);
         let row = f64::from(text.measure_style("Ag", None, &style).1)
             + f64::from(theme.tokens.spacing.rhythm.tight);
@@ -174,9 +177,7 @@ impl PartitionMap {
             .iter()
             .map(|entry| {
                 let label = f64::from(text.measure_style(&entry.label, None, &style).0);
-                let entry_w = (swatch + f64::from(theme.tokens.metrics.icon_label_gap) + label)
-                    .ceil()
-                    .min(available);
+                let entry_w = label.ceil().min(available);
                 if x > 0.0 && x + entry_w > width {
                     x = 0.0;
                     y += row;
@@ -188,25 +189,14 @@ impl PartitionMap {
             .collect()
     }
 
-    fn paint_legend_entry(
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        colour: Color,
-        label: &str,
-        hovered: bool,
-    ) {
+    fn paint_legend_entry(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, lit: bool) {
         let theme = ctx.theme;
         let style = theme.text(TextRole::Caption);
-        let swatch = f64::from(theme.tokens.spacing.s2);
-        let gap = f64::from(theme.tokens.metrics.icon_label_gap);
-        let centre = rect.center().y;
-        let dot =
-            Rect::from_center_size(Point::new(rect.x0 + swatch / 2.0, centre), (swatch, swatch));
-        ctx.fill_round(dot, f64::from(theme.tokens.radii.full), colour);
-        let room = (rect.width() - swatch - gap).max(0.0) as f32;
-        let shown = ctx.text.elide_to_width_style(label, room, &style);
+        let shown = ctx
+            .text
+            .elide_to_width_style(label, rect.width() as f32, &style);
         let height = f64::from(ctx.text.measure_style(&shown, None, &style).1);
-        let ink = if hovered {
+        let ink = if lit {
             theme.text_primary
         } else {
             theme.text_dim
@@ -215,18 +205,31 @@ impl PartitionMap {
             ctx.scene,
             &shown,
             ink,
-            ctx.transform * Affine::translate((rect.x0 + swatch + gap, centre - height / 2.0)),
+            ctx.transform * Affine::translate((rect.x0, rect.center().y - height / 2.0)),
             None,
             &style,
         );
     }
 
-    fn colour_of(theme: &Theme, index: usize, entry: &MapEntry) -> Color {
+    /// Paint one block: a neutral lift with the used share darker, or, for
+    /// the unallocated tail, an outline.
+    fn paint_block(ctx: &mut PaintCtx<'_>, rect: Rect, entry: &MapEntry, hovered: bool) {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        if entry.partition.is_some() {
-            colors.presence.series(index)
-        } else {
-            colors.lift_on(colors.surfaces.raised, 1.0)
+        let ground = colors.surfaces.content;
+        let radius = f64::from(theme.tokens.radii.item);
+        if entry.partition.is_none() {
+            let edge = Colors::hairline_on(ground, OUTLINE_ALPHA);
+            let width = f64::from(theme.tokens.metrics.chrome_rule_px);
+            ctx.stroke_round(rect, radius, edge, width);
+            return;
+        }
+        let step = if hovered { 0.5 } else { 0.0 };
+        ctx.fill_round(rect, radius, colors.lift_on(ground, 1.0 + step));
+        let used = entry.used.unwrap_or(0.0).clamp(0.0, 1.0);
+        if used > 0.0 {
+            let share = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * used, rect.y1);
+            ctx.fill_round(share, radius, colors.lift_on(ground, 2.5 + step));
         }
     }
 
@@ -330,34 +333,25 @@ impl Widget for PartitionMap {
             .hovered(self.hover == Some(Hover::Whole))
             .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 
-        // The device: a track, and each partition's share of it.
+        // The device: each block's share of it.
         let radii = &theme.tokens.radii;
-        let track = at(geometry.track);
-        ctx.fill_round(track, f64::from(radii.control), colors.surfaces.raised);
         for (i, (entry, segment)) in self.entries.iter().zip(&geometry.segments).enumerate() {
             let hovered =
                 matches!(self.hover, Some(Hover::Segment(h) | Hover::Legend(h)) if h == i);
-            let base = Self::colour_of(theme, i, entry);
-            let fill = if hovered {
-                colors.lift_on(base, 0.5)
-            } else {
-                base
-            };
             let rect = at(*segment);
-            let radius = f64::from(radii.item);
-            ctx.fill_round(rect, radius, fill);
+            Self::paint_block(&mut ctx, rect, entry, hovered);
             if self.is_selected(entry) {
                 let ring = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
-                ctx.stroke_round(rect, radius, colors.text_primary, ring);
+                ctx.stroke_round(rect, f64::from(radii.item), colors.text_primary, ring);
             }
         }
 
         // The legend names every block, including the ones too thin to label.
         for (i, (entry, rect)) in self.entries.iter().zip(&geometry.legend).enumerate() {
-            let colour = Self::colour_of(theme, i, entry);
             let hovered =
                 matches!(self.hover, Some(Hover::Segment(h) | Hover::Legend(h)) if h == i);
-            Self::paint_legend_entry(&mut ctx, at(*rect), colour, &entry.label, hovered);
+            let lit = hovered || self.is_selected(entry);
+            Self::paint_legend_entry(&mut ctx, at(*rect), &entry.label, lit);
         }
     }
 
@@ -479,6 +473,7 @@ mod tests {
             device: device.into(),
             label: label.into(),
             size,
+            used: partition.map(|_| 0.5),
         };
         vec![
             block(Some(0), "sda1", "EFI System 536.9 MB", 536_870_912),
@@ -518,10 +513,7 @@ mod tests {
             assert!(pair[0].x1 <= pair[1].x0, "blocks do not overlap: {pair:?}");
         }
         let last = g.segments.last().unwrap();
-        assert!(
-            last.x1 <= g.track.x1 + 0.5,
-            "the last block ends inside the track"
-        );
+        assert!(last.x1 <= 900.5, "the last block ends inside the track");
         let sliver = g.segments.first().unwrap();
         assert!(
             sliver.width() >= 4.0,
@@ -529,11 +521,11 @@ mod tests {
             sliver.width()
         );
         assert!(
-            g.chip.y1 < g.track.y0,
+            g.chip.y1 < g.segments[0].y0,
             "the chip sits above the bar with a gap"
         );
         assert!(
-            g.legend.iter().all(|r| r.y0 >= g.track.y1),
+            g.legend.iter().all(|r| r.y0 >= g.segments[0].y1),
             "the legend sits below the bar"
         );
     }
