@@ -61,7 +61,6 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             // the video shutter and switcher state can be captured headless.
             ("--mode", "CAMERA_MODE"),
             ("--dir", "CAMERA_DIR"),
-            ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
             ("--mode", "CAMERA_SHOT_MODE"),
         ] {
@@ -77,12 +76,6 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         }
         if let Some(state) = args.value("--camera-state") {
             std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
-        }
-        // Sample timestamps and relative labels must be byte-for-byte stable
-        // across offscreen renders. A caller can still override this fixed
-        // fixture clock explicitly when it needs a particular reference time.
-        if args.shots.is_some() && std::env::var_os("CAMERA_SHOT_NOW").is_none() {
-            std::env::set_var("CAMERA_SHOT_NOW", "1800000000");
         }
         if args.has("--crop") {
             std::env::set_var("CAMERA_CROP", "1");
@@ -133,7 +126,6 @@ pub fn main() {
                 "--screen",
                 "--mode",
                 "--dir",
-                "--scroll",
                 "--hover",
                 "--width",
                 "--height",
