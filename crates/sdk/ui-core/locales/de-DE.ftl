@@ -2,6 +2,7 @@ counter = Wert: { $count }
 btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
+standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
 standalone-history-restore-title = Diese Version wiederherstellen?
 standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
