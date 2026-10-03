@@ -95,6 +95,7 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
+pub mod root_envelope;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,

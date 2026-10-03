@@ -95,6 +95,8 @@ zeroize.workspace = true
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
 # out loud without garble; the alphabet is declared at compile time.
 data-encoding.workspace = true
+# The browser-computed wrap of a root envelope.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 data-encoding-macro.workspace = true
 
 [target.'cfg(windows)'.dependencies]
