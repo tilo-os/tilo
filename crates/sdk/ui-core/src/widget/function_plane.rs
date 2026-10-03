@@ -342,6 +342,52 @@ pub fn nice_step(raw: f64) -> f64 {
     nice * magnitude
 }
 
+/// Axis ticks on a 1-2-5 step inside `[min, max]`: at most `max_count`, at
+/// least two, every one a round number at its step's precision, so an axis
+/// reads 0, 10, 20, 30 instead of 0, 11.5, 23, 34.5. A range too narrow or
+/// too odd for two round ticks gets its two ends.
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "tick indices are small whole numbers bounded by max_count"
+)]
+pub fn nice_ticks(min: f64, max: f64, max_count: usize) -> Vec<f64> {
+    let ends = || {
+        if min.is_finite() && max.is_finite() {
+            vec![min, max]
+        } else {
+            Vec::new()
+        }
+    };
+    if !min.is_finite() || !max.is_finite() || max <= min || max_count < 2 {
+        return ends();
+    }
+    let mut step = nice_step((max - min) / (max_count - 1) as f64);
+    for _ in 0..8 {
+        let first = (min / step - 1e-9).ceil();
+        let last = (max / step + 1e-9).floor();
+        let count = last - first + 1.0;
+        if count > max_count as f64 {
+            step = nice_step(step * 1.6);
+            continue;
+        }
+        if count < 2.0 {
+            return ends();
+        }
+        let decimals = if step >= 1.0 {
+            0
+        } else {
+            (-step.log10().floor()).clamp(0.0, 12.0) as i32
+        };
+        let scale = 10f64.powi(decimals);
+        return (0..count as i64)
+            .map(|k| (((first + k as f64) * step) * scale).round() / scale)
+            .collect();
+    }
+    ends()
+}
+
 /// A tick value at the precision its `step` implies, without trailing
 /// zeros: `0.5`, `2`, `-0.25`, and exactly `0` at the origin.
 pub fn format_tick(value: f64, step: f64) -> String {
@@ -364,6 +410,27 @@ pub fn format_tick(value: f64, step: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn axis_ticks_are_round_numbers_inside_the_range() {
+        assert_eq!(nice_ticks(0.0, 46.0, 5), vec![0.0, 10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(nice_ticks(-0.5, 12.5, 6), vec![0.0, 5.0, 10.0]);
+        assert_eq!(nice_ticks(-0.3, 5.3, 4), vec![0.0, 2.0, 4.0]);
+        assert_eq!(
+            nice_ticks(38.48, 60.52, 5),
+            vec![40.0, 45.0, 50.0, 55.0, 60.0]
+        );
+        assert_eq!(nice_ticks(0.1, 0.7, 4), vec![0.2, 0.4, 0.6]);
+        for (min, max, count) in [(0.0, 46.0, 5), (3.0, 3.2, 3), (-7.0, 1e6, 6)] {
+            let ticks = nice_ticks(min, max, count);
+            assert!(
+                ticks.len() >= 2 && ticks.len() <= count,
+                "{min}..{max}: {ticks:?}"
+            );
+            assert!(ticks.iter().all(|t| *t >= min && *t <= max), "{ticks:?}");
+        }
+        assert_eq!(nice_ticks(1.0, 1.0, 5), vec![1.0, 1.0]);
+    }
 
     #[test]
     fn nice_steps_follow_one_two_five() {

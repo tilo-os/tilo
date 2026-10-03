@@ -13,7 +13,7 @@
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -109,6 +109,8 @@ pub struct TimePicker {
     minute_rect: Rect,
     second_rect: Rect, // ZERO when seconds == None
     last_cursor: Point,
+    /// The pointer is over the picker, so the arrow under it lifts.
+    pointer_inside: bool,
     is_focused: bool,
     /// Which cell consumes the next digit key. Set by clicking a
     /// value cell or by Tab cycling. `None` while no cell is in
@@ -140,6 +142,7 @@ impl TimePicker {
             minute_rect: Rect::ZERO,
             second_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            pointer_inside: false,
             is_focused: false,
             focused_cell: None,
             digit_buffer: String::new(),
@@ -431,31 +434,43 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    fn draw_chevron(
+    /// One step arrow: a chevron from the icon set, lifted while the
+    /// pointer is over it like any quiet control.
+    fn draw_step_arrow(
         scene: &mut Scene,
         transform: Affine,
+        theme: &Theme,
         cell: Rect,
-        color: vello::peniko::Color,
+        hovered: bool,
         up: bool,
     ) {
-        // Triangle inscribed in the central ~50% of the cell, keeping the
-        // hit area larger than the visible arrow.
-        let cx = cell.center().x;
-        let cy = cell.center().y;
-        let w = cell.width() * 0.35;
-        let h = cell.height() * 0.30;
-        let mut path = BezPath::new();
-        if up {
-            path.move_to((cx - w, cy + h / 2.0));
-            path.line_to((cx + w, cy + h / 2.0));
-            path.line_to((cx, cy - h / 2.0));
-        } else {
-            path.move_to((cx - w, cy - h / 2.0));
-            path.line_to((cx + w, cy - h / 2.0));
-            path.line_to((cx, cy + h / 2.0));
+        let colors = &theme.tokens.colors;
+        if hovered {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.intent.selection_hover,
+                None,
+                &RoundedRect::from_rect(cell, f64::from(theme.tokens.radii.control)),
+            );
         }
-        path.close_path();
-        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &path);
+        let edge = f64::from(theme.tokens.metrics.icon_sm);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(cell.center(), (edge, edge)),
+            if up {
+                crate::icons::Icon::ChevronUp
+            } else {
+                crate::icons::Icon::ChevronDown
+            },
+            if hovered {
+                colors.text_primary
+            } else {
+                theme.text_dim
+            },
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 }
 
@@ -513,8 +528,9 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.detail);
-        let text_style = theme.text(TextRole::Heading);
+        // Each value cell is a control: the control radius.
+        let radius = f64::from(theme.tokens.radii.control);
+        let text_style = theme.text(TextRole::Heading).numeric();
 
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
@@ -563,8 +579,16 @@ impl Widget for TimePicker {
                 &text_style,
             );
 
-            Self::draw_chevron(scene, transform, up_rect, colors.text_dim, true);
-            Self::draw_chevron(scene, transform, down_rect, colors.text_dim, false);
+            let hovered = |rect: Rect| self.pointer_inside && rect.contains(self.last_cursor);
+            Self::draw_step_arrow(scene, transform, theme, up_rect, hovered(up_rect), true);
+            Self::draw_step_arrow(
+                scene,
+                transform,
+                theme,
+                down_rect,
+                hovered(down_rect),
+                false,
+            );
         }
 
         // Colons at the same point size as the value text so baselines line up.
@@ -606,7 +630,9 @@ impl Widget for TimePicker {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer_inside = self.rect.contains(self.last_cursor);
             }
+            WindowEvent::CursorLeft { .. } => self.pointer_inside = false,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,

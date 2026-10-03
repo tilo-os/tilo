@@ -286,7 +286,9 @@ impl Theme {
     /// the text tiers are re-measured against it ([`Self::on_surface`]) and
     /// the selection lift steps from it, so a widget that paints "ink on
     /// the window ground" or "the selected row" is right on whatever ground
-    /// its container handed it. Every other token is unchanged.
+    /// its container handed it. `surfaces.raised` stays off the ground
+    /// ([`crate::tokens::Colors::raised_on`]), so a control's face never
+    /// sinks into a lighter panel. Every other token is unchanged.
     #[must_use]
     pub fn on_ground(&self, ground: Color) -> Self {
         let mut theme = self.clone();
@@ -295,6 +297,7 @@ impl Theme {
         }
         let on = self.tokens.colors.on_surface(ground);
         let c = &mut theme.tokens.colors;
+        c.surfaces.raised = c.raised_on(ground);
         c.surfaces.content = ground;
         c.text_primary = on.ink;
         c.text_dim = on.ink_dim;
@@ -757,6 +760,48 @@ mod tests {
                     t.name
                 );
             }
+        }
+    }
+
+    /// A control's face stands off every ground it is placed on the way it
+    /// stands off the window: on a floating panel lighter than the raised
+    /// tier, a secondary button or a field does not sink into the panel.
+    #[test]
+    fn a_raised_face_stands_off_every_ground() {
+        use crate::color::Oklch;
+        let l = |c: Color| Oklch::from_color(c).l;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let colors = &t.tokens.colors;
+            let step = l(colors.surfaces.raised) - l(colors.surfaces.content);
+            if step.abs() <= f32::EPSILON {
+                continue;
+            }
+            let panel = crate::chrome::panel_ground(&t);
+            for ground in [
+                colors.surfaces.content,
+                colors.surfaces.sidebar,
+                colors.surfaces.inspector,
+                panel,
+            ] {
+                let raised = t.on_ground(ground).tokens.colors.surfaces.raised;
+                let off = (l(raised) - l(ground)).abs();
+                assert!(
+                    off + 1e-4 >= step.abs() / 2.0,
+                    "{}: a face on {ground:?} stands {off:.3} off it (step {step:.3})",
+                    t.name
+                );
+            }
+            // The window's regions keep the raised tier itself.
+            assert_eq!(
+                t.in_region(crate::surface::Region::Sidebar)
+                    .tokens
+                    .colors
+                    .surfaces
+                    .raised,
+                colors.surfaces.raised,
+                "{}",
+                t.name
+            );
         }
     }
 
