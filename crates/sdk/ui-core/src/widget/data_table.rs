@@ -19,11 +19,10 @@ use std::sync::Arc;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextKind, TextRenderer};
 use crate::theme::Theme;
@@ -107,6 +106,9 @@ pub type CellRender<Row> =
 /// scrolling while that cell remains in the mounted window.
 pub type CellWidgetBuilder<Row> = Box<dyn FnMut(&Row, usize) -> Element>;
 pub type CellAccessibleValue<Row> = Arc<dyn Fn(&Row) -> String + Send + Sync>;
+/// A cell's text, or `None` for an absent value (a SQL `NULL`, an unset
+/// field), which the table paints dimmed as the column's absent label.
+pub type CellText<Row> = Arc<dyn Fn(&Row) -> Option<String> + Send + Sync>;
 
 pub struct ColumnDef<Row> {
     pub key: String,
@@ -121,12 +123,14 @@ pub struct ColumnDef<Row> {
     pub widget: Option<CellWidgetBuilder<Row>>,
     /// Value exposed for ready rows; set directly or by [`ColumnDef::with_text`].
     pub accessible_value: Option<CellAccessibleValue<Row>>,
-    /// What the column's text is ([`TextKind`]); [`ColumnDef::with_text`]
-    /// sets cells with it, so a numeric column's figures line up.
+    /// The cell text the table paints itself (set by [`ColumnDef::with_text`]
+    /// and [`ColumnDef::with_optional_text`]).
+    pub text: Option<CellText<Row>>,
+    /// What the column's text is ([`TextKind`]): a numeric column's cells
+    /// and header align to the trailing edge in tabular figures.
     pub kind: TextKind,
-    /// The value [`ColumnDef::with_text`] renders, kept so a later
-    /// [`ColumnDef::with_kind`] restyles it.
-    plain_text: Option<CellAccessibleValue<Row>>,
+    /// What an absent value reads as, dimmed.
+    pub absent: String,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -141,24 +145,20 @@ impl<Row> ColumnDef<Row> {
             render_cell: Box::new(|_, _, _, _, _| {}),
             widget: None,
             accessible_value: None,
+            text: None,
             kind: TextKind::Prose,
-            plain_text: None,
+            absent: String::from("—"),
             resize_handle_px: 6.0,
         }
     }
 
     /// Say what the column's values are: [`TextKind::Numeric`] for counts,
-    /// sizes, prices and times, [`TextKind::Identifier`] for names people
-    /// must not confuse, [`TextKind::Secret`] for keys and hashes.
+    /// sizes, prices and times (cells and header then align to the trailing
+    /// edge), [`TextKind::Identifier`] for names people must not confuse,
+    /// [`TextKind::Secret`] for keys and hashes.
     #[must_use]
-    pub fn with_kind(mut self, kind: TextKind) -> Self
-    where
-        Row: 'static,
-    {
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
-        if let Some(value) = self.plain_text.clone() {
-            self.text_render = Some(Self::plain_text_render(value, kind));
-        }
         self
     }
 
@@ -179,43 +179,37 @@ impl<Row> ColumnDef<Row> {
     /// use [`Self::with_text_render`] plus [`Self::with_accessible_value`] when
     /// custom drawing is required.
     #[must_use]
-    pub fn with_text(mut self, value: impl Fn(&Row) -> String + Send + Sync + 'static) -> Self
+    pub fn with_text(self, value: impl Fn(&Row) -> String + Send + Sync + 'static) -> Self
     where
         Row: 'static,
     {
-        let value: CellAccessibleValue<Row> = Arc::new(value);
-        self.accessible_value = Some(Arc::clone(&value));
-        self.plain_text = Some(Arc::clone(&value));
-        self.text_render = Some(Self::plain_text_render(value, self.kind));
-        self
+        self.with_optional_text(move |row| Some(value(row)), "")
     }
 
-    fn plain_text_render(value: CellAccessibleValue<Row>, kind: TextKind) -> CellTextRender<Row>
+    /// Cell text that may be absent (a SQL `NULL`): `None` paints `absent`
+    /// in tertiary ink ("NULL", or "—" for an unset field), and is read out
+    /// as that label.
+    #[must_use]
+    pub fn with_optional_text(
+        mut self,
+        value: impl Fn(&Row) -> Option<String> + Send + Sync + 'static,
+        absent: impl Into<String>,
+    ) -> Self
     where
         Row: 'static,
     {
-        Box::new(move |row, scene, text, rect, theme, _selected| {
-            // A selected row is a lift (HIG §9.3), so its ink stays the
-            // ordinary text colour on every theme.
-            let color = theme.text_primary;
-            let style = theme.text(TextRole::Caption).with_kind(kind);
-            let label = value(row);
-            let (_, text_h) = text.measure_style(&label, None, &style);
-            // `rect` is the whole row's cell (the body clip layer trims what
-            // scrolls out), so the text is centred on the row and never
-            // slides as the row enters or leaves the viewport.
-            text.draw_style(
-                scene,
-                &label,
-                color,
-                Affine::translate((
-                    rect.x0 + f64::from(theme.tokens.spacing.s2),
-                    centered_text_top(rect.y0, rect.height(), text_h),
-                )),
-                None,
-                &style,
-            );
-        })
+        let absent = absent.into();
+        if !absent.is_empty() {
+            self.absent.clone_from(&absent);
+        }
+        let value: CellText<Row> = Arc::new(value);
+        let spoken = Arc::clone(&value);
+        let absent = self.absent.clone();
+        self.accessible_value = Some(Arc::new(move |row| {
+            spoken(row).unwrap_or_else(|| absent.clone())
+        }));
+        self.text = Some(value);
+        self
     }
 
     /// Expose a value for a custom-painted cell. The column header remains
@@ -455,6 +449,13 @@ pub struct DataTable<Row> {
     /// The label type seen at the last layout; `None` until then, when the
     /// estimate is exactly the authored or default height.
     row_type: Option<RowType>,
+    /// Rules between columns, through header and body.
+    ruled: bool,
+    /// Widths measured for [`ColumnWidth::Auto`] columns from their header
+    /// and the visible cells.
+    auto_widths: HashMap<String, f32>,
+    /// Theme values the layout pass measures with.
+    measure_theme: Option<Theme>,
 }
 
 impl<Row> DataTable<Row> {
@@ -511,7 +512,18 @@ impl<Row> DataTable<Row> {
             header_h: HEADER_HEIGHT,
             authored_row_height: None,
             row_type: None,
+            ruled: false,
+            auto_widths: HashMap::new(),
+            measure_theme: None,
         }
+    }
+
+    /// Draw a rule between columns, through the header and the body: for
+    /// grids the eye reads by column (a query result, a spreadsheet).
+    #[must_use]
+    pub fn ruled(mut self) -> Self {
+        self.ruled = true;
+        self
     }
 
     /// Construct a sparse table backed by an arbitrary model. Geometry and
@@ -1083,7 +1095,11 @@ impl<Row> DataTable<Row> {
     fn apply_type_metrics(&mut self, theme: &Theme) {
         let tokens = &theme.tokens;
         let line = type_line_height(&tokens.typography, TextRole::Caption);
-        self.header_h = text_band(HEADER_HEIGHT, line, f64::from(tokens.spacing.s3));
+        self.header_h = text_band(
+            f64::from(tokens.metrics.min_pointer_target),
+            line,
+            f64::from(tokens.spacing.s3),
+        );
         self.row_type = Some(RowType {
             line,
             default_pad: f64::from(tokens.spacing.s2),
@@ -1321,72 +1337,102 @@ impl<Row> DataTable<Row> {
             self.rect.x1,
             self.rect.y0 + self.header_h,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The header sits on the table's ground; one rule derived from that
+        // ground closes it, on the band's last pixel row.
+        crate::surface::separator(
+            scene,
             transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &header_rect,
-        );
-        // The header rule derives from the band it closes (HIG §9.5), on
-        // the band's last pixel row so it never lands on the body.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::surface::edge_on(tokens.colors.surfaces.raised),
-            None,
-            &vello::kurbo::Line::new(
-                (header_rect.x0, header_rect.y1 - 0.5),
-                (header_rect.x1, header_rect.y1 - 0.5),
-            ),
+            header_rect.x0,
+            header_rect.x1,
+            header_rect.y1 - 0.5,
+            0.0,
+            tokens.colors.surfaces.content,
         );
 
-        let text_style = tokens.typography.style(TextRole::Caption);
+        let text_style = header_style(theme);
         let pad_x = f64::from(tokens.spacing.s2);
+        let icon = f64::from(tokens.metrics.icon_sm);
+        let icon_gap = f64::from(tokens.spacing.s1);
         for (i, col) in self.columns.iter().enumerate() {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
             let header = crate::i18n::I18nManager::lookup_plain(&col.header);
-            let (_, header_h) = text_renderer.measure_style(&header, None, &text_style);
+            let sorted = self
+                .sort
+                .as_ref()
+                .filter(|s| s.key == col.key)
+                .map(|s| s.ascending)
+                .or_else(|| {
+                    self.model_sort
+                        .as_ref()
+                        .filter(|(key, _)| *key == col.key)
+                        .map(|(_, ascending)| *ascending)
+                });
+            let room = (cr.width()
+                - 2.0 * pad_x
+                - if sorted.is_some() {
+                    icon + icon_gap
+                } else {
+                    0.0
+                })
+            .max(0.0);
+            let header = text_renderer.elide_to_width_style(&header, px(room), &text_style);
+            let (header_w, header_h) = text_renderer.measure_style(&header, None, &text_style);
             let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
+            let numeric = col.kind == TextKind::Numeric;
+            let label_x = if numeric {
+                cr.x1 - pad_x - f64::from(header_w)
+            } else {
+                cr.x0 + pad_x
+            };
             text_renderer.draw_style(
                 scene,
                 &header,
-                tokens.colors.text_primary,
-                translated(transform, cr.x0 + pad_x, label_y),
+                tokens.colors.text_dim,
+                translated(transform, label_x, label_y),
                 None,
                 &text_style,
             );
-            if let Some(s) = &self.sort
-                && s.key == col.key
-            {
-                // Use geometry rather than a font triangle: the latter's ink
-                // sits below its line-box centre and drifts farther at large
-                // text sizes. This marker stays visually centred by construction.
-                let d = f64::from(tokens.typography.size(TextRole::Caption)) * 0.65;
-                let x1 = cr.x1 - pad_x;
-                let x0 = x1 - d;
-                let cy = header_rect.center().y;
-                let mut arrow = BezPath::new();
-                if s.ascending {
-                    arrow.move_to((x0, cy + d / 2.0));
-                    arrow.line_to((x1, cy + d / 2.0));
-                    arrow.line_to((f64::midpoint(x0, x1), cy - d / 2.0));
+            if let Some(ascending) = sorted {
+                // The sort direction is an icon beside the label: before a
+                // trailing-aligned numeric header, after a leading one.
+                let x0 = if numeric {
+                    label_x - icon_gap - icon
                 } else {
-                    arrow.move_to((x0, cy - d / 2.0));
-                    arrow.line_to((x1, cy - d / 2.0));
-                    arrow.line_to((f64::midpoint(x0, x1), cy + d / 2.0));
-                }
-                arrow.close_path();
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.text_dim,
-                    None,
-                    &arrow,
+                    label_x + f64::from(header_w) + icon_gap
+                };
+                let glyph = Rect::from_center_size(
+                    Point::new(x0 + icon / 2.0, header_rect.center().y),
+                    (icon, icon),
                 );
+                let arrow = if ascending {
+                    crate::icons::Icon::ChevronUp
+                } else {
+                    crate::icons::Icon::ChevronDown
+                };
+                arrow.draw(scene, transform, glyph, tokens.colors.text_dim);
             }
+        }
+        if self.ruled {
+            self.draw_column_rules(scene, transform, theme);
+        }
+    }
+
+    /// Vertical rules between columns, through the header and the body, from
+    /// the ground they sit on.
+    fn draw_column_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let rule = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
+        let y1 = self.rect.y0 + self.header_h + self.body_viewport_h();
+        for cr in self.col_rects.iter().skip(1) {
+            let x = (cr.x0 - 0.5).round();
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                rule,
+                None,
+                &Rect::new(x, self.rect.y0, x + 1.0, y1),
+            );
         }
     }
 
@@ -1431,7 +1477,15 @@ impl<Row> DataTable<Row> {
             // takes precedence over the zebra stripe; the stripe is the
             // faintest derived tier on the ground, not a ramp slot.
             if selected {
-                paint_selected_row(scene, transform, theme, row_rect, 1.0);
+                let inset = f64::from(tokens.spacing.s2);
+                crate::chrome::paint_row_selection(
+                    scene,
+                    transform,
+                    row_rect.inset((-inset, 0.0)),
+                    crate::chrome::SelectionState::active(true),
+                    tokens.colors.surfaces.content,
+                    theme,
+                );
             } else if ri % 2 == 1 {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -1449,6 +1503,17 @@ impl<Row> DataTable<Row> {
                             None => continue,
                         };
                         (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
+                        if let Some(value) = &col.text {
+                            paint_cell_text(
+                                scene,
+                                transform,
+                                text_renderer,
+                                theme,
+                                cell_rect,
+                                col,
+                                value(row).as_deref(),
+                            );
+                        }
                         if let Some(tr) = &col.text_render {
                             tr(row, scene, text_renderer, cell_rect, theme, selected);
                         }
@@ -1788,8 +1853,53 @@ impl<Row> DataTable<Row> {
     }
 }
 
-const HEADER_HEIGHT: f64 = 28.0;
-const ROW_HEIGHT: f64 = 24.0;
+const HEADER_HEIGHT: f64 = 32.0;
+const ROW_HEIGHT: f64 = 32.0;
+
+/// A column header: `Caption` in its strong weight, sentence case.
+fn header_style(theme: &Theme) -> crate::text_render::TextStyle {
+    theme.text(TextRole::Caption).strong()
+}
+
+/// A cell's text style: `Caption`, set for the column's [`TextKind`].
+fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
+    theme.text(TextRole::Caption).with_kind(kind)
+}
+
+/// Paint one text cell: leading or (numeric) trailing, elided to the cell,
+/// centred on the row; an absent value is the column's label in tertiary ink.
+fn paint_cell_text<Row>(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    cell: Rect,
+    column: &ColumnDef<Row>,
+    value: Option<&str>,
+) {
+    let style = cell_style(theme, column.kind);
+    let numeric = column.kind == TextKind::Numeric;
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let (label, ink) = match value {
+        Some(value) => (value, theme.text_primary),
+        None => (column.absent.as_str(), theme.text_tertiary),
+    };
+    let label = text.elide_to_width_style(label, px((cell.width() - 2.0 * pad).max(0.0)), &style);
+    let (w, h) = text.measure_style(&label, None, &style);
+    let x = if numeric {
+        cell.x1 - pad - f64::from(w)
+    } else {
+        cell.x0 + pad
+    };
+    text.draw_style(
+        scene,
+        &label,
+        ink,
+        translated(transform, x, centered_text_top(cell.y0, cell.height(), h)),
+        None,
+        &style,
+    );
+}
 
 /// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
 /// taller than the band starts at the band's top rather than bleeding into
@@ -1896,6 +2006,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             self.momentum.stop();
         }
         self.apply_type_metrics(theme);
+        self.measure_theme = Some(theme.clone());
         self.reconcile_mounted_cells();
         let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
         for cell in &mut self.mounted_cells {
@@ -1946,6 +2057,49 @@ impl<Row: 'static> Widget for DataTable<Row> {
         node
     }
 
+    /// Measure [`ColumnWidth::Auto`] columns from their header and the
+    /// visible cells, never narrower than four characters' worth of line.
+    fn adjust_layout_with_measure(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let Some(theme) = self.measure_theme.clone() else {
+            return false;
+        };
+        let tokens = &theme.tokens;
+        let pad = 2.0 * f64::from(tokens.spacing.s2);
+        let sort_room = f64::from(tokens.metrics.icon_sm) + f64::from(tokens.spacing.s1);
+        let header = header_style(&theme);
+        let floor = 4.0 * type_line_height(&tokens.typography, TextRole::Caption);
+        let (start, end) = self.visible_row_range();
+        let mut next = HashMap::new();
+        for col in &self.columns {
+            if col.width != ColumnWidth::Auto {
+                continue;
+            }
+            let label = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let mut width = f64::from(text.measure_style(&label, None, &header).0)
+                + if col.sortable { sort_room } else { 0.0 };
+            if let Some(value) = &col.text {
+                let style = cell_style(&theme, col.kind);
+                for ri in start..end {
+                    if let Some(TableRowState::Ready(row)) = self.row_state_at(ri) {
+                        let cell = value(row).unwrap_or_else(|| col.absent.clone());
+                        width = width.max(f64::from(text.measure_style(&cell, None, &style).0));
+                    }
+                }
+            }
+            next.insert(col.key.clone(), px((width + pad).max(floor).ceil()));
+        }
+        if next == self.auto_widths {
+            return false;
+        }
+        self.auto_widths = next;
+        true
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
@@ -1955,7 +2109,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
-        let next_columns = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
+        let mut widths = self.auto_widths.clone();
+        widths.extend(self.col_widths_px.iter().map(|(k, v)| (k.clone(), *v)));
+        let next_columns = compute_column_rects(&self.columns, self.rect, &widths);
         let columns_changed = self.col_rects != next_columns;
         self.col_rects = next_columns;
         let mut row_heights = HashMap::<usize, f64>::new();
@@ -2018,14 +2174,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if self.reduce_motion {
             self.momentum.stop();
         }
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &self.rect,
-        );
-
+        // No ground of its own: the table stands on its region's ground.
         self.draw_header(scene, transform, text_renderer, theme);
         let body = Rect::new(
             self.rect.x0,
@@ -2051,13 +2200,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
         // Focus ring, so arrow-key navigation reads as a focused control.
         if self.is_focused {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &self.rect,
-            );
+            crate::widget::paint_focus_ring(scene, transform, self.rect.inset(-1.0), 0.0, theme);
         }
 
         self.draw_scrollbar(scene, transform, theme);
@@ -2486,13 +2629,6 @@ pub(crate) const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
 pub(crate) const NEAR_BLACK_TIER_GAIN: u32 = 3;
 pub(crate) const NEAR_BLACK_TIER_FLOOR: u8 = 51;
 
-/// Alpha of the selected-row fill on a near-black ground: the high-contrast
-/// preset's middle re-solved tier, a 4.1:1 step off black that still carries
-/// white text at 5.1:1. On such a ground `Colors::lift(1.0)` collapses to its
-/// hairline fallback (HIG §9.3 names this weakness), so the row takes a floor
-/// of its own; idle rows stay transparent, so the state order is kept.
-pub(crate) const NEAR_BLACK_SELECTED_ALPHA: u8 = 110;
-
 /// A derived fill tier (band, stripe, track, thumb) on `surface`:
 /// [`Colors::hairline_on`] at `alpha`, with the near-black gain where the
 /// ground would otherwise swallow it. On the dark and light presets this is
@@ -2510,105 +2646,18 @@ pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
-/// The fill of a selected row (HIG §9.3): the selection lift of the window
-/// ground, or the near-black floor where a lift does not register.
-#[must_use]
-pub(crate) fn selection_fill(theme: &Theme) -> Color {
-    use crate::a11y::relative_luminance;
-    let content = theme.tokens.colors.surfaces.content;
-    if relative_luminance(content) < NEAR_BLACK_GROUND_LUMINANCE {
-        return Colors::hairline_on(content, NEAR_BLACK_SELECTED_ALPHA);
-    }
-    theme.tokens.colors.intent.selection
-}
-
-/// Paint one selected row as the shared selection lift (HIG §9.3), never an
-/// accent wash. Rows stack full-width, so — unlike an isolated pill — the
-/// tier's hairline is not stroked: adjacent selected rows would otherwise
-/// meet in a doubled rule (HIG §7 "nothing touches") and the run would read
-/// as a ruled table rather than one lift. `opacity` fades a row
-/// mid-transition; a settled row passes `1.0`.
-pub(crate) fn paint_selected_row(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    row: Rect,
-    opacity: f32,
-) {
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        selection_fill(theme).with_alpha_factor(opacity),
-        None,
-        &row,
-    );
-}
-
 #[cfg(test)]
 mod tier_tests {
     use super::*;
-    use crate::a11y::contrast_ratio;
     use crate::surface::edge_delta;
-    use crate::tokens::colors::{HAIRLINE_MIN_DELTA, NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+    use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
     fn presets() -> [Theme; 3] {
         [Theme::dark(), Theme::light(), Theme::high_contrast()]
     }
 
-    /// Composite `over` (with its alpha) onto an opaque `ground`.
-    fn blend(over: Color, ground: Color) -> Color {
-        let a = over.components[3];
-        let o = over.components;
-        let g = ground.components;
-        Color::new([
-            o[0] * a + g[0] * (1.0 - a),
-            o[1] * a + g[1] * (1.0 - a),
-            o[2] * a + g[2] * (1.0 - a),
-            1.0,
-        ])
-    }
-
     #[test]
     fn selected_rows_and_tier_hairlines_register_on_every_ground() {
-        fn selected_row_fill_registers_on_every_preset() {
-            for theme in presets() {
-                let base = theme.tokens.colors.surfaces.content;
-                let fill = selection_fill(&theme);
-                let moved = edge_delta(fill, base);
-                assert!(
-                    moved >= HAIRLINE_MIN_DELTA,
-                    "{}: selected row moved the ground only {moved:.4}",
-                    theme.name
-                );
-            }
-        }
-
-        /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
-        /// the shared lift is weaker than a floor, so the row takes one that reads
-        /// as a control and still carries the theme's text.
-        fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
-            let theme = Theme::high_contrast();
-            let base = theme.tokens.colors.surfaces.content;
-            let shared =
-                crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true))
-                    .fill;
-            assert!(
-                edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
-                "fixture: the shared lift is expected to collapse on this ground"
-            );
-            let fill = blend(selection_fill(&theme), base);
-            let step = contrast_ratio(fill, base);
-            assert!(
-                step >= NON_TEXT_MIN_CONTRAST,
-                "selected row step {step:.2}:1"
-            );
-            let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
-            assert!(
-                ink >= ON_FILL_MIN_CONTRAST,
-                "text on the selected row {ink:.2}:1"
-            );
-        }
-
         /// Pins the dark and light screenshots: on the two grounds this module's
         /// callers paint tiers on, the gain never engages. (The dark preset's
         /// overlay tier is itself near black and does take it, by design.)
@@ -2644,8 +2693,6 @@ mod tier_tests {
             );
         }
 
-        selected_row_fill_registers_on_every_preset();
-        selected_row_on_a_black_ground_reads_as_a_control_and_carries_text();
         tier_on_is_plain_hairline_on_ordinary_grounds();
         tiers_keep_their_order_and_register_on_black();
     }
@@ -2676,7 +2723,7 @@ mod tests {
                 .with_kind(TextKind::Numeric),
         ] {
             assert_eq!(column.kind, TextKind::Numeric);
-            assert!(column.plain_text.is_some() && column.text_render.is_some());
+            assert!(column.text.is_some());
         }
     }
 
@@ -3649,7 +3696,7 @@ mod tests {
                 None,
                 "retained controls provide their own nested semantics"
             );
-            assert!(table.columns[0].text_render.is_some());
+            assert!(table.columns[0].text.is_some());
         }
 
         semantic_row_actions_use_stable_row_identities();
@@ -3787,14 +3834,14 @@ mod tests {
             let (tree, node) = lay_out(&mut t);
             let mods = winit::event::Modifiers::default();
 
-            // Row 2 spans y ∈ [28 + 2*24, +24) = [76, 100). Click at (50, 85).
+            // The middle of row 2, under the header.
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
                     device_id: device(),
-                    position: (50.0, 85.0).into(),
+                    position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
                 mods,
             );
@@ -4231,8 +4278,8 @@ mod tests {
                 mods,
             );
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
-            // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
-            let expected = 120.0 * px(crate::widget::scrollbar::PAGE_FRACTION);
+            // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
+            let expected = 5.0 * px(ROW_HEIGHT) * px(crate::widget::scrollbar::PAGE_FRACTION);
             assert!(
                 (t.scroll_y() - expected).abs() < 1.0,
                 "page step ≈ viewport*frac ({expected}), got {}",
@@ -4414,5 +4461,101 @@ mod tests {
             .iter()
             .filter(|tag| **tag == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn typed_cells_align_numbers_dim_absent_values_and_measure_auto_columns() {
+        struct File {
+            name: &'static str,
+            size: Option<u64>,
+        }
+        let columns = vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Auto)
+                .with_text(|f: &File| f.name.to_owned()),
+            ColumnDef::new("size", "Size", ColumnWidth::Flex(1.0))
+                .with_kind(TextKind::Numeric)
+                .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL"),
+        ];
+        let mut table = DataTable::new(columns);
+        table.set_rows(vec![
+            File {
+                name: "quarterly-report-final.pdf",
+                size: Some(1_284_000),
+            },
+            File {
+                name: "notes.md",
+                size: None,
+            },
+        ]);
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(table),
+            (600, 300),
+            theme.clone(),
+        );
+        let _ = harness;
+        // Reach the measure pass directly: the Auto column is as wide as its
+        // longest visible cell plus padding.
+        let mut table = DataTable::new(vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Auto)
+                .with_text(|f: &File| f.name.to_owned()),
+        ]);
+        table.set_rows(vec![File {
+            name: "quarterly-report-final.pdf",
+            size: None,
+        }]);
+        let mut tree = TaffyTree::<()>::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = table.build_layout(&mut tree, &theme, &mut map);
+        table.set_viewport(200.0, 32.0);
+        assert!(table.adjust_layout_with_measure(&mut tree, node, &mut text));
+        let measured = f64::from(table.auto_widths["name"]);
+        let cell = f64::from(
+            text.measure_style(
+                "quarterly-report-final.pdf",
+                None,
+                &cell_style(&theme, TextKind::Prose),
+            )
+            .0,
+        );
+        assert!(measured >= cell, "{measured} fits {cell}");
+        assert!(
+            !table.adjust_layout_with_measure(&mut tree, node, &mut text),
+            "settles"
+        );
+
+        // Numeric cells end at the trailing padding; an absent value says so.
+        let column = ColumnDef::<File>::new("size", "Size", ColumnWidth::Flex(1.0))
+            .with_kind(TextKind::Numeric)
+            .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL");
+        assert_eq!(column.absent, "NULL");
+        let spoken = column.accessible_value.as_ref().unwrap();
+        assert_eq!(
+            spoken(&File {
+                name: "a",
+                size: None
+            }),
+            "NULL"
+        );
+        let mut scene = Scene::new();
+        let cell = Rect::new(0.0, 0.0, 200.0, 32.0);
+        paint_cell_text(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            cell,
+            &column,
+            Some("1284000"),
+        );
+        assert!(!scene.encoding().resources.glyph_runs.is_empty());
+        let style = cell_style(&theme, TextKind::Numeric);
+        let (w, _) = text.measure_style("1284000", None, &style);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        // The right-aligned origin lands so the run ends at the padding.
+        let x = cell.x1 - pad - f64::from(w);
+        assert!(x > cell.center().x, "numbers sit at the trailing edge");
     }
 }

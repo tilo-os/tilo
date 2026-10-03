@@ -1,253 +1,521 @@
-//! `StatTile` — a compact "big number + caption" metric card. Dashboards and
-//! monitors (`monitor`, `firewall`, `containers`, `disks`, `vpn`, …) each
-//! hand-roll a `dim caption + bold value` tile, several with a trend delta or a
-//! semantic value colour. `StatTile` folds that into one theme-driven card:
+//! `StatTile`: one number and what it measures, on the content ground.
 //!
-//! - a **caption** (the dim label, e.g. "CPU"),
-//! - a big **value** (e.g. "42%"), optionally tinted with a semantic colour,
-//! - an optional **delta** line with an up/down/flat [`Trend`] arrow (e.g.
-//!   "▲ 12%") coloured green/red/dim,
-//! - an optional leading **icon** in the top-right corner.
+//! A statistic is not a card: tiles sit on the ground and are separated by
+//! space ([`StatGroup`] lays out a set and reflows 4 → 2 → 1 columns). A tile
+//! reads top to bottom:
 //!
-//! Like the other promoted visuals it ships in two forms: the retained
-//! [`Widget`] (drop it into a `Row` for an even split) and the immediate-mode
-//! [`StatTile::paint`] entry point for the many apps that paint to a `Scene`.
+//! - the label (`Caption`, secondary ink, sentence case),
+//! - the value in tabular figures (`Title`, or `Display` for the one hero
+//!   number of a screen) with an optional unit (`Caption`), elided to the
+//!   tile's width,
+//! - an optional change line: a [`Trend`] arrow and its text,
+//! - an optional live [`Sparkline`](crate::widget::Sparkline) footer.
+//!
+//! A [`Tone`] adds a ticker down the tile's leading edge: what state the
+//! measured thing is in (a failed backup, a healthy tunnel). A tile that
+//! opens a detail view is pressable and can be the selected one.
+//!
+//! [`StatTileFace`] paints the same geometry for immediate-mode callers.
 
 use std::collections::HashMap;
 
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
+use winit::event::WindowEvent;
 
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::activation::{Activation, Interaction, activation_controls};
+use crate::widget::{Element, TaffyTreeExt, Tone, Widget, card_column_width};
 
-const PAD: f64 = 14.0;
-const ICON_D: f64 = 18.0;
-
-/// Narrows a screen-space `f64` tile-height value to `f32` for taffy;
-/// every call site here is a bounded UI dimension, well within `f32` range.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space px value, always well within f32 range"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
-
-/// Direction of a [`StatTile`] delta — selects the arrow glyph and its colour.
+/// Direction of a tile's change line. The arrow says which way the number
+/// moved; whether that is good is the tile's [`Tone`], not the arrow's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trend {
-    /// Value rose — up chevron, success colour.
     Up,
-    /// Value fell — down chevron, danger colour.
     Down,
-    /// No meaningful change — no arrow, dim colour.
     Flat,
 }
 
 impl Trend {
-    fn color(self, theme: &Theme) -> Color {
-        match self {
-            Trend::Up => theme.tokens.colors.semantic.success,
-            Trend::Down => theme.tokens.colors.semantic.danger,
-            Trend::Flat => theme.text_dim,
-        }
-    }
-
     fn arrow(self) -> Option<Icon> {
         match self {
-            Trend::Up => Some(Icon::ChevronUp),
-            Trend::Down => Some(Icon::ChevronDown),
-            Trend::Flat => None,
+            Self::Up => Some(Icon::ArrowUp),
+            Self::Down => Some(Icon::ArrowDown),
+            Self::Flat => None,
+        }
+    }
+
+    fn spoken(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Flat => "unchanged",
         }
     }
 }
 
-/// The tile height with a delta line vs. without.
-fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
-    let caption = f64::from(theme.tokens.typography.size(TextRole::Caption));
-    let value = f64::from(theme.tokens.typography.size(TextRole::LargeTitle));
-    let delta = if has_delta {
-        6.0 + f64::from(theme.tokens.typography.size(TextRole::Caption))
-    } else {
-        0.0
-    };
-    PAD * 2.0 + caption + 6.0 + value + delta
+/// The resolved geometry of a tile in `theme`.
+#[derive(Clone, Debug)]
+struct TileMetrics {
+    label: TextStyle,
+    value: TextStyle,
+    hero: TextStyle,
+    unit: TextStyle,
+    change: TextStyle,
+    ticker: f64,
+    ticker_gap: f64,
+    tight: f64,
+    unit_gap: f64,
+    pad: f64,
+    radius: f64,
 }
 
-/// What an immediate-mode [`StatTile::paint`] shows.
+impl TileMetrics {
+    fn new(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        Self {
+            label: theme.text(TextRole::Caption),
+            value: theme.text(TextRole::Title).numeric(),
+            hero: theme.text(TextRole::Display).numeric(),
+            unit: theme.text(TextRole::Caption),
+            change: theme.text(TextRole::Caption).numeric(),
+            ticker: f64::from(theme.tokens.metrics.chrome_rule_px) * 3.0,
+            ticker_gap: f64::from(spacing.s3),
+            tight: f64::from(spacing.rhythm.tight),
+            unit_gap: f64::from(spacing.s1),
+            pad: f64::from(spacing.s2),
+            radius: f64::from(theme.tokens.radii.item),
+        }
+    }
+
+    fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
+        f64::from(text.measure_style("Ag", None, style).1)
+    }
+
+    /// The sparkline's height: two caption lines.
+    fn sparkline(&self, text: &mut TextRenderer) -> f64 {
+        2.0 * Self::line(text, &self.label)
+    }
+}
+
+/// Immediate-mode stat tile.
 #[derive(Clone, Copy, Debug)]
-pub struct StatTileContent<'a> {
-    pub caption: &'a str,
-    pub value: &'a str,
-    pub value_color: Color,
-    pub icon: Option<Icon>,
-    /// E.g. `("12%", Trend::Up)`.
-    pub delta: Option<(&'a str, Trend)>,
+pub struct StatTileFace<'a> {
+    label: &'a str,
+    value: &'a str,
+    unit: Option<&'a str>,
+    change: Option<(&'a str, Trend)>,
+    tone: Option<Tone>,
+    hero: bool,
+    sparkline: Option<&'a [f32]>,
+    pressable: bool,
+    selected: bool,
+    interaction: Interaction,
 }
 
-/// Shared paint of a stat tile filling `rect`. Used by both the retained
-/// [`StatTile`] widget and the immediate-mode [`StatTile::paint`] entry point.
-fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    let theme = ctx.theme;
-    let transform = ctx.transform;
-    // Card surface with its derived rest edge (HIG §9.5), crisp inside the
-    // tile so it registers on a raised ground in dark and light alike.
-    crate::surface::card(
-        ctx.scene,
-        transform,
-        rect,
-        f64::from(theme.tokens.radii.control),
-        theme.tokens.colors.surfaces.raised,
-    );
-
-    // Row positions follow the role sizes that `tile_height` reserves; the
-    // resolved roles are painted as given, so the scale lands exactly once.
-    let caption_style = theme.text(TextRole::Caption);
-    let value_style = theme.text(TextRole::LargeTitle).numeric();
-    let caption_step = f64::from(caption_style.size);
-    let value_step = f64::from(value_style.size);
-
-    let x = rect.x0 + PAD;
-    let mut y = rect.y0 + PAD;
-
-    let (_, caption_h) = ctx
-        .text
-        .measure_style(content.caption, None, &caption_style);
-    ctx.text(
-        content.caption,
-        &caption_style,
-        theme.text_dim,
-        Point::new(x, y),
-        None,
-    );
-
-    if let Some(icon) = content.icon {
-        // Centre the glyph on the caption's measured line so the two read as
-        // one row.
-        let ir = Rect::from_center_size(
-            Point::new(rect.x1 - PAD - ICON_D / 2.0, y + f64::from(caption_h) / 2.0),
-            (ICON_D, ICON_D),
-        );
-        icon.draw_with_stroke(ctx.scene, transform, ir, theme.text_dim, 1.6);
-    }
-
-    y += caption_step + 6.0;
-
-    ctx.text(
-        content.value,
-        &value_style,
-        content.value_color,
-        Point::new(x, y),
-        None,
-    );
-    y += value_step + 6.0;
-
-    if let Some((delta_text, trend)) = content.delta {
-        let col = trend.color(theme);
-        let mut dx = x;
-        if let Some(arrow) = trend.arrow() {
-            // Centre the arrow on the delta text's measured line, like the
-            // icon on the caption line.
-            let (_, delta_h) = ctx.text.measure_style(delta_text, None, &caption_style);
-            let ar = Rect::from_center_size(
-                Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
-                (caption_step, caption_step),
-            );
-            arrow.draw_with_stroke(ctx.scene, transform, ar, col, 1.8);
-            dx += caption_step + 2.0;
+impl<'a> StatTileFace<'a> {
+    #[must_use]
+    pub fn new(label: &'a str, value: &'a str) -> Self {
+        Self {
+            label,
+            value,
+            unit: None,
+            change: None,
+            tone: None,
+            hero: false,
+            sparkline: None,
+            pressable: false,
+            selected: false,
+            interaction: Interaction::default(),
         }
-        ctx.text(delta_text, &caption_style, col, Point::new(dx, y), None);
+    }
+
+    /// The value's unit ("GB", "ms"), set smaller beside it.
+    #[must_use]
+    pub fn unit(mut self, unit: &'a str) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// How the value changed: `("12% since yesterday", Trend::Up)`.
+    #[must_use]
+    pub fn change(mut self, text: &'a str, trend: Trend) -> Self {
+        self.change = Some((text, trend));
+        self
+    }
+
+    /// The measured thing's state, as a ticker down the leading edge.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = Some(tone);
+        self
+    }
+
+    /// The one hero number of a screen: the value in `Display`.
+    #[must_use]
+    pub fn hero(mut self) -> Self {
+        self.hero = true;
+        self
+    }
+
+    /// Recent samples, oldest first, drawn as a live footer.
+    #[must_use]
+    pub fn sparkline(mut self, samples: &'a [f32]) -> Self {
+        self.sparkline = Some(samples);
+        self
+    }
+
+    /// The tile opens a detail view (and may be the selected one).
+    #[must_use]
+    pub fn pressable(mut self, selected: bool) -> Self {
+        self.pressable = true;
+        self.selected = selected;
+        self
+    }
+
+    #[must_use]
+    pub fn interaction(mut self, interaction: Interaction) -> Self {
+        self.interaction = interaction;
+        self
+    }
+
+    fn value_style<'m>(&self, m: &'m TileMetrics) -> &'m TextStyle {
+        if self.hero { &m.hero } else { &m.value }
+    }
+
+    fn inset(&self, m: &TileMetrics) -> f64 {
+        let pad = if self.pressable { m.pad } else { 0.0 };
+        pad + if self.tone.is_some() {
+            m.ticker + m.ticker_gap
+        } else {
+            0.0
+        }
+    }
+
+    /// The tile's height at this text scale.
+    pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let m = TileMetrics::new(theme);
+        self.content_height(text, &m) + if self.pressable { 2.0 * m.pad } else { 0.0 }
+    }
+
+    fn content_height(&self, text: &mut TextRenderer, m: &TileMetrics) -> f64 {
+        let mut h = TileMetrics::line(text, &m.label)
+            + m.tight
+            + TileMetrics::line(text, self.value_style(m));
+        if self.change.is_some() {
+            h += m.tight + TileMetrics::line(text, &m.change);
+        }
+        if self.sparkline.is_some() {
+            h += m.tight + m.sparkline(text);
+        }
+        h.ceil()
+    }
+
+    /// Paint the tile into `rect` (its height from [`Self::measure`]).
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let theme = ctx.theme;
+        let m = TileMetrics::new(theme);
+        let colors = &theme.tokens.colors;
+
+        if self.pressable {
+            let fill = if self.selected || self.interaction.pressed {
+                Some(colors.intent.selection)
+            } else if self.interaction.hovered && !self.interaction.disabled {
+                Some(colors.intent.selection_hover)
+            } else {
+                None
+            };
+            if let Some(fill) = fill {
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    fill,
+                    None,
+                    &RoundedRect::from_rect(rect, m.radius),
+                );
+            }
+        }
+        let content = if self.pressable {
+            rect.inset(-m.pad)
+        } else {
+            rect
+        };
+        let block = self.content_height(ctx.text, &m);
+        if let Some(tone) = self.tone {
+            let tick = Rect::new(
+                content.x0,
+                content.y0,
+                content.x0 + m.ticker,
+                content.y0 + block.min(content.height()),
+            );
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                tone.colour(theme),
+                None,
+                &RoundedRect::from_rect(tick, m.ticker / 2.0),
+            );
+        }
+        let x = rect.x0 + self.inset(&m);
+        let width = (rect.x1 - x - if self.pressable { m.pad } else { 0.0 }).max(0.0);
+        let mut y = content.y0;
+
+        let label =
+            ctx.text
+                .elide_to_width_style(self.label, crate::num::f32_of_f64(width), &m.label);
+        ctx.text(&label, &m.label, theme.text_dim, Point::new(x, y), None);
+        y += TileMetrics::line(ctx.text, &m.label) + m.tight;
+
+        // The value elides first; the unit keeps its place beside it.
+        let value_style = self.value_style(&m).clone();
+        let unit_w = self.unit.map_or(0.0, |unit| {
+            f64::from(ctx.text.measure_style(unit, None, &m.unit).0) + m.unit_gap
+        });
+        let value = ctx.text.elide_to_width_style(
+            self.value,
+            crate::num::f32_of_f64((width - unit_w).max(1.0)),
+            &value_style,
+        );
+        let (value_w, _) = ctx.text.measure_style(&value, None, &value_style);
+        let value_line = TileMetrics::line(ctx.text, &value_style);
+        ctx.text(
+            &value,
+            &value_style,
+            theme.text_primary,
+            Point::new(x, y),
+            None,
+        );
+        if let Some(unit) = self.unit {
+            let first_baseline = |text: &mut TextRenderer, s: &TextStyle, sample: &str| {
+                f64::from(text.first_baseline_style(sample, None, s))
+            };
+            let value_base = first_baseline(ctx.text, &value_style, &value);
+            let unit_base = first_baseline(ctx.text, &m.unit, unit);
+            ctx.text(
+                unit,
+                &m.unit,
+                theme.text_dim,
+                Point::new(
+                    x + f64::from(value_w) + m.unit_gap,
+                    y + value_base - unit_base,
+                ),
+                None,
+            );
+        }
+        y += value_line;
+
+        if let Some((change, trend)) = self.change {
+            y += m.tight;
+            let line = TileMetrics::line(ctx.text, &m.change);
+            let mut cx = x;
+            if let Some(arrow) = trend.arrow() {
+                let side = f64::from(theme.tokens.metrics.icon_sm);
+                let glyph = Rect::new(
+                    cx,
+                    y + (line - side) / 2.0,
+                    cx + side,
+                    y + (line + side) / 2.0,
+                );
+                arrow.draw(ctx.scene, ctx.transform, glyph, theme.text_dim);
+                cx += side + m.unit_gap;
+            }
+            let change = ctx.text.elide_to_width_style(
+                change,
+                crate::num::f32_of_f64((x + width - cx).max(1.0)),
+                &m.change,
+            );
+            ctx.text(&change, &m.change, theme.text_dim, Point::new(cx, y), None);
+            y += line;
+        }
+
+        if let Some(samples) = self.sparkline {
+            y += m.tight;
+            let h = m.sparkline(ctx.text);
+            let ink = self.tone.map_or(theme.text_dim, |tone| tone.colour(theme));
+            crate::widget::Sparkline::paint(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(x, y, x + width, y + h),
+                samples,
+                crate::widget::chart::TrendRange::fit(samples),
+                ink,
+                &crate::widget::chart::TrendStyle::SPARKLINE,
+            );
+        }
+
+        if self.pressable && self.interaction.focused && !self.interaction.disabled {
+            crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, m.radius, theme);
+        }
+    }
+
+    fn spoken_value(&self) -> String {
+        let mut value = match self.unit {
+            Some(unit) => format!("{} {unit}", self.value),
+            None => self.value.to_owned(),
+        };
+        if let Some((change, trend)) = self.change {
+            value.push_str(&format!(", {} {change}", trend.spoken()));
+        }
+        value
     }
 }
 
-/// A metric card: caption + big value + optional trend delta + optional icon.
+/// A retained stat tile. See the module docs.
 pub struct StatTile {
-    caption: String,
+    label: String,
     value: String,
-    icon: Option<Icon>,
-    value_color: Option<Color>,
-    delta: Option<(String, Trend)>,
+    unit: Option<String>,
+    change: Option<(String, Trend)>,
+    tone: Option<Tone>,
+    hero: bool,
+    sparkline: Option<Vec<f32>>,
+    selected: bool,
+    activation: Activation,
+    metrics: Option<TileMetrics>,
     rect: Rect,
-    layout_height: f32,
+    dirty: bool,
 }
 
 impl StatTile {
-    pub fn new(caption: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
-            caption: caption.into(),
+            label: label.into(),
             value: value.into(),
-            icon: None,
-            value_color: None,
-            delta: None,
+            unit: None,
+            change: None,
+            tone: None,
+            hero: false,
+            sparkline: None,
+            selected: false,
+            activation: Activation::new("stat"),
+            metrics: None,
             rect: Rect::ZERO,
-            layout_height: px(tile_height(false, &Theme::dark())),
+            dirty: true,
         }
     }
 
+    /// See [`StatTileFace::unit`].
     #[must_use]
-    pub fn with_icon(mut self, icon: Icon) -> Self {
-        self.icon = Some(icon);
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
         self
     }
 
-    /// Defaults to `theme.text_primary` when unset.
+    /// See [`StatTileFace::change`].
     #[must_use]
-    pub fn with_value_color(mut self, color: Color) -> Self {
-        self.value_color = Some(color);
+    pub fn change(mut self, text: impl Into<String>, trend: Trend) -> Self {
+        self.change = Some((text.into(), trend));
         self
     }
 
-    /// E.g. `("12%", Trend::Up)`.
+    /// See [`StatTileFace::tone`].
     #[must_use]
-    pub fn with_delta(mut self, text: impl Into<String>, trend: Trend) -> Self {
-        self.delta = Some((text.into(), trend));
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = Some(tone);
         self
     }
 
-    pub fn value_color(&self, theme: &Theme) -> Color {
-        self.value_color.unwrap_or(theme.text_primary)
+    /// See [`StatTileFace::hero`].
+    #[must_use]
+    pub fn hero(mut self) -> Self {
+        self.hero = true;
+        self
     }
 
-    /// For apps that render straight to a `Scene`.
-    pub fn paint(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
-        paint_stat_tile(ctx, rect, content);
+    /// See [`StatTileFace::sparkline`].
+    #[must_use]
+    pub fn sparkline(mut self, samples: Vec<f32>) -> Self {
+        self.sparkline = Some(samples);
+        self
+    }
+
+    /// Replace the live samples and value without rebuilding the tile.
+    pub fn set_live(&mut self, value: impl Into<String>, samples: Vec<f32>) {
+        self.value = value.into();
+        self.sparkline = Some(samples);
+        self.dirty = true;
+    }
+
+    /// Pressing the tile opens its detail; `id` names it for keyboard,
+    /// tests and assistive technology.
+    #[must_use]
+    pub fn on_activate(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
+        self.activation = Activation::new(id);
+        self.activation.set_callback(Box::new(f));
+        self
+    }
+
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn set_selected(&mut self, selected: bool) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.dirty = true;
+        }
+    }
+
+    fn face(&self) -> StatTileFace<'_> {
+        let mut face =
+            StatTileFace::new(&self.label, &self.value).interaction(self.activation.state);
+        if let Some(unit) = &self.unit {
+            face = face.unit(unit);
+        }
+        if let Some((text, trend)) = &self.change {
+            face = face.change(text, *trend);
+        }
+        if let Some(tone) = self.tone {
+            face = face.tone(tone);
+        }
+        if self.hero {
+            face = face.hero();
+        }
+        if let Some(samples) = &self.sparkline {
+            face = face.sparkline(samples);
+        }
+        if self.activation.is_bound() {
+            face = face.pressable(self.selected);
+        }
+        face
     }
 }
 
 impl Widget for StatTile {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let h = px(tile_height(self.delta.is_some(), theme));
-        self.layout_height = h;
-        // Grows to share a row evenly, but keeps the fixed content height.
+        self.metrics = Some(TileMetrics::new(theme));
         let node = taffy.leaf_node(Style {
-            flex_grow: 1.0,
-            flex_basis: length(0.0_f32),
-            min_size: taffy::Size {
-                width: length(120.0_f32),
-                height: length(h),
-            },
             size: taffy::Size {
                 width: percent(1.0_f32),
-                height: length(h),
+                height: auto(),
             },
+            min_size: taffy::Size {
+                width: length(0.0_f32),
+                height: auto(),
+            },
+            flex_grow: 1.0,
+            flex_basis: length(0.0_f32),
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -256,24 +524,41 @@ impl Widget for StatTile {
 
     fn measure(
         &mut self,
-        _k: taffy::Size<Option<f32>>,
-        _a: taffy::Size<taffy::AvailableSpace>,
-        _tr: &mut TextRenderer,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        let Some(m) = self.metrics.clone() else {
+            return taffy::Size::ZERO;
+        };
+        let face = self.face();
+        let mut height = face.content_height(text_renderer, &m);
+        if face.pressable {
+            height += 2.0 * m.pad;
+        }
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(w) => w,
+            _ => crate::num::f32_of_f64(TileMetrics::line(text_renderer, &m.value) * 6.0),
+        });
         taffy::Size {
-            width: 160.0,
-            height: self.layout_height,
+            width,
+            height: crate::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        let rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
         );
+        if rect != self.rect {
+            self.dirty = true;
+        }
+        self.rect = rect;
     }
 
     fn draw(
@@ -282,24 +567,72 @@ impl Widget for StatTile {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        let content = StatTileContent {
-            caption: &self.caption,
-            value: &self.value,
-            value_color: self.value_color(theme),
-            icon: self.icon,
-            delta: self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
-        };
-        paint_stat_tile(
+        if presence.should_cull(self.rect) {
+            return;
+        }
+        let rect = self.rect;
+        self.face().paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-            &content,
+            rect,
         );
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.activation.is_bound() && self.activation.handle_pointer(event, ctx, self.rect, &[])
+        {
+            self.dirty = true;
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.activation.is_bound() && self.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.activation.is_bound()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.activation.state.focused != focused {
+            self.activation.state.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.activation.state.focused
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::AppModel,
+        _root: &crate::widget::ModelPath,
+    ) -> bool {
+        matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 
     fn name(&self) -> &'static str {
         "StatTile"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.activation.is_bound().then(|| self.activation.id())
     }
 
     fn get_rect(&self) -> Rect {
@@ -307,182 +640,305 @@ impl Widget for StatTile {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        // Delta, if present, joins the value so a reader announces the
-        // trend too.
-        let value = match &self.delta {
-            Some((d, _)) => format!("{} ({})", self.value, d),
-            None => self.value.clone(),
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let face = self.face();
+        let role = if self.activation.is_bound() {
+            Role::Button
+        } else {
+            Role::Group
         };
         Some(
-            AccessNode::new(Role::Group)
-                .with_name(self.caption.clone())
-                .with_value(value),
+            AccessNode::new(role)
+                .with_name(self.label.clone())
+                .with_value(face.spoken_value())
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.activation.is_bound())
+                        .focused(self.activation.state.focused)
+                        .selected(self.selected),
+                ),
         )
+    }
+}
+
+activation_controls!(StatTile, activation);
+
+/// A set of stat tiles that reflows by width: all in one row when they fit,
+/// then half per row (a 2×2 for four), then one per row. Tiles are separated
+/// by space, never boxed.
+pub struct StatGroup {
+    tiles: Vec<Element>,
+    nodes: Vec<NodeId>,
+    min_tile: f64,
+    column_gap: f64,
+    row_gap: f64,
+    rect: Rect,
+}
+
+impl StatGroup {
+    pub fn new(tiles: Vec<Element>) -> Self {
+        Self {
+            tiles,
+            nodes: Vec::new(),
+            min_tile: 0.0,
+            column_gap: 0.0,
+            row_gap: 0.0,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// How many columns the group uses at `width`: the largest count of
+    /// tiles that fit whose rows come out even (4, then 2, then 1 for four).
+    pub fn columns_for_width(&self, width: f64) -> usize {
+        columns_for(self.tiles.len(), width, self.min_tile, self.column_gap)
+    }
+}
+
+fn columns_for(count: usize, width: f64, min_tile: f64, gap: f64) -> usize {
+    let count = count.max(1);
+    let fits = crate::widget::card_columns(width, min_tile, gap);
+    (1..=count.min(fits))
+        .rev()
+        .find(|columns| count.is_multiple_of(*columns))
+        .unwrap_or(1)
+}
+
+impl Widget for StatGroup {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let rhythm = &theme.tokens.spacing.rhythm;
+        self.column_gap = f64::from(rhythm.group);
+        self.row_gap = f64::from(rhythm.section);
+        self.min_tile = (f64::from(theme.text(TextRole::Body).line_height_px()) * 7.0).round();
+        self.nodes = self
+            .tiles
+            .iter_mut()
+            .map(|tile| tile.build_layout(taffy, theme, node_map))
+            .collect();
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Grid,
+                grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
+                grid_auto_rows: vec![taffy::style_helpers::min_content()],
+                gap: taffy::Size {
+                    width: length(crate::num::f32_of_f64(self.column_gap)),
+                    height: length(crate::num::f32_of_f64(self.row_gap)),
+                },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: auto(),
+                },
+                min_size: taffy::Size {
+                    width: length(0.0_f32),
+                    height: auto(),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &self.nodes,
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        let width = f64::from(layout.size.width);
+        let columns = self.columns_for_width(width);
+        let column = crate::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
+        let tracks = vec![length(column); columns];
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        if current.grid_template_columns == tracks {
+            return false;
+        }
+        let mut style = current.clone();
+        style.grid_template_columns = tracks;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+        let origin = self.rect.origin();
+        for (tile, &child) in self.tiles.iter_mut().zip(&self.nodes) {
+            tile.apply_layout(taffy, child, origin);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for tile in &mut self.tiles {
+            tile.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        for (tile, &node) in self.tiles.iter_mut().zip(&self.nodes) {
+            tile.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
+                break;
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.tiles.iter().map(AsRef::as_ref).collect()
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for tile in &self.tiles {
+            visitor(tile.as_ref());
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.tiles
+            .iter_mut()
+            .map(|t| t.as_mut() as &mut (dyn Widget + '_))
+            .collect()
+    }
+
+    fn mark_drawn(&mut self) {
+        for tile in &mut self.tiles {
+            tile.mark_drawn();
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "StatGroup"
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taffy::prelude::TaffyMaxContent;
-    use vello_encoding::DrawTag;
+    use crate::headless::FrameHarness;
 
     #[test]
-    fn stat_tile_layout_measures_at_text_scale_and_splits_rows() {
-        // Case `retained_measure_uses_the_active_text_scale`.
-        {
-            let mut tile = StatTile::new("CPU", "42%");
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-            let mut text = TextRenderer::new();
-            let measured = tile.measure(
-                taffy::Size {
-                    width: None,
-                    height: None,
-                },
-                taffy::Size::MAX_CONTENT,
-                &mut text,
-            );
-            assert!(measured.height > px(tile_height(false, &Theme::dark())));
-        }
-
-        // Case `tiles_split_a_row_evenly`.
-        {
-            let rects = lay_out_row(3);
-            assert_eq!(rects.len(), 3);
-            let w0 = rects[0].width();
-            for r in &rects {
-                assert!(
-                    (r.width() - w0).abs() < 1.0,
-                    "all tiles share width, got {} vs {w0}",
-                    r.width()
-                );
-            }
-            // Three tiles + 2×12px gaps must fit in 600px.
-            assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
-        }
-
-        // Case `delta_makes_tile_taller`.
-        {
-            let theme = Theme::dark();
-            assert!(
-                tile_height(true, &theme) > tile_height(false, &theme),
-                "a delta line adds height"
-            );
-        }
-    }
-
-    fn lay_out_row(tiles: usize) -> Vec<Rect> {
-        // Lay N tiles inside a Row-like flex container 600px wide.
+    fn tile_height_comes_from_its_lines_and_follows_the_text_scale() {
+        let mut text = TextRenderer::new();
         let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut widgets: Vec<StatTile> = (0..tiles)
-            .map(|i| StatTile::new(format!("m{i}"), "1"))
-            .collect();
-        let mut nodes = Vec::new();
-        for w in &mut widgets {
-            nodes.push(w.build_layout(&mut taffy, &theme, &mut node_map));
-        }
-        let root = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Row,
-                gap: taffy::Size {
-                    width: length(12.0_f32),
-                    height: length(0.0_f32),
-                },
-                size: taffy::Size {
-                    width: length(600.0_f32),
-                    height: length(120.0_f32),
-                },
-                ..Default::default()
-            },
-            &nodes,
+        let plain = StatTileFace::new("Protected", "1.2").unit("TB");
+        let full = plain
+            .change("4% this week", Trend::Up)
+            .sparkline(&[1.0, 3.0, 2.0, 5.0]);
+        let h = plain.height(&mut text, &theme);
+        assert!(full.height(&mut text, &theme) > h);
+        assert!(
+            plain.hero().height(&mut text, &theme) > h,
+            "Display is taller"
         );
-        taffy
-            .compute_layout(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(600.0),
-                    height: taffy::AvailableSpace::Definite(120.0),
-                },
-            )
-            .unwrap();
-        for (w, n) in widgets.iter_mut().zip(nodes.iter()) {
-            w.apply_layout(&taffy, *n, Point::ZERO);
-        }
-        widgets.iter().map(Widget::get_rect).collect()
+        assert!(plain.height(&mut text, &Theme::dark().with_text_scale(2.0)) > h * 1.8);
     }
 
     #[test]
-    fn stat_tile_paints_semantic_colours_and_pairs_semantics() {
-        // Case `trend_colors_are_semantic`.
-        {
-            let theme = Theme::dark();
-            assert_eq!(
-                Trend::Up.color(&theme),
-                theme.tokens.colors.semantic.success
-            );
-            assert_eq!(
-                Trend::Down.color(&theme),
-                theme.tokens.colors.semantic.danger
-            );
-            assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
-            assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
-            assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
-        }
+    fn a_tile_is_not_a_card() {
+        // At rest a plain tile paints text only: no surface, no edge.
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let face = StatTileFace::new("Snapshots", "128");
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 200.0, 80.0),
+        );
+        let fills_before_text = scene.encoding().draw_tags.len();
+        let mut toned = Scene::new();
+        face.tone(Tone::Danger).paint(
+            &mut PaintCtx::new(&mut toned, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 200.0, 80.0),
+        );
+        assert_eq!(
+            toned.encoding().draw_tags.len(),
+            fills_before_text + 1,
+            "a tone adds only the ticker"
+        );
+    }
 
-        // Case `value_color_defaults_to_primary_and_overrides`.
-        {
-            let theme = Theme::dark();
-            let plain = StatTile::new("CPU", "42%");
-            assert_eq!(plain.value_color(&theme), theme.text_primary);
-            let tinted =
-                StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
-            assert_eq!(
-                tinted.value_color(&theme),
-                theme.tokens.colors.semantic.danger
-            );
-        }
+    #[test]
+    fn a_long_value_elides_inside_the_tile() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let m = TileMetrics::new(&theme);
+        let shown = text.elide_to_width_style("1,284,000,000,000", 80.0, &m.value);
+        assert!(shown.ends_with('…'));
+    }
 
-        // Case `draws_card_and_content`.
-        {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            let mut t = StatTile::new("Requests", "1,284")
-                .with_icon(Icon::BarChart)
-                .with_delta("12%", Trend::Up);
-            t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
-            t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|x| **x == DrawTag::COLOR)
-                .count();
-            assert!(
-                fills > 4,
-                "card + caption + value + icon + delta ⇒ many fills, got {fills}"
-            );
-        }
+    #[test]
+    fn groups_reflow_four_two_one_and_never_leave_an_orphan() {
+        assert_eq!(columns_for(4, 1000.0, 140.0, 24.0), 4);
+        assert_eq!(
+            columns_for(4, 500.0, 140.0, 24.0),
+            2,
+            "3 fit, but 2×2 beats 3+1"
+        );
+        assert_eq!(columns_for(4, 200.0, 140.0, 24.0), 1);
+        assert_eq!(columns_for(3, 500.0, 140.0, 24.0), 3);
+        assert_eq!(columns_for(3, 400.0, 140.0, 24.0), 1);
+        let group = StatGroup::new(
+            ["Protected", "Snapshots", "Next run", "Last backup"]
+                .into_iter()
+                .map(|l| Box::new(StatTile::new(l, "12")) as Element)
+                .collect(),
+        );
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(group),
+            (520, 400),
+            Theme::dark(),
+        );
+        let root = harness.inspection().root;
+        let ys: Vec<f64> = root.children.iter().map(|c| c.rect[1]).collect();
+        assert_eq!(ys[0], ys[1]);
+        assert!(ys[2] > ys[0]);
+        assert_eq!(ys[2], ys[3]);
+    }
 
-        // Case `accessibility_pairs_caption_and_value`.
-        {
-            use crate::a11y::Role;
-            let t = StatTile::new("CPU", "42%").with_delta("3%", Trend::Down);
-            let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
-            assert_eq!(node.role, Role::Group);
-            assert_eq!(node.name.as_deref(), Some("CPU"));
-            assert_eq!(
-                node.value.as_deref(),
-                Some("42% (3%)"),
-                "delta joins the announced value"
-            );
-        }
+    #[test]
+    fn a_pressable_tile_activates_and_speaks_its_value() {
+        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = hits.clone();
+        let mut tile = StatTile::new("CPU", "42")
+            .unit("%")
+            .change("3% in the last minute", Trend::Down)
+            .on_activate("cpu", move || counter.set(counter.get() + 1));
+        let node = Widget::accessibility(&tile).unwrap();
+        assert_eq!(node.name.as_deref(), Some("CPU"));
+        assert_eq!(
+            node.value.as_deref(),
+            Some("42 %, down 3% in the last minute")
+        );
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut tile,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(hits.get(), 1);
     }
 }

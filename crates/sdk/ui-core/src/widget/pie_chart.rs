@@ -153,6 +153,10 @@ pub struct PieChart {
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
     reduce_motion: bool,
+    /// The chart names its slices in a legend beside or under it.
+    legend: bool,
+    /// Where the wedges go: the whole rect, less the legend's area.
+    chart_rect: Rect,
 }
 
 impl PieChart {
@@ -172,6 +176,69 @@ impl PieChart {
             transition_from: None,
             transition_started: crate::time::now(),
             reduce_motion: false,
+            legend: false,
+            chart_rect: Rect::ZERO,
+        }
+    }
+
+    /// Name every slice in a legend (a swatch, its label and its share)
+    /// beside the chart when there is room, under it otherwise. The legend
+    /// and the wedges never overlap: the chart shrinks to make room.
+    #[must_use]
+    pub fn with_legend(mut self) -> Self {
+        self.legend = true;
+        self
+    }
+
+    /// Lay the legend out inside `rect` and return the rect left for the
+    /// wedges, with each legend entry's swatch-and-label rect.
+    fn legend_layout(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> (Rect, Vec<(usize, Rect)>) {
+        if !self.legend || self.slices.is_empty() {
+            return (rect, Vec::new());
+        }
+        let total = self.total();
+        let labels: Vec<String> = self
+            .slices
+            .iter()
+            .map(|slice| legend_label(slice, total))
+            .collect();
+        let entries =
+            crate::widget::chart_legend::measure(text, theme, labels.iter().map(String::as_str));
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let widest = entries.iter().map(|e| e.width).fold(0.0, f64::max);
+        let row = entries.first().map_or(0.0, |e| e.height);
+        let side_room = rect.width() - rect.height().min(rect.width() * 0.6);
+        if widest + gap <= side_room {
+            // Beside: one column, centred on the chart's height.
+            let x0 = rect.x1 - widest;
+            let block = crate::num::f64_of_usize(entries.len()) * row;
+            let mut y = (rect.center().y - block / 2.0).max(rect.y0);
+            let items = entries
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let r = Rect::new(x0, y, x0 + e.width, y + row);
+                    y += row;
+                    (i, r)
+                })
+                .collect();
+            (Rect::new(rect.x0, rect.y0, x0 - gap, rect.y1), items)
+        } else {
+            // Under: wrapping rows, measured.
+            let rows = crate::widget::chart_legend::wrap(&entries, rect.x0, rect.x1, 0.0, theme);
+            let height = rows.iter().map(|r| r.y1).fold(0.0, f64::max);
+            let top = rect.y1 - height;
+            let items = rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| (i, r + vello::kurbo::Vec2::new(0.0, top)))
+                .collect();
+            (Rect::new(rect.x0, rect.y0, rect.x1, top - gap), items)
         }
     }
 
@@ -329,8 +396,13 @@ impl PieChart {
             .collect()
     }
     fn geometry(&self) -> (Point, f64, f64) {
-        let center = self.rect.center();
-        let outer = (self.rect.width().min(self.rect.height()) / 2.0 - self.style.padding).max(1.0);
+        let area = if self.chart_rect == Rect::ZERO {
+            self.rect
+        } else {
+            self.chart_rect
+        };
+        let center = area.center();
+        let outer = (area.width().min(area.height()) / 2.0 - self.style.padding).max(1.0);
         (
             center,
             outer,
@@ -525,6 +597,8 @@ impl Widget for PieChart {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
+        let (chart_rect, legend) = self.legend_layout(tr, theme, self.rect);
+        self.chart_rect = chart_rect;
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
         if sectors.is_empty() {
@@ -565,14 +639,22 @@ impl Widget for PieChart {
                 ),
             );
         }
-        if inner > 0.0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &Circle::new(base_center, (inner - 2.0).max(0.0)),
-            );
+        if !legend.is_empty() {
+            let total = self.total();
+            for (index, rect) in &legend {
+                let Some(slice) = self.slices.get(*index) else {
+                    continue;
+                };
+                crate::widget::chart_legend::paint_entry(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    *rect,
+                    slice.color,
+                    &legend_label(slice, total),
+                );
+            }
         }
         let title_style = theme.text(TextRole::LargeTitle);
         let (w, h) = tr.measure_style(
@@ -754,9 +836,52 @@ impl Widget for PieChart {
     }
 }
 
+/// A legend entry: the slice's label and its share, as a secondary line
+/// would put it ("Photos 42%"), never joined by a dot.
+fn legend_label(slice: &PieSlice, total: f64) -> String {
+    let value = PieChart::value(slice);
+    if total > 0.0 {
+        format!("{} {}%", slice.label, (value / total * 100.0).round())
+    } else {
+        slice.label.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_legend_never_overlaps_the_wedges() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let slices = vec![
+            PieSlice::new("photos", "Photos", 42.0, Color::WHITE),
+            PieSlice::new("music", "Music", 21.0, Color::WHITE),
+            PieSlice::new("documents", "Documents and spreadsheets", 9.0, Color::WHITE),
+            PieSlice::new("other", "Other", 4.0, Color::WHITE),
+        ];
+        for rect in [
+            Rect::new(0.0, 0.0, 640.0, 300.0),
+            Rect::new(0.0, 0.0, 300.0, 420.0),
+        ] {
+            let mut chart = PieChart::new(slices.clone()).with_legend();
+            chart.rect = rect;
+            let (area, legend) = chart.legend_layout(&mut text, &theme, rect);
+            chart.chart_rect = area;
+            let (center, outer, _) = chart.geometry();
+            let disc = Rect::from_center_size(center, (2.0 * outer, 2.0 * outer));
+            assert_eq!(legend.len(), 4);
+            for (_, entry) in &legend {
+                assert!(
+                    disc.intersect(*entry).area() <= 0.0,
+                    "{rect:?}: legend {entry:?} overlaps the chart {disc:?}"
+                );
+                assert!(rect.contains(entry.origin()) && entry.x1 <= rect.x1 + 0.5);
+            }
+        }
+        assert_eq!(legend_label(&slices[0], 76.0), "Photos 55%");
+    }
 
     fn chart() -> PieChart {
         let mut chart = PieChart::new(vec![

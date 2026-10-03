@@ -21422,27 +21422,18 @@ impl ShellOverlayHost {
                 .unwrap_or('?')
                 .to_ascii_uppercase()
                 .to_string();
-            ui::widget::Avatar::draw_ringed_at(
-                ctx,
-                Rect::new(cx - r, cy - r, cx + r, cy + r),
-                &initial,
-                fill,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
-            );
+            ui::widget::AvatarFace::new(&initial, "")
+                .presence(fill)
+                .ringed_on(ground)
+                .paint(ctx, Rect::new(cx - r, cy - r, cx + r, cy + r));
         }
         if overflow > 0 {
             let cx = right;
-            ui::widget::Avatar::draw_overflow_at(
+            ui::widget::AvatarFace::paint_overflow(
                 ctx,
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 overflow,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
+                Some(ground),
             );
         }
         right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
@@ -22521,15 +22512,12 @@ impl ShellOverlayHost {
             self.follow_chip_rect.x0 + 38.0,
             self.follow_chip_rect.y1 - 10.0,
         );
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            avatar_rect,
-            &row.initial.to_string(),
-            row.color,
-            theme,
-            text_renderer,
-        );
+        ui::widget::AvatarFace::new(&row.initial.to_string(), "")
+            .presence(row.color)
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                avatar_rect,
+            );
         let label_x = self.follow_chip_rect.x0 + 48.0;
         let label_budget = (detach_rect.x0 - label_x - 8.0).max(0.0);
         #[allow(

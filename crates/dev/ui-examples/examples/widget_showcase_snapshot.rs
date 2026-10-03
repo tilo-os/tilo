@@ -279,9 +279,12 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                 .push(caption("row_avatar_badge"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
+                        .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+                        .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+                        .push(Box::new(
+                            Avatar::person("Sam Okafor", "sam.okafor")
+                                .with_image(placeholder_image()),
+                        ))
                         .push(Box::new(Badge::dot()))
                         .push(Box::new(Badge::count(7)))
                         .push(Box::new(Badge::count(120))),

@@ -1203,10 +1203,7 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if highlighted {
-                ui::widget::ActionRowFace::new(row, t(layout_title_key(mode)))
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             let pictogram = Rect::new(row.x0 + 12.0, row.y0 + 14.0, row.x0 + 56.0, row.y1 - 14.0);
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
@@ -1632,10 +1629,7 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if selected && receivers_focused {
-                ui::widget::ActionRowFace::new(row, device.name.as_str())
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             ui::icons::draw_icon(
                 scene,
