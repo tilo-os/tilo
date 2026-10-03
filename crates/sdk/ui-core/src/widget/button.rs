@@ -554,16 +554,26 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
 
     match role {
         ButtonRole::Primary => {
-            let (rest, active) = (intent.inverted, intent.inverted_hover);
-            let fill = if interact.hovered || interact.pressed {
-                active
+            let (rest, hover, pressed) = (
+                intent.inverted,
+                intent.inverted_hover,
+                colors.inverted_pressed(),
+            );
+            let fill = if interact.pressed {
+                pressed
+            } else if interact.hovered {
+                hover
             } else {
                 rest
             };
             // The label of the inverted fill is the theme's own
-            // (`intent.on_inverted`, the window ground), resolved over both
-            // fills so it does not change under the pointer.
-            let ink = colors.ink_on_any(&[rest, active], intent.on_inverted, ON_FILL_MIN_CONTRAST);
+            // (`intent.on_inverted`, the window ground), resolved over every
+            // fill so it does not change under the pointer.
+            let ink = colors.ink_on_any(
+                &[rest, hover, pressed],
+                intent.on_inverted,
+                ON_FILL_MIN_CONTRAST,
+            );
             (fill, None, ink)
         }
         ButtonRole::Secondary | ButtonRole::Destructive => {
@@ -2468,6 +2478,19 @@ mod tests {
                 hover_ink, ink,
                 "the label does not change under the pointer"
             );
+            // Pressed reads past hover: rest, hover and press are three
+            // distinct steps, and the label holds across all of them.
+            let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
+            assert_eq!(press_fill, colors.inverted_pressed(), "{}", theme.name);
+            assert_ne!(press_fill, hover_fill, "{}", theme.name);
+            let step = |a, b| crate::chrome::shell::lightness_step(a, b);
+            assert!(
+                step(press_fill, fill) > step(hover_fill, fill),
+                "{}: press must move further from rest than hover",
+                theme.name
+            );
+            assert_eq!(press_ink, ink);
+            assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
 
             // Secondary is the raised control with its derived edge.
             let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
