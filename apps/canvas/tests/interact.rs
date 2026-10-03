@@ -526,6 +526,23 @@ fn screenshots_of_gestures_in_progress() {
     desk.button(ElementState::Released);
     desk.pointer(600.0, 600.0);
     desk.shot("pen-rubber-band");
+    desk.key("Escape");
+    desk.key("t");
+    desk.click(440.0, 120.0);
+    desk.app.harness().type_text("Typed in place");
+    desk.key("Enter");
+    desk.app.harness().type_text("on two lines");
+    desk.key("ArrowLeft");
+    desk.key("ArrowLeft");
+    desk.shot("text-typing");
+    desk.key("Escape");
+    desk.key("v");
+    desk.click(760.0, 600.0);
+    desk.hold(&["shift"]);
+    desk.key("@");
+    desk.hold(&[]);
+    desk.pointer(700.0, 650.0);
+    desk.shot("zoomed-to-selection");
 
     // A stroke on the oil layer, shown as the oil will paint it before the
     // brush lifts.
