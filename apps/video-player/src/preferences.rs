@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 
 const SECTION: &str = "video_player";
 
-fn settings() -> ui::storage::Settings {
-    ui::storage::Settings::section(SECTION)
+fn settings() -> ui::storage::SettingsSection {
+    ui::storage::SettingsSection::named(SECTION)
 }
 const AUTOPLAY: &str = "autoplay";
 const LOOP_ENABLED: &str = "loop_enabled";
@@ -214,7 +214,7 @@ mod tests {
                 loop_enabled: true,
             };
             initial.save_at(&path).expect("save preferences");
-            ui::storage::Settings::section("appearance")
+            ui::storage::SettingsSection::named("appearance")
                 .in_file(&path)
                 .update(
                     [("theme".to_string(), Value::String("dark".to_string()))]
@@ -225,7 +225,7 @@ mod tests {
 
             assert_eq!(PlaybackPreferences::load_at(&path), initial);
             assert_eq!(
-                ui::storage::Settings::section("appearance")
+                ui::storage::SettingsSection::named("appearance")
                     .in_file(&path)
                     .string("theme")
                     .as_deref(),
