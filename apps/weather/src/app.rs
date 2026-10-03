@@ -1,16 +1,16 @@
 //! Root widget for the weather app.
 //!
 //! Weather is an **overview + detail** pair of content panels (HIG §1b), not
-//! a sidebar app. The responsive layout is delegated to the shared
-//! [`ui::widget::NavShell`] primitive, constructed content-only (no genuine
-//! sidebar): the *contentful city list* is the overview, the forecast is the
-//! detail.
+//! a sidebar app. The window is the shared [`ui::widget::NavShell`] with no
+//! sidebar: the *contentful city list* is the overview, the forecast is the
+//! content, and each has its header in the shell's one header row (the
+//! list's "Places" with its Add button, the forecast's place name with its
+//! Refresh and History buttons).
 //!
-//! * **Wide** (window ≥ the shell breakpoint): the two panels sit **side by
-//!   side**.
+//! * **Wide** (both columns fit): the two panels sit **side by side**.
 //! * **Narrow**: the city list is full-screen; tapping a city **pushes** the
 //!   forecast in from the right with a **Back** button. The shell owns that
-//!   transition, the Back affordance and the divider.
+//!   transition and the Back button.
 //!
 //! [`WeatherApp`] itself is thin: it holds the [`NavShell`] (whose two child
 //! panes render from a shared [`Core`]), seeds/persists the CRDT, and pumps
@@ -18,13 +18,16 @@
 //! Settings store (see [`crate::region`]) — this app reads the preference and
 //! never hosts a toggle for it.
 //!
-//! ## The `--shots` / live split
-//! `--shots` and tests build [`WeatherApp::new`]: seeded with bundled
-//! [`crate::sample`] snapshots, `live == false`, so the network worker is
-//! never spawned and the frame is fully populated and offline. The live
-//! binary builds [`WeatherApp::live`]: an empty model that adopts the actual
-//! saved places without rewriting their document. Its live draw/event pump
-//! fetches current Open-Meteo observations — it never renders invented data.
+//! ## The capture / live split
+//! The live surface is [`WeatherApp::live`]: an empty model that adopts the
+//! actual saved places without rewriting their document, and fetches their
+//! current Open-Meteo observations — it never renders invented data. A
+//! `--shots` capture stages the surface ([`ResourceSurface::stage`]) onto
+//! the bundled [`crate::sample`] places and readings instead, with the
+//! network off, so the frame is fully populated, offline and deterministic.
+//! Tests build [`WeatherApp::new`], which starts that way.
+//!
+//! [`ResourceSurface::stage`]: ui::framework::ResourceSurface::stage
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,43 +42,51 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{OperationKind, Resource};
-use ui::widget::{Affordance, NavShell, ShellMode, Widget};
+use ui::widget::{Button, Element, NavPane, NavShell, Widget};
 
 use crate::actions::WeatherAction;
-use crate::core::{Core, NavIntent};
+use crate::core::{Core, ForecastNotice, NavIntent};
 use crate::doc::WeatherDoc;
 use crate::net::WeatherService;
 use crate::panes::{DetailPane, OverviewPane};
 
-/// Width of the city-list (overview) panel in the side-by-side layout.
-const OVERVIEW_WIDTH: f64 = 340.0;
-/// Width of the collapsed overview **rail** (glanceable icon column). It sits
-/// below [`crate::core`]'s rail threshold, so allocating this width switches
-/// the overview to its rail rendering with no separate flag to keep in sync.
-const OVERVIEW_RAIL_WIDTH: f64 = 68.0;
+/// The screenshot scenarios a capture can stage (`--shots --scenario NAME`).
+pub const SCENARIOS: &[&str] = &[
+    "onboarding",
+    "detail",
+    "drag",
+    "menu",
+    "scrolled",
+    "detail_scrolled",
+    "search",
+    "search_loading",
+    "search_empty",
+    "offline",
+    "error",
+];
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent, orthogonal flag (rail-collapsed overview, a \
-              pending shell rebuild, live network vs. bundled sample data, the one-shot \
-              initial fetch, and whether the shared doc has been seeded yet); they aren't a \
-              state machine, and grouping them would mean churning every field access \
-              across this widget for no behavioural gain"
+    reason = "each bool is an independent, orthogonal flag (live network vs. bundled sample \
+              data, the one-shot initial fetch, whether the shared doc has been seeded yet, \
+              and whether a capture seeds it with the sample places); they aren't a state \
+              machine"
 )]
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
+    /// Whether the forecast's header holds the History button.
+    history_in_header: bool,
+    /// Whether the shell was built with a place in the forecast column.
+    shows_forecast: bool,
 
-    /// Whether the city list is collapsed to a rail in the side-by-side
-    /// layout. Drives the overview width the shell is rebuilt with.
-    overview_collapsed: bool,
-    /// Set when the shell is rebuilt (collapse toggle) so the event loop
-    /// re-runs `build_layout` on the fresh shell before the next draw.
+    /// The shell was rebuilt; the host lays the window out again.
     structure_dirty: bool,
 
     live: bool,
@@ -91,18 +102,30 @@ pub struct WeatherApp {
     /// Last document state folded into the render model. `ActionHost` updates
     /// this watermark eagerly; palette/agent actions are adopted on sync.
     doc_heads: Vec<ChangeHash>,
+    /// A capture scenario staged after the next paint (it stands on the
+    /// painted rows).
+    pending_scenario: Option<String>,
+    /// A scenario was staged during the last paint; it shows on the next.
+    repaint_staged: bool,
 }
 
 impl WeatherApp {
+    /// An empty, offline root for the History tests. The shared History
+    /// conformance driver opens History through the window's own History
+    /// bar, so this root leaves the History button out of its header and
+    /// lets the window draw that bar.
     #[cfg(test)]
     pub(crate) fn history_test_root() -> Self {
-        Self::assemble(
+        let mut app = Self::assemble(
             Rc::new(RefCell::new(Core::new(
                 crate::model::WeatherModel::default(),
                 crate::units::Units::METRIC,
             ))),
             false,
-        )
+        );
+        app.history_in_header = false;
+        app.nav = Self::build_nav(&app.core, false);
+        app
     }
     fn dispatch_durable_action(&mut self, doc: &mut AutoCommit, action: &WeatherAction) {
         let dispatched = action.clone();
@@ -166,6 +189,8 @@ impl WeatherApp {
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    ///
+    /// [`ResourceSurface`]: ui::framework::ResourceSurface
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Weather>,
@@ -173,7 +198,7 @@ impl WeatherApp {
         self.actions.attach(dispatcher);
     }
 
-    /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
+    /// Standalone / unit-test tree via [`tilo_resource::publish`].
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let from_doc = WeatherDoc::read_model(doc);
         let widget = self.core.borrow().model.clone();
@@ -221,31 +246,75 @@ impl WeatherApp {
         self.doc_heads = current_heads;
     }
 
-    /// Build the responsive shell at the overview width implied by `collapsed`
-    /// (full list vs. rail). Both pane widgets share the one [`Core`].
-    fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
-        let overview: Box<dyn Widget> = Box::new(OverviewPane::new(core.clone()));
-        let detail: Box<dyn Widget> = Box::new(DetailPane::new(core));
-        // Authored 1× geometry. The shell resolves it against the theme it is
-        // built with (F1, round two): the text-sized city list and the
-        // breakpoint grow by the theme's responsive scale, the collapsed
-        // icon rail follows `ui_scale` only — scaling them here as well
-        // doubled both at 2×.
-        let nav = NavShell::new(overview, detail)
-            .with_breakpoint(ui::widget::DEFAULT_NAVSHELL_BREAKPOINT);
-        if collapsed {
-            nav.with_icon_overview_width(OVERVIEW_RAIL_WIDTH)
-        } else {
-            nav.with_overview_width(OVERVIEW_WIDTH)
+    /// The window: the city list as the overview and the forecast as the
+    /// content, both rendering from the one shared [`Core`], each with its
+    /// header in the shell's header row.
+    /// The forecast's header offers Refresh only while it shows a place, and
+    /// History when `history` (the window then draws no History bar).
+    fn build_nav(core: &Rc<RefCell<Core>>, history: bool) -> NavShell {
+        let add: Element = Box::new(
+            Button::icon_only("weather.add-place", Icon::Plus, "Add place").on_view({
+                let core = Rc::clone(core);
+                move || core.borrow_mut().begin_search()
+            }),
+        );
+        let mut actions: Vec<Element> = Vec::new();
+        if Self::shows_forecast(&core.borrow()) {
+            actions.push(Box::new(
+                Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast").on_effect(
+                    {
+                        let core = Rc::clone(core);
+                        move || core.borrow_mut().refresh_selected_forecast()
+                    },
+                ),
+            ));
         }
+        if history {
+            actions.push(Box::new(ui::widget::history_button()));
+        }
+        let title = Self::content_title(&core.borrow());
+        NavShell::new()
+            .with_id("weather-shell")
+            .overview(Box::new(OverviewPane::new(Rc::clone(core))))
+            .content(Box::new(DetailPane::new(Rc::clone(core))))
+            .overview_header("Places", vec![add])
+            .content_header(title, actions)
+    }
+
+    /// Whether the forecast column shows a place (and so can refresh it).
+    fn shows_forecast(core: &Core) -> bool {
+        core.model.selected_location().is_some()
+    }
+
+    /// The forecast column's title: the selected place's name.
+    fn content_title(core: &Core) -> String {
+        core.model
+            .selected_location()
+            .map(|location| location.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Keep the forecast column's header on the selected place: its name as
+    /// the title, and Refresh only while there is a place to refresh.
+    fn sync_title(&mut self) {
+        let shows = Self::shows_forecast(&self.core.borrow());
+        if shows != self.shows_forecast {
+            self.nav = Self::build_nav(&self.core, self.history_in_header);
+            self.shows_forecast = shows;
+            self.structure_dirty = true;
+        }
+        let title = Self::content_title(&self.core.borrow());
+        self.nav.set_content_title(title);
     }
 
     fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
-        let nav = Self::build_nav(core.clone(), false);
+        let nav = Self::build_nav(&core, true);
+        let shows_forecast = Self::shows_forecast(&core.borrow());
         Self {
             core,
             nav,
-            overview_collapsed: false,
+            history_in_header: true,
+            shows_forecast,
             structure_dirty: false,
             live,
             service: None,
@@ -258,42 +327,48 @@ impl WeatherApp {
             resource_refresh_tickets: std::collections::HashSet::new(),
             actions: crate::resource::ActionSink::default(),
             doc_heads: Vec::new(),
+            pending_scenario: None,
+            repaint_staged: false,
         }
-    }
-
-    /// Rebuild the shell after the collapse state changed, flagging a
-    /// structure change so the event loop re-lays-out the new shell.
-    fn set_overview_collapsed(&mut self, collapsed: bool) {
-        if self.overview_collapsed == collapsed {
-            return;
-        }
-        self.overview_collapsed = collapsed;
-        self.nav = Self::build_nav(self.core.clone(), collapsed);
-        self.structure_dirty = true;
-    }
-
-    /// Tell the core whether the collapse affordance applies this frame. It is
-    /// offered only in the side-by-side layout — in the narrow push layout the
-    /// list is already the full screen, so collapsing it would be meaningless.
-    fn sync_overview_collapsible(&self) {
-        let collapsible = self.nav.mode() == ShellMode::Wide;
-        self.core.borrow_mut().set_overview_collapsible(collapsible);
     }
 
     /// Offscreen / test configuration: bundled sample data, metric units, no
     /// network. Deterministic and fully offline.
     pub fn new() -> Self {
-        let mut model = crate::sample::sample_model();
-        let units = crate::units::Units::METRIC;
-        model.units = units;
-        let core = Rc::new(RefCell::new(Core::new(model, units)));
+        let core = Rc::new(RefCell::new(Core::new(
+            Self::sample_model(),
+            crate::units::Units::METRIC,
+        )));
         let mut app = Self::assemble(core, false);
         app.seed_sample_document = true;
         app
     }
 
+    fn sample_model() -> crate::model::WeatherModel {
+        let mut model = crate::sample::sample_model();
+        model.units = crate::units::Units::METRIC;
+        model
+    }
+
+    /// Switch a live surface to the bundled sample places and readings with
+    /// the network off, and have the next sync publish those places through
+    /// the ordinary actions — what a capture shows.
+    fn use_sample_data(&mut self) {
+        self.live = false;
+        self.service = None;
+        self.initial_fetch_done = false;
+        self.seed_sample_document = true;
+        self.seeded_doc = false;
+        let mut core = self.core.borrow_mut();
+        core.units = crate::units::Units::METRIC;
+        core.model = Self::sample_model();
+        core.status.clear();
+        drop(core);
+        self.sync_title();
+    }
+
     /// The id of the currently selected city, if any. Lets a test observe where
-    /// a Ctrl+K activation navigated.
+    /// a search activation navigated.
     pub fn selected_city(&self) -> Option<crate::model::LocationId> {
         self.core.borrow().model.selected_location().map(|l| l.id)
     }
@@ -302,9 +377,9 @@ impl WeatherApp {
     /// Open-Meteo fetches, and display units read from the shared Settings
     /// store. Nothing invented ever shows on a fresh launch — both the bundled
     /// sample cities and their synthesized readings are dropped, so a first run
-    /// lands on the "No places yet — search above" onboarding and the user adds
-    /// real cities through the geocoding search. Any places they add persist to
-    /// the shared document and are re-adopted by `sync` on the next launch.
+    /// lands on the "No places yet" empty state and the user adds real cities
+    /// through the Add place search. Any places they add persist to the shared
+    /// document and are re-adopted by `sync` on the next launch.
     pub fn live() -> Self {
         let mut model = crate::sample::sample_model();
         model.locations.clear();
@@ -315,17 +390,17 @@ impl WeatherApp {
         model.units = units;
         let core = Rc::new(RefCell::new(Core::new(model, units)));
         let app = Self::assemble(core, true);
-        // Only advertise "Loading…" when there is actually something to fetch;
-        // a place-less first run shows the onboarding, not a phantom spinner.
+        // Only announce loading when there is actually something to fetch;
+        // a place-less first run shows the empty state, not a phantom load.
         // (The persisted doc's real cities, if any, are adopted in `sync`.)
         if !app.core.borrow().model.locations.is_empty() {
-            app.core.borrow_mut().status = "Loading…".to_string();
+            app.core.borrow_mut().status = "Loading forecasts".to_string();
         }
         app
     }
 
     /// Spawn the worker (idempotent) and queue the initial forecast refresh
-    /// for every saved location. No-op for the offline `--shots`/test path.
+    /// for every saved location. No-op for the offline capture/test path.
     fn ensure_service(&mut self) {
         if !self.live {
             return;
@@ -395,31 +470,34 @@ impl WeatherApp {
         self.core.borrow_mut().apply_response(response);
     }
 
-    /// Set the detail pane's Back-affordance reservation from the shell state
-    /// (only the shell knows whether a Back chip occupies the corner).
-    fn sync_reserve_back(&self) {
-        let reserve = matches!(self.nav.top_left_affordance(), Affordance::Back);
-        self.core.borrow_mut().set_detail_reserve_back(reserve);
+    /// Follow the panes' navigation intent and keep the forecast's title on
+    /// the selected place.
+    fn follow_core(&mut self) -> bool {
+        let navigate = self.core.borrow_mut().take_nav_request();
+        if let Some(NavIntent::ShowDetail) = navigate {
+            self.nav.show(NavPane::Content);
+        }
+        self.sync_title();
+        navigate.is_some()
     }
 
-    /// Seed a deterministic interaction state for a headless screenshot.
+    /// Seed a deterministic interaction state for a capture or a test.
     ///
-    /// Recognised scenarios:
-    /// * `"detail"` — push the forecast in (pair with a narrow `--viewport`
-    ///   to capture the pushed detail + the Back button).
+    /// Recognised scenarios ([`SCENARIOS`]):
+    /// * `"detail"` — push the forecast in (a narrow window shows the
+    ///   pushed forecast and its Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.
+    /// * `"menu"` — the second place's menu is open.
     /// * `"scrolled"` — the forecast parked at the bottom.
     /// * `"detail_scrolled"` — narrow pushed forecast parked at the bottom.
-    /// * `"collapsed"` — the city list collapsed to its rail (wide viewport).
-    /// * `"search"` — the live-search dropdown showing geocoded matches.
-    /// * `"search_loading"` — the dropdown's in-flight loading state.
-    /// * `"search_empty"` — the dropdown's "no matches" state.
+    /// * `"search"` — adding a place, the geocoded matches listed.
+    /// * `"search_loading"` — adding a place, the geocode in flight.
+    /// * `"search_empty"` — adding a place, nothing matches.
     /// * `"offline"` — cached conditions remain readable while connectivity
     ///   is unavailable.
-    /// * `"error"` — a refresh error with a clear recovery message.
-    /// * `"onboarding"` — the fresh-launch empty state a live first run shows:
-    ///   no saved places (the sample cities + readings dropped), inviting the
-    ///   user to search. Mirrors what [`WeatherApp::live`] renders on first run.
+    /// * `"error"` — a refresh failed, with what to do about it.
+    /// * `"onboarding"` — the fresh-launch empty state a live first run
+    ///   shows: no saved places.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "onboarding" => {
@@ -431,19 +509,16 @@ impl WeatherApp {
                 core.status.clear();
             }
             "detail" => {
-                self.nav.show_detail();
+                self.nav.show(NavPane::Content);
                 self.nav.snap();
             }
             "drag" => self.core.borrow_mut().seed_drag(),
+            "menu" => self.core.borrow_mut().seed_menu(),
             "scrolled" => self.core.borrow_mut().seed_scrolled(),
             "detail_scrolled" => {
-                self.nav.show_detail();
+                self.nav.show(NavPane::Content);
                 self.nav.snap();
                 self.core.borrow_mut().seed_scrolled();
-            }
-            "collapsed" => {
-                self.set_overview_collapsed(true);
-                self.core.borrow_mut().set_overview_collapsible(true);
             }
             "search" => self
                 .core
@@ -451,14 +526,39 @@ impl WeatherApp {
                 .seed_search_highlighted("Par", crate::sample::sample_geocode_results()),
             "search_loading" => self.core.borrow_mut().seed_search_loading("Reykjav"),
             "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
-            "offline" => {
-                self.core.borrow_mut().status = "Offline — showing last saved forecast".into();
-            }
-            "error" => {
-                self.core.borrow_mut().status =
-                    "Couldn't update — check your connection and try again".into();
-            }
+            "offline" => self
+                .core
+                .borrow_mut()
+                .set_notice(Some(ForecastNotice::Offline)),
+            "error" => self
+                .core
+                .borrow_mut()
+                .set_notice(Some(ForecastNotice::UpdateFailed)),
             _ => {}
+        }
+        self.sync_title();
+    }
+
+    /// Stage a capture: the sample places with the network off, then the
+    /// named scenario's view state.
+    pub(crate) fn stage_capture(&mut self, scenario: Option<&str>) {
+        self.use_sample_data();
+        match scenario {
+            // A drag or a menu stands on the painted rows: stage it after
+            // the next paint has laid them out.
+            Some(name @ ("drag" | "menu")) => self.pending_scenario = Some(name.to_string()),
+            Some(name) => self.seed_shot_scenario(name),
+            None => {}
+        }
+    }
+
+    /// Stage a scenario that waited for the rows to be painted, and ask for
+    /// one more frame so the capture shows it.
+    fn stage_pending_scenario(&mut self) {
+        self.repaint_staged = false;
+        if let Some(name) = self.pending_scenario.take() {
+            self.seed_shot_scenario(&name);
+            self.repaint_staged = true;
         }
     }
 }
@@ -556,19 +656,16 @@ impl Widget for WeatherApp {
         // Semantic actions reach the owning pane directly, so finish their
         // canonical writes and navigation here as well as on pointer input.
         let changed = self.flush_durable_actions(state);
-        let navigate = self.core.borrow_mut().take_nav_request();
-        if let Some(NavIntent::ShowDetail) = navigate {
-            self.nav.show_detail();
-        }
-        changed || navigate.is_some()
+        let navigated = self.follow_core();
+        changed || navigated
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         if !self.seeded_doc {
-            // Only the explicit shot constructor seeds examples. A live blank
-            // document is valid; its first deliberate add creates the schema.
-            if self.seed_sample_document && state.get_heads().is_empty() {
+            // Only a capture or a test seeds examples. A live blank document
+            // is valid; its first deliberate add creates the schema.
+            if self.seed_sample_document && WeatherDoc::read_model(state).locations.is_empty() {
                 self.bootstrap_document(state);
             }
             let mut persisted = WeatherDoc::read_model(state);
@@ -581,6 +678,7 @@ impl Widget for WeatherApp {
         // registered WeatherAction. This also preserves a pending local fetch
         // result rather than letting it hide an unseen remote durable change.
         self.adopt_document_changes(state);
+        self.sync_title();
 
         self.nav.sync(state, path);
     }
@@ -591,9 +689,6 @@ impl Widget for WeatherApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The core solves its row grid without a renderer; hand it the
-        // theme's spacing and metrics here so reserve and paint agree.
-        self.core.borrow_mut().set_layout_tokens(theme);
         self.nav.build_layout(taffy, theme, node_map)
     }
 
@@ -610,10 +705,9 @@ impl Widget for WeatherApp {
         presence: &PresenceCtx,
     ) {
         self.tick_network();
-        self.sync_reserve_back();
-        self.sync_overview_collapsible();
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
+        self.stage_pending_scenario();
     }
 
     fn draw_with_presence(
@@ -626,8 +720,6 @@ impl Widget for WeatherApp {
         permissions: &PermissionContext,
     ) {
         self.tick_network();
-        self.sync_reserve_back();
-        self.sync_overview_collapsible();
         self.nav.draw_with_presence(
             scene,
             transform,
@@ -636,6 +728,7 @@ impl Widget for WeatherApp {
             presence,
             permissions,
         );
+        self.stage_pending_scenario();
     }
 
     fn draw_overlay(
@@ -655,17 +748,7 @@ impl Widget for WeatherApp {
         self.ensure_service();
         self.nav.handle_event(event, ctx);
         self.flush_durable_actions(ctx.state);
-
-        // The overview raises a push intent when a city is selected.
-        if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
-            self.nav.show_detail();
-        }
-
-        // The collapse / expand chip rebuilds the shell at the new width.
-        if self.core.borrow_mut().take_collapse_toggle() {
-            self.set_overview_collapsed(!self.overview_collapsed);
-        }
-
+        self.follow_core();
         self.tick_network();
     }
 
@@ -706,7 +789,10 @@ impl Widget for WeatherApp {
             (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
                 || core.search_pending()
         };
-        core_busy || self.nav.needs_animation_frame()
+        core_busy
+            || self.pending_scenario.is_some()
+            || self.repaint_staged
+            || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -730,8 +816,8 @@ impl Widget for WeatherApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mine = std::mem::take(&mut self.structure_dirty);
-        self.nav.take_structure_dirty() || mine
+        let rebuilt = std::mem::take(&mut self.structure_dirty);
+        self.nav.take_structure_dirty() || rebuilt
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -799,9 +885,7 @@ impl WeatherApp {
             if !self.core.borrow_mut().open_location(id) {
                 return Err("Weather location is no longer saved".into());
             }
-            if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
-                self.nav.show_detail();
-            }
+            self.follow_core();
             return Ok(true);
         }
         if kind != OperationKind::Effect
@@ -887,12 +971,10 @@ mod interaction_tests {
     //! runs) and assert the model + shell view actually changed. Built with
     //! `WeatherApp::new()` so `live == false`: no network, deterministic.
     use super::*;
-    use crate::interaction::{EntryAction, SWIPE_COMMIT_DX};
+    use crate::interaction::EntryAction;
     use crate::net::Request;
     use tilo_automerge::ApplyIncoming;
     use ui::headless::Framed;
-    use ui::widget::ContentLayout;
-    use ui::widget::ShellMode;
     use vello::kurbo::Point as KPoint;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
@@ -1036,11 +1118,26 @@ mod interaction_tests {
             self.dispatch(&key_event(logical_key, text));
         }
 
-        /// Centre-y of the saved-place chip at `i`, from the live list origin.
-        /// Mirrors `CHIP_H` (62) + `CHIP_GAP` (8) from `core`.
-        fn chip_center_y(&self, i: usize) -> f64 {
-            let top = self.app.core.borrow().over_list_top();
-            top + i as f64 * (62.0 + 8.0) + 62.0 / 2.0
+        /// Centre-y of the saved-place row at `i`, from the live list.
+        fn row_center_y(&self, i: usize) -> f64 {
+            self.app.core.borrow().row_rect_for_test(i).center().y
+        }
+
+        /// Centre-x of the saved-place rows.
+        fn row_center_x(&self) -> f64 {
+            self.app.core.borrow().row_rect_for_test(0).center().x
+        }
+
+        /// Click the named control the way a person would.
+        fn click_named(&mut self, name: &str) {
+            Framed::harness_mut(&mut self.app)
+                .click_named(name)
+                .expect("the control is on screen");
+        }
+
+        /// How far a row must be swiped to be removed.
+        fn swipe_commit() -> f64 {
+            crate::interaction::swipe_commit_dx(&Theme::dark().tokens.metrics)
         }
     }
 
@@ -1049,32 +1146,29 @@ mod interaction_tests {
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn layout_reflows_scrolls_and_collapses_the_city_list() {
-        // Case `resize_reflows_between_breakpoints`.
+    fn layout_reflows_and_scrolls() {
+        // Case `resize_reflows_between_side_by_side_and_push`.
         {
-            // The breakpoint MUST be re-derived from the current allocated width
+            // The layout MUST be re-derived from the current allocated width
             // on every layout — not cached from the first frame.
             let mut h = Harness::new(1280.0, 720.0);
-            assert_eq!(h.app.nav.mode(), ShellMode::Wide);
-            assert_eq!(h.app.nav.content_layout(), ContentLayout::SideBySide);
-            assert!(h.app.nav.overview_rect().width() > 1.0);
-            assert!(h.app.nav.detail_rect().width() > 1.0);
+            let g = h.app.nav.geometry();
+            assert!(g.side_by_side && g.stack.is_empty());
+            assert!(g.overview_column.width() > 1.0);
+            assert!(g.content_column.width() > 1.0);
 
             // Simulate a resize down to a narrow width on the SAME instance.
             h.layout(560.0, 720.0);
-            assert_eq!(
-                h.app.nav.mode(),
-                ShellMode::Narrow,
-                "narrow width must reflow to push"
+            assert!(
+                !h.app.nav.geometry().stack.is_empty(),
+                "a narrow width pushes the forecast over the list"
             );
-            assert_eq!(h.app.nav.content_layout(), ContentLayout::Push);
 
             // And back up — proves it isn't frozen after the first resize.
             h.layout(1280.0, 720.0);
-            assert_eq!(
-                h.app.nav.mode(),
-                ShellMode::Wide,
-                "widening must reflow back to side-by-side"
+            assert!(
+                h.app.nav.geometry().side_by_side,
+                "widening reflows back to side by side"
             );
         }
         // Case `wheel_scrolls_the_forecast_body`.
@@ -1086,10 +1180,10 @@ mod interaction_tests {
                 "sample forecast is taller than 620px"
             );
             assert_eq!(h.app.core.borrow().scroll(), 0.0);
-            // Point over the detail (right) panel's hero card — not the overview
-            // list, and not the hourly strip, whose band owns the wheel for its
-            // own horizontal scroll.
-            h.move_to(900.0, 200.0);
+            // Point over the forecast's hero — not the city list, and not the
+            // hourly strip, whose band owns the wheel for its own scroll.
+            let content = h.app.nav.geometry().content_column;
+            h.move_to(content.center().x, content.y0 + 120.0);
             h.dispatch(&WindowEvent::MouseWheel {
                 device_id: synth_device(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
@@ -1100,89 +1194,16 @@ mod interaction_tests {
                 "wheel scrolls the forecast body down"
             );
         }
-        // Case `collapsing_the_city_list_reclaims_forecast_width`.
-        {
-            let mut h = Harness::new(1280.0, 720.0);
-            assert_eq!(h.app.nav.content_layout(), ContentLayout::SideBySide);
-            let detail_w_open = h.app.nav.detail_rect().width();
-            let over = h.app.nav.overview_rect();
-            assert!(over.width() > 300.0, "expanded list is full-width");
-
-            // The draw pass sets `overview_collapsible` and builds the chip's
-            // hotspot; click the collapse chip (top-right of the overview panel).
-            h.redraw();
-            let cx = over.x1 - 39.0; // chip spans x+w-30..x+w, RP=s6 → over.x1-54..-24
-            let cy = over.y0 + 28.0;
-            h.click(cx, cy);
-            assert!(
-                h.app.overview_collapsed,
-                "the collapse chip collapses the list"
-            );
-
-            // Re-lay-out the rebuilt shell (the real loop does this on the
-            // structure-dirty signal) and confirm the forecast reclaimed width.
-            h.layout(1280.0, 720.0);
-            let over_w = h.app.nav.overview_rect().width();
-            let detail_w = h.app.nav.detail_rect().width();
-            assert!(
-                over_w < 120.0,
-                "collapsed overview becomes a rail (got {over_w})"
-            );
-            assert!(
-                detail_w > detail_w_open + 100.0,
-                "collapsing reclaims width for the forecast ({detail_w_open} → {detail_w})"
-            );
-
-            // Expanding via the rail's chip restores the full list.
-            h.redraw();
-            let rail = h.app.nav.overview_rect();
-            h.click(f64::midpoint(rail.x0, rail.x1), rail.y0 + 30.0);
-            assert!(
-                !h.app.overview_collapsed,
-                "the rail chip expands the list back"
-            );
-        }
-        // Case `collapsed_rail_is_not_frozen_across_a_resize`.
-        {
-            // The rail vs. full-list render is derived from the allocated width on
-            // every pass, never cached — so a resize reflows even while collapsed.
-            let mut h = Harness::new(1280.0, 720.0);
-            h.redraw();
-            let over = h.app.nav.overview_rect();
-            h.click(over.x1 - 35.0, over.y0 + 28.0); // collapse
-            h.layout(1280.0, 720.0);
-            assert!(
-                h.app.nav.overview_rect().width() < 120.0,
-                "wide + collapsed is a rail"
-            );
-
-            // Resize to narrow on the SAME instance: the push layout ignores the
-            // rail width, so the overview is full-screen (not a frozen rail).
-            h.layout(560.0, 720.0);
-            assert_eq!(h.app.nav.mode(), ShellMode::Narrow);
-            let ow = h.app.nav.overview_rect().width();
-            assert!(
-                (ow - 560.0).abs() < 1.0,
-                "narrow overview is full-screen even when collapsed ({ow})"
-            );
-
-            // Back to wide → the rail returns (state preserved, still reflowing).
-            h.layout(1280.0, 720.0);
-            assert!(
-                h.app.nav.overview_rect().width() < 120.0,
-                "widening restores the rail"
-            );
-        }
         // Case `hourly_strip_scrolls_when_it_overflows`.
         {
             // The 24 hours are laid out at a minimum per-hour width, so they
-            // overflow the card and the strip scrolls horizontally via the shared
-            // scrollbar primitive.
+            // overflow the band and the strip scrolls horizontally via the
+            // shared scrollbar primitive.
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             assert!(
                 h.app.core.borrow().hourly_max_scroll() > 0.0,
-                "24 hours at the min column width overflow the card"
+                "24 hours at the min column width overflow the band"
             );
             assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
 
@@ -1200,6 +1221,23 @@ mod interaction_tests {
                 "a horizontal wheel scrolls the overflowing strip"
             );
         }
+        // Case `forecast_title_follows_the_selected_place`.
+        {
+            let mut h = Harness::new(1280.0, 720.0);
+            h.key(Key::Named(NamedKey::ArrowDown), None);
+            let second = h.app.core.borrow().model.locations[1].name.clone();
+            let tree = h
+                .app
+                .nav
+                .accessibility()
+                .expect("the header row has titles");
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|heading| heading.name.as_deref() == Some(second.as_str())),
+                "the forecast's header names the selected place"
+            );
+        }
     }
 
     #[test]
@@ -1211,31 +1249,37 @@ mod interaction_tests {
         // Case `tapping_a_city_pushes_detail_then_back_returns`.
         {
             let mut h = Harness::new(560.0, 720.0);
-            assert_eq!(h.app.nav.content_layout(), ContentLayout::Push);
-            assert!(
-                !h.app.nav.is_detail_shown(),
+            assert!(!h.app.nav.geometry().stack.is_empty());
+            assert_ne!(
+                h.app.nav.front_pane(),
+                NavPane::Content,
                 "starts on the full-screen city list"
             );
 
             // Tap the SECOND city in the overview list.
-            h.redraw(); // populate hotspots + list geometry
-            let top = h.app.core.borrow().over_list_top();
-            let cy = top + (62.0 + 8.0) + 62.0 / 2.0; // second chip centre
-            h.click(150.0, cy);
+            h.redraw(); // lay out the rows
+            let (x, y) = (h.row_center_x(), h.row_center_y(1));
+            h.click(x, y);
             assert_eq!(
                 h.app.core.borrow().model.selected,
                 1,
                 "tap selects the city"
             );
-            assert!(h.app.nav.is_detail_shown(), "tap pushes the forecast in");
+            assert_eq!(
+                h.app.nav.front_pane(),
+                NavPane::Content,
+                "tap pushes the forecast in"
+            );
 
-            // Settle the push so the Back affordance resolves, then press Back.
+            // Settle the push so the Back button is placed, then press Back.
             h.app.nav.snap();
-            assert_eq!(h.app.nav.top_left_affordance(), Affordance::Back);
-            let back = h.app.nav.back_button_rect().center();
-            h.click(back.x, back.y);
-            assert!(
-                !h.app.nav.is_detail_shown(),
+            h.layout(560.0, 720.0);
+            let back = h.app.nav.geometry().back;
+            assert!(back.width() > 0.0, "a pushed forecast has a Back button");
+            h.click_named("nav-shell-back");
+            assert_ne!(
+                h.app.nav.front_pane(),
+                NavPane::Content,
                 "Back returns to the city list"
             );
         }
@@ -1248,14 +1292,12 @@ mod interaction_tests {
                 .core
                 .borrow_mut()
                 .seed_search_highlighted("Par", results);
-            let tree = h.app.nav.children()[0].accessibility().unwrap();
-            let target = tree.children[0].children[1]
-                .action_target
-                .as_deref()
-                .unwrap();
+            let mut pane = crate::panes::OverviewPane::new(h.app.core.clone());
+            let tree = pane.accessibility().unwrap();
+            let target = tree.children[0].children[1].action_target.clone().unwrap();
             let (app, state) = h.parts();
-            assert!(app.nav.children_mut()[0].perform_semantic_action(
-                target,
+            assert!(pane.perform_semantic_action(
+                &target,
                 &ui::a11y::Action::Activate,
                 &mut state.doc,
                 &state.root,
@@ -1263,7 +1305,7 @@ mod interaction_tests {
             assert!(app.update(&mut state.doc, &state.root));
             let persisted = WeatherDoc::read_model(&state.doc);
             assert_eq!(persisted.selected_location().unwrap().id, chosen);
-            assert!(app.nav.is_detail_shown());
+            assert_eq!(app.nav.front_pane(), NavPane::Content);
             assert!(!app.update(&mut state.doc, &state.root));
         }
         // Case `arrow_keys_navigate_cities_and_fetch`.
@@ -1305,15 +1347,12 @@ mod interaction_tests {
                 "Arrow Up moves it back"
             );
         }
-        // Case `detail_refresh_button_queues_a_fetch`.
+        // Case `header_refresh_button_queues_a_fetch`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
-            let btn = h.app.core.borrow().refresh_btn_rect();
-            assert!(btn.width() > 0.0, "the refresh button is laid out");
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            let c = btn.center();
-            h.click(c.x, c.y);
+            h.click_named("weather.refresh");
             let queued = h
                 .app
                 .core
@@ -1356,18 +1395,22 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
-            h.app.core.borrow_mut().status = "Updated just now".into();
+            h.app.core.borrow_mut().status = "Forecast updated".into();
             let tree = h.app.accessibility().expect("weather exports a window");
             assert_eq!(tree.role, Role::Window);
             assert_eq!(tree.name.as_deref(), Some("Weather"));
             assert!(tree.children.iter().any(|node| {
-                node.name.as_deref() == Some("Updated just now")
+                node.name.as_deref() == Some("Forecast updated")
                     && node.live == Some(Politeness::Polite)
             }));
         }
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
     fn live_weather_starts_empty_and_fetches_only_restored_or_selected_places() {
         // Case `onboarding_scenario_matches_the_live_empty_state`.
         {
@@ -1392,7 +1435,20 @@ mod interaction_tests {
                 core.model.air_quality.is_empty(),
                 "onboarding clears air quality"
             );
-            assert!(core.status.is_empty(), "onboarding shows no spinner");
+            assert!(core.status.is_empty(), "onboarding announces no load");
+        }
+        // Case `a_capture_stages_the_sample_offline`.
+        {
+            let mut app = WeatherApp::live();
+            app.stage_capture(Some("error"));
+            assert!(!app.live, "a capture never touches the network");
+            let core = app.core.borrow();
+            assert_eq!(core.model.locations.len(), 4);
+            assert!(core.model.selected_snapshot().is_some());
+            assert_eq!(
+                core.notice(),
+                Some(crate::core::ForecastNotice::UpdateFailed)
+            );
         }
         // Case `initial_refresh_waits_for_restored_locations`.
         {
@@ -1418,8 +1474,8 @@ mod interaction_tests {
         // Case `live_starts_empty_with_no_fabricated_places_or_readings`.
         {
             // A fresh live launch must invent nothing: neither cities the user never
-            // added nor readings for them. It lands on the onboarding empty state and
-            // adopts the user's real, persisted places in `sync`.
+            // added nor readings for them. It lands on the empty state and adopts
+            // the user's real, persisted places in `sync`.
             let live = WeatherApp::live();
             assert!(live.live);
             {
@@ -1438,10 +1494,10 @@ mod interaction_tests {
                 );
                 assert!(
                     core.status.is_empty(),
-                    "no phantom Loading spinner with nothing to fetch"
+                    "no phantom load announced with nothing to fetch"
                 );
             }
-            // The bundled sample (used only by `--shots`/tests) still carries demo
+            // The bundled sample (used only by captures/tests) still carries demo
             // cities + readings, so the offline screenshot path stays populated.
             let sample = WeatherApp::new();
             assert!(!sample.core.borrow().model.locations.is_empty());
@@ -1454,9 +1510,8 @@ mod interaction_tests {
             // outbox holds a Forecast request the app would pump to the worker.
             let mut h = Harness::new(560.0, 720.0);
             h.redraw();
-            let top = h.app.core.borrow().over_list_top();
-            let cy = top + (62.0 + 8.0) + 62.0 / 2.0;
-            h.click(150.0, cy);
+            let (x, y) = (h.row_center_x(), h.row_center_y(1));
+            h.click(x, y);
             let has_forecast_req = h
                 .app
                 .core
@@ -1473,16 +1528,16 @@ mod interaction_tests {
         // Case `detail_renders_air_quality_from_real_data`.
         {
             // The sample carries a real air-quality reading; the detail render path
-            // must consume it (parsed fields → section) without panicking, and the
-            // selected place must actually have a reading to show.
+            // must consume it without panicking, and the selected place must
+            // actually have a reading to show.
             let mut h = Harness::new(1280.0, 720.0);
             {
                 let aq = h.app.core.borrow().model.selected_air_quality().cloned();
                 let aq = aq.expect("the selected place has an air-quality reading");
                 assert!(aq.has_any() && aq.european_aqi.is_some());
             }
-            h.redraw(); // exercises draw_air_quality on the real reading
-            // The new section extends the scrollable body.
+            h.redraw(); // paints the air-quality tiles from the real reading
+            // The section extends the scrollable body.
             assert!(h.app.core.borrow().max_scroll() > 0.0);
         }
     }
@@ -1492,21 +1547,21 @@ mod interaction_tests {
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn city_search_autocomplete_picks_and_geocodes() {
-        // Case `city_search_uses_the_shared_autocomplete_overlay`.
+    fn adding_a_place_picks_geocoded_results() {
+        // Case `the_add_button_opens_the_shared_autocomplete`.
         {
-            // Seeding the search stages the shared `ui::Autocomplete`; its overlay
-            // is populated from the geocode results (not a bespoke dropdown).
             let mut h = Harness::new(1280.0, 720.0);
+            assert!(!h.app.core.borrow().search_is_focused());
+            h.click_named("weather.add-place");
+            assert!(
+                h.app.core.borrow().search_is_focused(),
+                "Add place shows and focuses the field"
+            );
             h.app
                 .core
                 .borrow_mut()
                 .seed_search("Par", crate::sample::sample_geocode_results());
             h.redraw();
-            assert!(
-                h.app.core.borrow().search_is_focused(),
-                "the shared field is editing"
-            );
             assert_eq!(
                 h.app.core.borrow().search_suggestion_count(),
                 crate::sample::sample_geocode_results().len(),
@@ -1523,13 +1578,12 @@ mod interaction_tests {
                 .seed_search("Par", crate::sample::sample_geocode_results());
             h.redraw(); // place the field + populate the shared overlay
 
-            // Arrow-key navigation of the shared overlay, then Enter to accept —
-            // no bespoke dropdown hit-test.
+            // Arrow-key navigation of the shared overlay, then Enter to accept.
             h.key(Key::Named(NamedKey::ArrowDown), None);
             assert_eq!(
                 h.app.core.borrow().search_highlight_label().as_deref(),
-                Some("FR · Paris, Île-de-France"),
-                "Arrow Down exposes the first suggestion's place context"
+                Some("Paris"),
+                "Arrow Down highlights the first match"
             );
             h.key(Key::Named(NamedKey::Enter), None);
 
@@ -1548,9 +1602,7 @@ mod interaction_tests {
         // Case `arrow_nav_picks_the_disambiguated_result`.
         {
             // Two cities named "Paris" (France, then Texas): arrowing to the SECOND
-            // and accepting must add THAT one — proving the shared overlay's
-            // keyboard selection is bound to the real geocoded place, not matched by
-            // display name.
+            // and accepting must add THAT one.
             let mut h = Harness::new(1280.0, 720.0);
             h.app
                 .core
@@ -1568,18 +1620,12 @@ mod interaction_tests {
                 "arrowing to the 2nd match adds Paris, Texas — not France"
             );
         }
-        // Case `slash_focuses_search_and_escape_clears_it`.
+        // Case `typing_builds_the_query_and_escape_ends_it`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
-            assert!(!h.app.core.borrow().search_is_focused());
-
-            h.key(Key::Character(SmolStr::new("/")), None);
-            assert!(
-                h.app.core.borrow().search_is_focused(),
-                "'/' focuses the search field"
-            );
-
+            h.app.core.borrow_mut().begin_search();
+            h.redraw();
             for ch in ["P", "a", "r"] {
                 h.key(Key::Character(SmolStr::new(ch)), Some(ch));
             }
@@ -1588,11 +1634,20 @@ mod interaction_tests {
                 "Par",
                 "typed chars build the query"
             );
+            assert!(
+                h.app
+                    .core
+                    .borrow_mut()
+                    .take_outbox()
+                    .iter()
+                    .all(|r| !matches!(r, Request::Forecast { .. })),
+                "typing never reaches the forecast's R shortcut"
+            );
 
             h.key(Key::Named(NamedKey::Escape), None);
             assert!(
                 !h.app.core.borrow().search_is_focused(),
-                "Escape blurs the search field"
+                "Escape ends adding a place"
             );
             assert_eq!(
                 h.app.core.borrow().search_query(),
@@ -1604,7 +1659,8 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
-            h.key(Key::Character(SmolStr::new("/")), None);
+            h.app.core.borrow_mut().begin_search();
+            h.redraw();
             for ch in ["P", "a", "r"] {
                 h.key(Key::Character(SmolStr::new(ch)), Some(ch));
             }
@@ -1626,38 +1682,35 @@ mod interaction_tests {
         }
     }
 
-    // ---- right-click context menu (open → dispatch item) ----------------
+    // ---- the per-place menu (open → choose a row) -----------------------
 
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn context_menu_and_swipe_gestures_edit_the_city_list() {
-        // Case `right_click_menu_delete_removes_the_city_and_persists`.
+    fn place_menu_and_swipe_gestures_edit_the_city_list() {
+        // Case `right_click_menu_remove_deletes_the_city_and_persists`.
         {
             let mut h = Harness::new(560.0, 900.0);
             h.redraw();
             let before = h.app.core.borrow().model.locations.len();
             let victim = h.app.core.borrow().model.locations[1].id;
 
-            // Open the per-entry menu on the second chip via right-click.
-            let y1 = h.chip_center_y(1);
-            h.right_click(150.0, y1);
+            // Open the per-place menu on the second row via right-click.
+            let (x, y1) = (h.row_center_x(), h.row_center_y(1));
+            h.right_click(x, y1);
             assert!(
                 h.app.core.borrow().menu_is_open(),
-                "right-click opens the context menu"
+                "right-click opens the menu"
             );
 
-            // Draw so the menu's item hotspots are built, then click Delete on the
-            // real hotspot the production hit-test would match.
-            h.redraw();
             let del = h
                 .app
                 .core
                 .borrow()
                 .menu_item_rect(EntryAction::Delete)
-                .expect("Delete row hotspot present");
+                .expect("the remove row is laid out");
             let c = del.center();
             h.click(c.x, c.y);
 
@@ -1665,7 +1718,7 @@ mod interaction_tests {
             assert_eq!(
                 model.locations.len(),
                 before - 1,
-                "Delete removes the entry"
+                "Remove place removes the entry"
             );
             assert!(
                 !model.locations.iter().any(|l| l.id == victim),
@@ -1687,21 +1740,20 @@ mod interaction_tests {
             let mut h = Harness::new(560.0, 900.0);
             h.redraw();
             let second = h.app.core.borrow().model.locations[1].id;
-            let y1 = h.chip_center_y(1);
-            h.right_click(150.0, y1);
-            h.redraw();
+            let (x, y1) = (h.row_center_x(), h.row_center_y(1));
+            h.right_click(x, y1);
             let mv = h
                 .app
                 .core
                 .borrow()
                 .menu_item_rect(EntryAction::MoveToTop)
-                .expect("Move-to-top row hotspot present");
+                .expect("the move-to-top row is laid out");
             let c = mv.center();
             h.click(c.x, c.y);
             assert_eq!(
                 h.app.core.borrow().model.locations[0].id,
                 second,
-                "Move-to-top floats the entry to index 0"
+                "Move to top floats the entry to index 0"
             );
         }
         // Case `right_click_menu_refresh_queues_a_fetch_for_that_city`.
@@ -1710,15 +1762,14 @@ mod interaction_tests {
             h.redraw();
             let target = h.app.core.borrow().model.locations[1].id;
             h.app.core.borrow_mut().take_outbox(); // drain any startup requests
-            let y1 = h.chip_center_y(1);
-            h.right_click(150.0, y1);
-            h.redraw();
+            let (x, y1) = (h.row_center_x(), h.row_center_y(1));
+            h.right_click(x, y1);
             let rf = h
                 .app
                 .core
                 .borrow()
                 .menu_item_rect(EntryAction::Refresh)
-                .expect("Refresh row hotspot present");
+                .expect("the refresh row is laid out");
             let c = rf.center();
             h.click(c.x, c.y);
             let queued = h.app.core.borrow_mut().take_outbox().iter().any(
@@ -1726,7 +1777,7 @@ mod interaction_tests {
             );
             assert!(
                 queued,
-                "menu Refresh queues a real forecast fetch for that city"
+                "the menu's Refresh queues a real forecast fetch for that city"
             );
         }
         // Case `swipe_left_past_threshold_deletes_the_city`.
@@ -1736,10 +1787,10 @@ mod interaction_tests {
             let before = h.app.core.borrow().model.locations.len();
             let victim = h.app.core.borrow().model.locations[0].id;
 
-            // Press the first chip, drag left past the commit distance, release.
-            let y0 = h.chip_center_y(0);
-            h.press(250.0, y0);
-            h.move_to(250.0 - (SWIPE_COMMIT_DX + 20.0), y0 + 2.0); // mostly-horizontal → swipe
+            // Press the first row, drag left past the commit distance, release.
+            let (x, y0) = (h.row_center_x() + 100.0, h.row_center_y(0));
+            h.press(x, y0);
+            h.move_to(x - (Harness::swipe_commit() + 20.0), y0 + 2.0); // mostly-horizontal → swipe
             h.release();
 
             let model = &h.app.core.borrow().model;
@@ -1758,9 +1809,10 @@ mod interaction_tests {
             let mut h = Harness::new(560.0, 900.0);
             h.redraw();
             let before = h.app.core.borrow().model.locations.len();
-            let y0 = h.chip_center_y(0);
-            h.press(250.0, y0);
-            h.move_to(250.0 - (SWIPE_COMMIT_DX - 30.0), y0 + 2.0); // under the commit distance
+            let (x, y0) = (h.row_center_x() + 100.0, h.row_center_y(0));
+            h.press(x, y0);
+            h.move_to(x - (Harness::swipe_commit() - 30.0), y0 + 2.0); // under the commit distance
+
             h.release();
             assert_eq!(
                 h.app.core.borrow().model.locations.len(),
@@ -1770,7 +1822,7 @@ mod interaction_tests {
         }
     }
 
-    // ---- swipe-to-delete + drag-to-reorder through handle_event ---------
+    // ---- drag-to-reorder through handle_event ---------------------------
 
     #[test]
     #[allow(
@@ -1785,11 +1837,12 @@ mod interaction_tests {
             let first = h.app.core.borrow().model.locations[0].id;
             let n = h.app.core.borrow().model.locations.len();
 
-            // Press the first chip and drag it straight down past the last chip.
-            let y0 = h.chip_center_y(0);
-            let target_y = h.chip_center_y(n - 1) + 80.0;
-            h.press(200.0, y0);
-            h.move_to(200.0, target_y); // mostly-vertical → reorder
+            // Press the first row and drag it straight down past the last row.
+            let x = h.row_center_x();
+            let y0 = h.row_center_y(0);
+            let target_y = h.row_center_y(n - 1) + 80.0;
+            h.press(x, y0);
+            h.move_to(x, target_y); // mostly-vertical → reorder
             h.release();
 
             let model = &h.app.core.borrow().model;
@@ -1823,16 +1876,15 @@ mod interaction_tests {
                 .collect();
             let first = order_before[0];
 
-            // Press the first chip and drag it down about two slots — mid-drag.
-            let y0 = h.chip_center_y(0);
-            h.press(200.0, y0);
-            h.move_to(200.0, h.chip_center_y(2));
+            // Press the first row and drag it down about two slots — mid-drag.
+            let x = h.row_center_x();
+            let y0 = h.row_center_y(0);
+            h.press(x, y0);
+            let y2 = h.row_center_y(2);
+            h.move_to(x, y2);
 
             {
                 let core = h.app.core.borrow();
-                // The toolkit controller is dragging item 0 and tracking a live
-                // insertion index further down the list (the gap follows the
-                // cursor, not the release).
                 assert_eq!(core.reorder_from_for_test(), Some(0));
                 let ins = core
                     .reorder_insertion_for_test()
@@ -1841,13 +1893,10 @@ mod interaction_tests {
                     ins >= 2,
                     "the gap opened down the list under the cursor, got {ins}"
                 );
-                // A non-dragged chip has physically reflowed to open that gap —
-                // proving the list rearranges in real time.
                 assert!(
                     core.reorder_item_shift_for_test(1).abs() > 0.0,
                     "the list reflows live during the drag"
                 );
-                // ...yet the model is untouched: the reorder only commits on drop.
                 assert_eq!(
                     core.model
                         .locations
@@ -1879,10 +1928,11 @@ mod interaction_tests {
                 .map(|l| l.id)
                 .collect();
 
-            // Start a vertical reorder of the first chip.
-            let y0 = h.chip_center_y(0);
-            h.press(200.0, y0);
-            h.move_to(200.0, h.chip_center_y(2));
+            let x = h.row_center_x();
+            let y0 = h.row_center_y(0);
+            h.press(x, y0);
+            let y2 = h.row_center_y(2);
+            h.move_to(x, y2);
             assert!(
                 h.app.core.borrow().reorder_from_for_test().is_some(),
                 "a reorder is in flight before Escape"
@@ -1924,33 +1974,7 @@ mod interaction_tests {
                 "no stale drag commits after Escape"
             );
         }
-        // Case `dragging_onto_the_delete_zone_deletes`.
-        {
-            let mut h = Harness::new(560.0, 900.0);
-            h.redraw();
-            let before = h.app.core.borrow().model.locations.len();
-            let victim = h.app.core.borrow().model.locations[0].id;
-
-            // Begin a vertical reorder so the delete drop-zone appears, then drop
-            // onto it.
-            let y0 = h.chip_center_y(0);
-            h.press(200.0, y0);
-            h.move_to(200.0, y0 + 30.0); // classify as a reorder → zone shows
-            let zone = h.app.core.borrow().delete_zone_rect_test().center();
-            h.move_to(zone.x, zone.y);
-            h.release();
-
-            let model = &h.app.core.borrow().model;
-            assert_eq!(
-                model.locations.len(),
-                before - 1,
-                "dropping on the trash deletes"
-            );
-            assert!(!model.locations.iter().any(|l| l.id == victim));
-        }
     }
-
-    // ---- keyboard: arrow nav, '/' focus, Escape, geocode-on-typing ------
 
     #[test]
     #[allow(
@@ -2103,8 +2127,6 @@ mod interaction_tests {
             assert!(WeatherDoc::read_model(h.doc()).snapshots.is_empty());
         }
     }
-
-    // ---- detail Refresh button ------------------------------------------
 }
 
 #[cfg(test)]
