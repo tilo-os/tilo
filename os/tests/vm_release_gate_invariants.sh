@@ -103,7 +103,9 @@ else
   bad 'a boot lacks the console channel, login can type before the greeter accepts input, or unlock secrets must travel on argv'
 fi
 
-[ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \
+[ "$(grep -Fc 'tilo-install-target tilo-install-target)' "$vm")" -ge 3 ] \
+  && grep -Fq -- '-device virtio-blk-pci,drive=%s%s' "$vm" \
+  && ! grep -Eq -- '-drive [^ ]*serial=' "$vm" \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
 
