@@ -13,11 +13,11 @@ class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_is_staged_and_corruption_is_never_substituted(self):
         with self.subTest(phase='reviewed payload and product staging'):
             source = ROOT / "crates/sdk/ui-core/assets/fonts"
-            self.assertEqual(fc.verify(source, "fixtures"), (22, 45486176))
+            self.assertEqual(fc.verify(source, "fixtures"), (21, 45619312))
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"
                 fc.stage(source, dest, "product")
-                self.assertEqual(fc.verify(dest, "product"), (21, 44606380))
+                self.assertEqual(fc.verify(dest, "product"), (20, 44739516))
                 self.assertFalse((dest / "AdwaitaSans-Regular.ttf").exists())
                 self.assertTrue((dest / "LICENSES/Noto-Color-Emoji-OFL.txt").is_file())
                 with self.assertRaises(ValueError):
