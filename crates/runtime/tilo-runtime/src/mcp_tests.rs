@@ -92,23 +92,25 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         row_json(&large)["descriptor"]["params"][0]["schema"].is_object(),
         "resolve keeps the full schema"
     );
+    // Operations that restate a named action are named, not repeated: the
+    // row of `rename` carries its parameters.
     let schema = &row_json(&row)["descriptor"]["params"][0]["schema"];
     let operations = schema["properties"]["op"]["oneOf"].as_array().unwrap();
-    let rename = operations
+    let named = &operations
         .iter()
-        .find(|operation| operation["properties"]["action"]["const"] == "rename")
-        .unwrap();
-    assert_eq!(rename["description"], "Rename the note.");
-    assert_eq!(
-        rename["properties"]["args"]["properties"]["title"],
-        json!({"type": "string", "description": "New title"})
-    );
-    assert_eq!(rename["properties"]["args"]["required"], json!(["title"]));
-    assert!(
-        operations
-            .iter()
-            .any(|operation| operation["properties"]["action"]["const"] == "pin")
-    );
+        .find(|operation| operation["properties"]["action"]["enum"].is_array())
+        .unwrap()["properties"]["action"]["enum"];
+    assert!(named.as_array().unwrap().contains(&json!("rename")));
+    assert!(named.as_array().unwrap().contains(&json!("pin")));
+    let rename = tilo_actions::door::survey(&[tilo_resource::publish::<Note>(
+        "test.note:1",
+        "Note",
+        &Note::default(),
+    )])
+    .into_iter()
+    .find(|descriptor| descriptor.address.action == "rename")
+    .unwrap();
+    assert_eq!(rename.params[0].name, "title");
     // What an `apply` invocation carries validates against what the row shows.
     for action in [
         Note::RENAME.with("Groceries".into()).build(0).unwrap(),
@@ -214,7 +216,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
                 {"resource": "doc:1", "kind": "writer.document", "label": "Document", "children": true, "actions": {
                     "save-as": "Label of save-as — Write the document to a file (path?) [destructive]",
                     "set-style": "Label of set-style (kind:heading|list, level?:integer)",
-                    "apply": "Label of apply (action:object (schema: tilo_resolve))",
+                    "apply": "Label of apply (action:object*)",
                 }},
                 {"resource": "doc:2", "kind": "writer.document", "label": "Document", "actions": {
                     "save": "Label of save",
