@@ -285,6 +285,7 @@ mod tests {
         "native_file_picker.rs",
         "native_input_probe.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 
