@@ -658,6 +658,9 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         }
         if let Shape::Stroke { size, .. } = &mark.shape {
             fields.insert("size".into(), round(*size).into());
+            if let Some(brush) = &mark.style.brush {
+                fields.insert("brush".into(), brush.clone().into());
+            }
         }
         if !mark.group.is_empty() {
             fields.insert("group".into(), mark.group.clone().into());
