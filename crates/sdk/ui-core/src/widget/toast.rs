@@ -22,7 +22,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -605,17 +605,20 @@ pub fn paint_transient(
         return ToastCardHit::default();
     }
 
-    let title_style = theme.text(TextRole::Caption);
+    // Measured in the style the card draws its title in, plus the close
+    // button's column when there is one, so a short title is never elided.
+    let title_style = theme.text(TextRole::Label).strong();
     let title_width = f64::from(
         text_renderer
-            .measure_style(
-                card.title,
-                None,
-                &title_style.clone().with_weight(TextWeight::Semibold),
-            )
+            .measure_style(card.title, None, &title_style)
             .0,
     );
-    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
+    let close_column = if card.closable {
+        f64::from(theme.tokens.metrics.bar_control_height) + f64::from(theme.tokens.spacing.s2)
+    } else {
+        0.0
+    };
+    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0 + close_column;
     let width = natural_width
         .max(MIN_WIDTH.min(available_width))
         .min(available_width);
