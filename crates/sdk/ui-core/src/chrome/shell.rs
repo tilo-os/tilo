@@ -15,15 +15,6 @@ use crate::theme::Theme;
 use crate::tokens::Colors;
 use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
-/// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
-/// surface — kept opaque because nothing here can blur a *backdrop* (vello
-/// only blurs shapes), so translucency is just contrast loss that varies
-/// with what's behind it: on the light palette the quick-settings panel
-/// measured `#ffffff` over a window and `#f7f7f7` over the desktop, one
-/// surface reading as two colours. Depth instead comes from the modal
-/// scrim, [`panel_ground`]/[`panel_border`], and the `e4` shadow.
-pub const CHROME_SURFACE_ALPHA: f32 = 1.0;
-
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
 
@@ -89,15 +80,15 @@ impl ChromeRole {
         }
     }
 
-    /// Surface colour at chrome opacity where the role is translucent.
-    /// Reads the *semantic* surface tokens, never a ramp slot, so it
-    /// survives a theme whose author never saw this code.
+    /// The role's opaque surface colour. Reads the *semantic* surface
+    /// tokens, never a ramp slot, so it survives a theme whose author never
+    /// saw this code. A Panel's body is painted in the floating material
+    /// ([`crate::floating_surface::paint_material`]); this is the colour
+    /// that material tints with, and what it is where blur is unavailable.
     pub fn surface(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
-            ChromeRole::Bar | ChromeRole::Panel => {
-                panel_ground(theme).with_alpha_factor(CHROME_SURFACE_ALPHA)
-            }
+            ChromeRole::Bar | ChromeRole::Panel => panel_ground(theme),
             ChromeRole::Object => colors.surfaces.content,
             // Body is state: see `selection_tier`.
             ChromeRole::Control | ChromeRole::Selector => Color::TRANSPARENT,

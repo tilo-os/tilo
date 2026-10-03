@@ -12,6 +12,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
@@ -31,6 +32,7 @@ use crate::shell::foreign::ForeignSurfaceWidget;
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::WorkspaceTree;
 
+use ui::backdrop::{BackdropFrame, BackdropRecording, BackdropRegion, RecordedBackdrop};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -159,6 +161,10 @@ pub struct FramePaint {
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
     pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// What `scene`'s floating surfaces are drawn over. A renderer that
+    /// composites materials blurs these before rendering the scene; any
+    /// other shows the surfaces opaque.
+    pub backdrop: Option<Arc<BackdropFrame>>,
 }
 
 impl FramePaint {
@@ -174,7 +180,15 @@ impl FramePaint {
             workspace_hold: false,
             workspace_clip: None,
             hdr_layers: Vec::new(),
+            backdrop: None,
         }
+    }
+
+    /// The same frame, with its floating surfaces drawn over `backdrop`.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Option<Arc<BackdropFrame>>) -> Self {
+        self.backdrop = backdrop;
+        self
     }
 
     /// The same frame, with `layers` composited where HDR is shown.
@@ -469,6 +483,8 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
+    painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
     /// The session network, once peer sync is up, so a control invoke can
@@ -698,6 +714,7 @@ impl FrameBuilder {
             last_produced_sections: None,
             next_scene_revision: 1,
             painted_hdr_layers: Vec::new(),
+            painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
         };
@@ -1329,15 +1346,79 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let backdrop = BackdropRecording::begin();
         let logical = self.paint_logical();
+        let surfaces = backdrop.finish();
         let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
+        // One scene: each surface's backdrop is what was drawn before it.
+        self.painted_backdrop = self.backdrop_to_scene(surfaces, |_| Some(Vec::new()));
         self.to_scene(logical)
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
     pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
+    }
+
+    /// The backdrops the latest [`Self::paint`] drew its floating surfaces
+    /// over, in scene pixels. Hand them to the renderer of that scene.
+    pub fn take_backdrop(&mut self) -> Option<Arc<BackdropFrame>> {
+        self.painted_backdrop.take()
+    }
+
+    /// Recorded floating surfaces in scene pixels, each with the complete
+    /// scene below it: the layers `below_layer` names under its own layer,
+    /// then what its layer drew before it. A surface whose layer has no
+    /// known place (`None`) keeps its opaque placeholder.
+    fn backdrop_to_scene<'a>(
+        &self,
+        surfaces: Vec<RecordedBackdrop>,
+        below_layer: impl Fn(u32) -> Option<Vec<&'a Scene>>,
+    ) -> Option<Arc<BackdropFrame>> {
+        let regions: Vec<BackdropRegion> = surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let layers = below_layer(surface.layer)?;
+                let (rect, scale) = self.surface_to_scene(surface.bounds)?;
+                let below = if layers.is_empty() {
+                    surface.below
+                } else {
+                    let mut below = Scene::new();
+                    for layer in layers {
+                        below.append(layer, None);
+                    }
+                    below.append(&surface.below, None);
+                    below
+                };
+                Some(BackdropRegion {
+                    image: surface.image,
+                    rect,
+                    blur_px: surface.blur_px * scale,
+                    below: self.to_scene(below),
+                    ground: surface.ground,
+                })
+            })
+            .collect();
+        (!regions.is_empty()).then(|| Arc::new(BackdropFrame { regions }))
+    }
+
+    /// A floating surface's logical bounds in scene pixels, through the
+    /// display it is on, and that display's scale. Every display draws the
+    /// surface, but it sits on one; that is the one its backdrop is blurred
+    /// for.
+    fn surface_to_scene(&self, bounds: Rect) -> Option<(Rect, f64)> {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let output = output_scene::output_at(outputs, bounds.center())?;
+                let transform = output.to_scene();
+                Some((
+                    transform.transform_rect_bbox(bounds),
+                    transform.determinant().abs().sqrt(),
+                ))
+            }
+            _ => Some((bounds, 1.0)),
+        }
     }
 
     /// Whether HDR surfaces may be composited outside the scene. A
@@ -1396,6 +1477,8 @@ impl FrameBuilder {
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
+        // One scene: a floating surface's backdrop is what was drawn before it.
+        ui::backdrop::layer_scene(&scene, 0);
         self.host.draw(
             &mut scene,
             Affine::IDENTITY,
@@ -1510,6 +1593,7 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers: Vec::new(),
+            backdrop: None,
         })
     }
 
@@ -1531,6 +1615,7 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let backdrop_recording = BackdropRecording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1586,6 +1671,7 @@ impl FrameBuilder {
             );
         }
 
+        let backdrop_surfaces = backdrop_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
@@ -1608,6 +1694,9 @@ impl FrameBuilder {
         let damage_regions = (!global_filter)
             .then(|| self.damage_from_sections(&sections, global_filter))
             .flatten();
+        let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        let backdrop =
+            self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
@@ -1667,7 +1756,28 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers,
+            backdrop,
         }
+    }
+
+    /// A floating surface shows a blur of what is below it, which can change
+    /// without its own section changing (a ticking clock under its edge, a
+    /// repaint inside the blur's reach). Any frame that repaints part of the
+    /// screen therefore repaints every blurred surface too. An unchanged
+    /// frame (`Some` and empty) stays unchanged: nothing below moved.
+    fn with_backdrop_damage(
+        &self,
+        damage: Option<Vec<FineDamageRect>>,
+        surfaces: &[RecordedBackdrop],
+    ) -> Option<Vec<FineDamageRect>> {
+        let mut regions = damage?;
+        if regions.is_empty() || surfaces.is_empty() {
+            return Some(regions);
+        }
+        for surface in surfaces {
+            regions.push(self.native_damage_rect(Some(surface.bounds))?);
+        }
+        Some(regions)
     }
 
     fn damage_from_sections(
@@ -2137,6 +2247,12 @@ impl FrameBuilder {
     }
 
     #[cfg(feature = "hosted-test-control")]
+    /// Draw floating chrome as under the reduced-transparency setting, so a
+    /// capture can show the opaque material beside the blurred one.
+    pub fn set_reduce_transparency_for_shots(&mut self, on: bool) {
+        self.theme = self.theme.clone().with_reduce_transparency(on);
+    }
+
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
         self.presence
             .set_display_name(ui::permissions::UserId(user.to_string()), name.to_string());
