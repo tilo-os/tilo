@@ -20,6 +20,7 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use automerge::{AutoCommit, ObjId};
+use ui::LocalState;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
     AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
@@ -42,11 +43,18 @@ use crate::sidebar::{self, SidebarView};
 use crate::swap::{Following, Swap, SwapHandle};
 use crate::vars;
 
-/// CRDT key the environment picker's value lives at (the env name, or
-/// [`NO_ENV`]).
-const ENV_PATH: &str = "sel_env";
 /// What the picker reads when no environment is chosen.
 const NO_ENV: &str = "No environment";
+
+/// What the environment picker offers besides the environments themselves,
+/// and the sheet each opens. The first needs no active environment.
+const ENVIRONMENT_COMMANDS: [(&str, FormMode); 5] = [
+    ("New environment\u{2026}", FormMode::NewEnvironment),
+    ("Rename environment\u{2026}", FormMode::RenameEnvironment),
+    ("Add variable\u{2026}", FormMode::NewVariable),
+    ("Delete variable\u{2026}", FormMode::DeleteVariable),
+    ("Delete environment\u{2026}", FormMode::DeleteEnvironment),
+];
 
 /// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
@@ -160,6 +168,8 @@ pub struct ApiTesterApp {
     slots: Slots,
     /// The active environment's variables, for the URL's variable hint.
     env_vars: Rc<RefCell<HashMap<String, String>>>,
+    /// What the environment picker shows.
+    env_state: LocalState<String>,
 
     /// Commands pushed by widget callbacks, applied after event routing.
     sink: Sink,
@@ -218,7 +228,15 @@ impl ApiTesterApp {
         let (response_slot, response_handle, response_body) =
             Self::response_slot(response.as_ref(), &sink);
         let (dialog_slot, dialog) = Swap::new(no_dialog());
-        let (env_slot, environments) = Swap::new(Self::env_dropdown(&model.environments));
+        let env_state = LocalState::new(
+            Self::environment_name(&model.environments, model.active_env).to_owned(),
+        );
+        let (env_slot, environments) = Swap::new(Self::environment_picker(
+            &model.environments,
+            model.active_env,
+            &env_state,
+            &sink,
+        ));
         let (lists_slot, sidebar_lists) = Swap::new(sidebar::lists(
             &SidebarView {
                 collections: &model.collections,
@@ -228,28 +246,11 @@ impl ApiTesterApp {
             &sink,
         ));
 
-        let split = Following::new(
-            ResizableSplit::new(request_slot, response_slot, SplitOrientation::Vertical)
-                .with_split_position(0.45),
-        );
-        let content = Stack::new()
-            .push(Box::new(
-                Column::new()
-                    .push(request::url_bar(&sink))
-                    .push(request::variable_hint(Rc::clone(&env_vars)))
-                    .push(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_fill_remaining_height()
-                            .push(Box::new(split)),
-                    )),
-            ))
-            .push(Box::new(dialog_slot));
-
+        let content = Self::content(request_slot, response_slot, dialog_slot, &env_vars, &sink);
         let nav = NavShell::new()
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
-            .content(Box::new(content))
+            .content(content)
             .content_header(
                 model.request.name.clone(),
                 vec![Box::new(ui::search::search_button(
@@ -286,6 +287,7 @@ impl ApiTesterApp {
                 dialog,
             },
             env_vars,
+            env_state,
             sink,
             actions: crate::resource::ActionSink::default(),
             search_provider: crate::search_provider::ApiSearchProvider::new(),
@@ -304,6 +306,36 @@ impl ApiTesterApp {
         app.refresh_env_vars();
         app.refresh_search();
         app
+    }
+
+    /// The content column: the URL bar over the request and the response,
+    /// which a divider splits, with the sheet's slot above them.
+    fn content(
+        request: Swap,
+        response: Swap,
+        dialog: Swap,
+        env_vars: &Rc<RefCell<HashMap<String, String>>>,
+        sink: &Sink,
+    ) -> Element {
+        let split = Following::new(
+            ResizableSplit::new(request, response, SplitOrientation::Vertical)
+                .with_split_position(0.45),
+        );
+        Box::new(
+            Stack::new()
+                .push(Box::new(
+                    Column::new()
+                        .push(request::url_bar(sink))
+                        .push(request::variable_hint(Rc::clone(env_vars)))
+                        .push(Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_fill_remaining_height()
+                                .push(Box::new(split)),
+                        )),
+                ))
+                .push(Box::new(dialog)),
+        )
     }
 
     /// The response pane's slot, showing `response` or the empty state.
@@ -472,13 +504,39 @@ impl ApiTesterApp {
     // Views
     // -----------------------------------------------------------------------
 
-    fn env_dropdown(environments: &[Environment]) -> Element {
-        let mut options = vec![NO_ENV.to_string()];
-        options.extend(environments.iter().map(|e| e.name.clone()));
+    /// The name the picker shows for `active`.
+    fn environment_name(environments: &[Environment], active: Option<uuid::Uuid>) -> &str {
+        environments
+            .iter()
+            .find(|environment| Some(environment.id) == active)
+            .map_or(NO_ENV, |environment| environment.name.as_str())
+    }
+
+    /// The environment picker: the environments, no environment, and the
+    /// commands that manage them.
+    fn environment_picker(
+        environments: &[Environment],
+        active: Option<uuid::Uuid>,
+        state: &LocalState<String>,
+        sink: &Sink,
+    ) -> Element {
+        let mut options: Vec<String> = environments.iter().map(|e| e.name.clone()).collect();
+        options.push(NO_ENV.to_owned());
+        let commands = if active.is_some() {
+            &ENVIRONMENT_COMMANDS[..]
+        } else {
+            &ENVIRONMENT_COMMANDS[..1]
+        };
+        options.extend(commands.iter().map(|(label, _)| (*label).to_owned()));
+        let sink = sink.clone();
         Box::new(
-            Dropdown::new(options, ENV_PATH)
+            Dropdown::from_state(options, state)
                 .with_id("api.env")
-                .caption("Environment"),
+                .caption("Environment")
+                .on_change(move |choice| {
+                    sink.borrow_mut()
+                        .push(Cmd::PickEnvironment(choice.to_owned()));
+                }),
         )
     }
 
@@ -502,9 +560,12 @@ impl ApiTesterApp {
             self.nav.set_content_title(self.request.name.clone());
         }
         if std::mem::take(&mut self.stale.environments) {
-            self.slots
-                .environments
-                .set(Self::env_dropdown(&self.environments));
+            self.slots.environments.set(Self::environment_picker(
+                &self.environments,
+                self.active_env,
+                &self.env_state,
+                &self.sink,
+            ));
         }
         if std::mem::take(&mut self.stale.request) {
             let built = request::section(&self.request, self.active_tab, &self.blanks, &self.sink);
@@ -749,7 +810,7 @@ impl ApiTesterApp {
             self.environments = envs;
         }
         if let Some(id) = ApiDoc::active_env(state, root) {
-            self.active_env = id.parse().ok();
+            self.active_env = self.existing_environment(id.parse().ok());
         }
         if let Some(req) = ApiDoc::request(state, root) {
             self.request = req;
@@ -770,6 +831,7 @@ impl ApiTesterApp {
         self.stale.sidebar = true;
         self.stale.environments = true;
         self.stale.header = true;
+        self.show_active_environment();
         self.refresh_env_vars();
         self.refresh_search();
     }
@@ -848,7 +910,6 @@ impl ApiTesterApp {
             tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
-        self.show_active_environment(state, path);
         self.dirty = true;
     }
 
@@ -860,9 +921,16 @@ impl ApiTesterApp {
         let kept = self.selected_request().map(|(_, request)| request);
         self.collections = ApiDoc::collections(state, path);
         self.environments = ApiDoc::environments(state, path);
-        self.active_env = ApiDoc::active_env(state, path).and_then(|id| id.parse().ok());
+        self.active_env = self
+            .existing_environment(ApiDoc::active_env(state, path).and_then(|id| id.parse().ok()));
         self.selected = kept.and_then(|id| self.position_of(id));
         self.workspace_changed();
+    }
+
+    /// `id`, when an environment with it still exists: the document keeps the
+    /// id of an environment that has since been deleted.
+    fn existing_environment(&self, id: Option<uuid::Uuid>) -> Option<uuid::Uuid> {
+        id.filter(|id| self.environments.iter().any(|e| e.id == *id))
     }
 
     /// Where the saved request `id` sits in the collections.
@@ -948,6 +1016,7 @@ impl ApiTesterApp {
                 Cmd::ReplayHistory(hi) => self.replay_history(state, path, hi),
                 Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, edit),
                 Cmd::EditAuth(field, text) => self.edit_auth(field, text),
+                Cmd::PickEnvironment(choice) => self.pick_environment(state, path, &choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
                 Cmd::CancelForm => self.close_form(),
                 Cmd::SubmitForm => self.submit_form(state, path),
@@ -1332,16 +1401,11 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Reconcile the model from the CRDT-bound pickers after they may have
-    /// changed the document.
-    ///
-    /// The method picker feeds the *request being composed* (presentation until
-    /// a whole-request save), so it updates the model directly. Selecting the
-    /// active **environment** is collaborative workspace state persisted in the
-    /// shared document, so that change is routed through the action host — the
-    /// same [`SetActiveEnvironment`](ApiTesterAction::SetActiveEnvironment) a
-    /// Ctrl+K palette dispatch would apply.
-    fn reconcile_pickers(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    /// Reconcile the model from the CRDT-bound method picker after it may
+    /// have changed the document. The method feeds the *request being
+    /// composed* (presentation until a whole-request save), so it updates the
+    /// model directly.
+    fn reconcile_pickers(&mut self, state: &AutoCommit, path: &ObjId) {
         let method = ApiDoc::read_text(state, path, METHOD_PATH);
         if !method.is_empty() {
             let method = HttpMethod::from_str(&method);
@@ -1350,43 +1414,49 @@ impl ApiTesterApp {
                 self.dirty = true;
             }
         }
-        // A name no environment has any more is a stale picker (the active
-        // environment was just renamed or deleted), not a choice.
-        let chosen = ApiDoc::read_text(state, path, ENV_PATH);
-        let next = if chosen == NO_ENV {
-            Some(None)
-        } else {
-            self.environments
-                .iter()
-                .find(|e| e.name == chosen)
-                .map(|e| Some(e.id))
-        };
-        if let Some(next) = next
-            && next != self.active_env
+    }
+
+    /// The person chose from the environment picker: an environment, or one
+    /// of the commands that manage them. Selecting the active environment is
+    /// collaborative workspace state persisted in the shared document, so it
+    /// is routed through the action host, the same
+    /// [`SetActiveEnvironment`](ApiTesterAction::SetActiveEnvironment) a
+    /// Ctrl+K palette dispatch would apply.
+    fn pick_environment(&mut self, state: &mut AutoCommit, path: &ObjId, choice: &str) {
+        if let Some((_, mode)) = ENVIRONMENT_COMMANDS
+            .iter()
+            .find(|(label, _)| *label == choice)
         {
-            self.perform(state, path, &actions::set_active_environment_action(next));
+            self.open_form(*mode, FormTarget::default());
+        } else {
+            let next = if choice == NO_ENV {
+                Some(None)
+            } else {
+                self.environments
+                    .iter()
+                    .find(|e| e.name == choice)
+                    .map(|e| Some(e.id))
+            };
+            if let Some(next) = next
+                && next != self.active_env
+            {
+                self.perform(state, path, &actions::set_active_environment_action(next));
+            }
         }
+        // A command is not a value the picker keeps.
+        self.show_active_environment();
     }
 
     /// Make the environment picker read the active environment, whichever way
-    /// it changed (a rename, a deletion, the palette).
-    fn show_active_environment(&self, state: &mut AutoCommit, path: &ObjId) {
-        let name = self.active_environment().map_or_else(
-            || NO_ENV.to_string(),
-            |environment| environment.name.clone(),
-        );
-        ApiDoc::set_text(state, path, ENV_PATH, &name);
+    /// it changed (a pick, a rename, a deletion, the palette).
+    fn show_active_environment(&self) {
+        self.env_state
+            .set(Self::environment_name(&self.environments, self.active_env).to_owned());
     }
 
-    /// Seed the picker CRDT strings from the model so the dropdowns display
-    /// the right value.
+    /// Seed the method picker's CRDT string from the model.
     fn seed_pickers(&self, state: &mut AutoCommit, path: &ObjId) {
         ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
-        let env_name = self.active_environment().map_or_else(
-            || NO_ENV.to_string(),
-            |environment| environment.name.clone(),
-        );
-        ApiDoc::set_text(state, path, ENV_PATH, &env_name);
     }
 
     fn synchronize(&mut self, state: &mut AutoCommit, path: &ObjId) {
