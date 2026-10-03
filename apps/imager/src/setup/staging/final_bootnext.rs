@@ -268,9 +268,6 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
     if platform.get_efi_var("BootNext")?.is_some() {
         return Err("BootNext is occupied; refusing to replace it".into());
     }
-    let number = efi::allocate_boot_number(&parsed_order, |n| {
-        Ok(platform.get_efi_var(&efi::boot_var_name(n))?.is_some())
-    })?;
     let option = efi::encode_load_option(&HardDriveLoadOption {
         description: "Tilo".into(),
         partition_number: esp.number,
@@ -279,6 +276,40 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
         partition_guid: expected_guid.clone(),
         file_path: receipt.loader_path.clone(),
     })?;
+    let mut reused = None;
+    // Reuse only byte-identical options, including their GPT device path.
+    // Never change an existing option just because its description is Tilo.
+    for &number in &parsed_order {
+        if platform
+            .get_efi_var(&efi::boot_var_name(number))?
+            .as_deref()
+            == Some(option.as_slice())
+        {
+            reused = Some(number);
+            break;
+        }
+    }
+    // Inspect a bounded owned range even across holes left by deleted entries.
+    // Avoid sweeping all 65K firmware variable names on every switch.
+    if reused.is_none() {
+        for number in efi::FIRST_OWNED_BOOT_NUMBER..=efi::FIRST_OWNED_BOOT_NUMBER + 255 {
+            if platform
+                .get_efi_var(&efi::boot_var_name(number))?
+                .as_deref()
+                == Some(option.as_slice())
+            {
+                reused = Some(number);
+                break;
+            }
+        }
+    }
+    let number = if let Some(number) = reused {
+        number
+    } else {
+        efi::allocate_boot_number(&parsed_order, |number| {
+            Ok(platform.get_efi_var(&efi::boot_var_name(number))?.is_some())
+        })?
+    };
     let name = efi::boot_var_name(number);
     // Recheck all identities immediately before the first mutation.
     let now = platform.system_disk()?;
@@ -287,11 +318,13 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
         || platform.loader_sha256(&now, &expected_guid, &receipt.loader_path)? != expected_hash
         || platform.get_efi_var("BootOrder")?.as_deref() != Some(order.as_slice())
         || platform.get_efi_var("BootNext")?.is_some()
-        || platform.get_efi_var(&name)?.is_some()
+        || platform.get_efi_var(&name)?.as_deref() != reused.map(|_| option.as_slice())
     {
         return Err("disk, loader or firmware changed before arming".into());
     }
-    platform.set_efi_var(&name, &option)?;
+    if reused.is_none() {
+        platform.set_efi_var(&name, &option)?;
+    }
     let result = (|| -> IoResult<()> {
         if platform.get_efi_var(&name)?.as_deref() != Some(option.as_slice())
             || platform.get_efi_var("BootOrder")?.as_deref() != Some(order.as_slice())
@@ -314,7 +347,8 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
         Ok(())
     })();
     if let Err(error) = result {
-        if platform.get_efi_var("BootNext")?.is_none()
+        if reused.is_none()
+            && platform.get_efi_var("BootNext")?.is_none()
             && platform.get_efi_var(&name)?.as_deref() == Some(option.as_slice())
         {
             let _ = platform.delete_efi_var(&name);
@@ -349,7 +383,7 @@ pub fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
         }
         let receipt: FinalReadback =
             serde_json::from_slice(&bytes).map_err(|e| format!("final readback JSON: {e}"))?;
-        let mut platform = super::windows::WindowsPlatform::elevated()?;
+        let mut platform = super::windows::WindowsPlatform::elevated_final_boot()?;
         let armed = arm(&mut platform, &receipt)?;
         let json = serde_json::to_vec(&armed).map_err(|e| e.to_string())?;
         std::io::stdout()
@@ -385,6 +419,7 @@ mod tests {
         disk: Disk,
         image: Vec<u8>,
         writes: Vec<String>,
+        fail_bootnext: bool,
     }
 
     impl Drop for FilePlatform {
@@ -489,6 +524,7 @@ mod tests {
                     disk,
                     image,
                     writes: vec![],
+                    fail_bootnext: false,
                 },
                 receipt,
             )
@@ -535,6 +571,9 @@ mod tests {
             }
         }
         fn set_efi_var(&mut self, name: &str, bytes: &[u8]) -> IoResult<()> {
+            if name == "BootNext" && self.fail_bootnext {
+                return Err("injected firmware rejection".into());
+            }
             self.writes.push(name.into());
             std::fs::write(self.var(name), bytes).map_err(|e| e.to_string())
         }
@@ -567,6 +606,72 @@ mod tests {
             );
             Ok(())
         }
+    }
+
+    #[test]
+    fn final_bootnext_reuses_exact_options_across_holes_and_preserves_foreign_entries() {
+        let (mut platform, receipt) = FilePlatform::new(true);
+        arm(&mut platform, &receipt).unwrap();
+        let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
+        std::fs::remove_file(platform.var("BootNext")).unwrap();
+        platform.writes.clear();
+        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0100");
+        assert_eq!(platform.writes, ["BootNext"]);
+        std::fs::remove_file(platform.var("BootNext")).unwrap();
+        std::fs::remove_file(platform.var("Boot0100")).unwrap();
+        std::fs::write(platform.var("Boot0102"), &option).unwrap();
+        std::fs::write(platform.var("Boot0101"), b"foreign option").unwrap();
+        platform.writes.clear();
+        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0102");
+        assert_eq!(platform.writes, ["BootNext"]);
+        assert_eq!(
+            platform.get_efi_var("Boot0101").unwrap().unwrap(),
+            b"foreign option"
+        );
+        assert_eq!(platform.get_efi_var("Boot0102").unwrap().unwrap(), option);
+        assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
+        platform.writes.clear();
+        assert!(
+            arm(&mut platform, &receipt)
+                .unwrap_err()
+                .contains("occupied")
+        );
+        assert!(platform.writes.is_empty());
+    }
+
+    #[test]
+    fn final_bootnext_does_not_reuse_a_different_tilo_device_path() {
+        let (mut platform, receipt) = FilePlatform::new(true);
+        arm(&mut platform, &receipt).unwrap();
+        std::fs::remove_file(platform.var("BootNext")).unwrap();
+        let mut decoded =
+            efi::decode_load_option(&platform.get_efi_var("Boot0100").unwrap().unwrap()).unwrap();
+        decoded.partition_guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
+        let option = efi::encode_load_option(&decoded).unwrap();
+        std::fs::write(platform.var("Boot0100"), &option).unwrap();
+        platform.writes.clear();
+        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0101");
+        assert_eq!(platform.writes, ["Boot0101", "BootNext"]);
+        assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
+    }
+
+    #[test]
+    fn final_bootnext_failed_rearm_never_deletes_the_reused_option() {
+        let (mut platform, receipt) = FilePlatform::new(true);
+        arm(&mut platform, &receipt).unwrap();
+        let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
+        std::fs::remove_file(platform.var("BootNext")).unwrap();
+        platform.writes.clear();
+        platform.fail_bootnext = true;
+        assert!(
+            arm(&mut platform, &receipt)
+                .unwrap_err()
+                .contains("injected")
+        );
+        assert!(platform.writes.is_empty());
+        assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
+        assert!(platform.get_efi_var("BootNext").unwrap().is_none());
+        assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
     }
 
     /// Arming, refusals and fallback.
