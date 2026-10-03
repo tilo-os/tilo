@@ -694,6 +694,8 @@
     <string>dollar.glif</string>
     <key>dollar.ss12</key>
     <string>dollar.ss12.glif</string>
+    <key>dong</key>
+    <string>dong.glif</string>
     <key>dotaccent</key>
     <string>dotaccent.glif</string>
     <key>dotaccent.ss01</key>
@@ -1200,6 +1202,8 @@
     <string>tildecomb.glif</string>
     <key>tildecomb.case</key>
     <string>tildecomb.case.glif</string>
+    <key>tildecomb.narrow</key>
+    <string>tildecomb.narrow.glif</string>
     <key>trademark</key>
     <string>trademark.glif</string>
     <key>two</key>

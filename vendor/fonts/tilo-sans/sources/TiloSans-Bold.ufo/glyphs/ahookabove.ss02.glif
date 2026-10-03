@@ -3,6 +3,6 @@
   <advance width="628"/>
   <outline>
     <component base="a.ss02"/>
-    <component base="hookabovecomb" xOffset="150"/>
+    <component base="hookabovecomb" xOffset="105"/>
   </outline>
 </glyph>

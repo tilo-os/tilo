@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="brevecomb_gravecomb.case" format="2">
   <anchor x="293" y="510" name="_top"/>
-  <anchor x="350" y="758" name="top"/>
+  <anchor x="369" y="840" name="top"/>
   <outline>
     <component base="brevecomb.case"/>
-    <component base="gravecomb.case" xOffset="-8" yOffset="88"/>
+    <component base="gravecomb.case" xOffset="96" yOffset="174"/>
   </outline>
 </glyph>

@@ -4,6 +4,6 @@
   <anchor x="366" y="865" name="top"/>
   <outline>
     <component base="brevecomb"/>
-    <component base="hookabovecomb" xOffset="106" yOffset="117"/>
+    <component base="hookabovecomb.case" xOffset="115" yOffset="163"/>
   </outline>
 </glyph>

@@ -3,6 +3,6 @@
   <advance width="196"/>
   <outline>
     <component base="i.ss01"/>
-    <component base="dotbelowcomb.ss01" xOffset="10"/>
+    <component base="dotbelowcomb.ss01" xOffset="-4"/>
   </outline>
 </glyph>

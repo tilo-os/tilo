@@ -493,6 +493,7 @@
       <string>ij.ss01</string>
       <string>iogonek.ss01</string>
       <string>j.ss01</string>
+      <string>dong</string>
     </array>
     <key>public.kern1.KO_k</key>
     <array>
@@ -1121,6 +1122,7 @@
       <string>aring.ss02</string>
       <string>atilde.ss02</string>
       <string>adieresis.ss01.ss02</string>
+      <string>dong</string>
     </array>
     <key>public.kern2.KO_e</key>
     <array>

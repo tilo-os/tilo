@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="uhorn" format="2">
-  <advance width="623"/>
+  <advance width="595"/>
   <unicode hex="01B0"/>
   <anchor x="295" y="0" name="bottom"/>
   <anchor x="295" y="510" name="top"/>
@@ -26,14 +26,15 @@
     <contour>
       <point x="434" y="0" type="line"/>
       <point x="509" y="0" type="line"/>
-      <point x="509" y="436" type="line"/>
-      <point x="558" y="447"/>
-      <point x="601" y="510"/>
-      <point x="601" y="600" type="curve"/>
-      <point x="529" y="600" type="line"/>
-      <point x="529" y="550"/>
-      <point x="518" y="511"/>
-      <point x="509" y="510" type="curve"/>
+      <point x="509" y="394" type="line"/>
+      <point x="584" y="399"/>
+      <point x="645" y="460"/>
+      <point x="645" y="550" type="curve"/>
+      <point x="565" y="550" type="line"/>
+      <point x="565" y="506"/>
+      <point x="540" y="472"/>
+      <point x="509" y="470" type="curve"/>
+      <point x="509" y="510" type="line"/>
       <point x="429" y="510" type="line"/>
       <point x="429" y="120" type="line"/>
       <point x="434" y="120" type="line"/>

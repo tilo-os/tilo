@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="brevecomb_tildecomb.case" format="2">
   <anchor x="293" y="510" name="_top"/>
-  <anchor x="350" y="758" name="top"/>
+  <anchor x="371" y="848" name="top"/>
   <outline>
     <component base="brevecomb.case"/>
-    <component base="tildecomb.case" xOffset="-14" yOffset="108"/>
+    <component base="tildecomb.case" xOffset="1" yOffset="174"/>
   </outline>
 </glyph>

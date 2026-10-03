@@ -1,0 +1,315 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["fonttools>=4.60", "uharfbuzz", "numpy", "ufoLib2"]
+# ///
+"""Do neighbouring letters collide once kerned? Checks the compiled fonts.
+
+    uv run vendor/fonts/tilo-sans/scripts/pairs.py                # report collisions
+    uv run vendor/fonts/tilo-sans/scripts/pairs.py --show 40      # also the 40 tightest pairs
+    uv run vendor/fonts/tilo-sans/scripts/pairs.py --fix          # write kerning exceptions into the sources
+    uv run vendor/fonts/tilo-sans/scripts/pairs.py --text "đĩa Tĩnh"   # check the pairs in a string
+
+Checked letters: every letter Tilo Sans added beyond Instrument Sans (and
+later its Greek and Cyrillic) plus every accented letter of the Vietnamese
+alphabet, Instrument's own included ('Tìm' matters as much as 'Tĩnh').
+Each is paired both ways with every neighbour (printable ASCII, the
+Vietnamese alphabet in both cases, quotes, dashes, the ellipsis, the other
+checked letters) and shaped with HarfBuzz, so GPOS kerning applies, at every
+master location and at SemiBold. The two inks are compared as horizontal
+profiles in 4-unit bands, the left glyph's widened by the minimum gap in
+every direction, so a tone mark that comes near a neighbour's ascender
+diagonally counts as well as one that touches it.
+
+A pair whose inks come closer than MIN_GAP (font units) is a collision.
+--fix adds, per master, the kerning exception that opens every pair to
+MIN_GAP + FIX_MARGIN (on top of what the groups give, and written to every
+master of the family so the pair interpolates from defined values); rebuild
+and check again afterwards. build.py runs the check after compiling.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+import unicodedata
+from pathlib import Path
+
+import numpy as np
+import uharfbuzz as hb
+import ufoLib2
+from fontTools.pens.basePen import BasePen
+from fontTools.ttLib import TTFont
+
+ROOT = Path(__file__).resolve().parent.parent
+FONTS = ROOT / "fonts"
+SOURCES = ROOT / "sources"
+MIN_GAP = 24
+FIX_MARGIN = 6  # --fix opens pairs to MIN_GAP + this, so instances between masters stay clear
+BAND = 4
+YMIN, YMAX = -320, 1160
+
+UPRIGHT = ("TiloSans[wdth,wght].ttf", {
+    "CondensedRegular": (75, 400), "CondensedBold": (75, 700), "Regular": (100, 400), "Bold": (100, 700),
+})
+ITALIC = ("TiloSans-Italic[wdth,wght].ttf", {
+    "CondensedItalic": (75, 400), "CondensedBoldItalic": (75, 700), "Italic": (100, 400), "BoldItalic": (100, 700),
+})
+EXTRA = {"SemiBold": (100, 600)}
+
+# Neighbours: ASCII, the Vietnamese alphabet with every tone (Instrument's
+# own accented letters included), quotes, dashes and the ellipsis.
+VIETNAMESE = (
+    "aàáảãạăằắẳẵặâầấẩẫậbcdđeèéẻẽẹêềếểễệghiìíỉĩịklmnoòóỏõọôồốổỗộơờớởỡợpqrstuùúủũụưừứửữựvxyỳýỷỹỵ"
+)
+CONTEXT = (
+    "".join(chr(c) for c in range(0x21, 0x7F))
+    + VIETNAMESE + VIETNAMESE.upper()
+    + "‘’“”«»–—…·"
+)
+
+
+class _Spans(BasePen):
+    """Flatten an outline into line segments."""
+
+    def __init__(self, glyphset):
+        super().__init__(glyphset)
+        self.segs = []
+        self.cur = None
+        self.start = None
+
+    def _moveTo(self, p):
+        self.cur = self.start = p
+
+    def _lineTo(self, p):
+        self.segs.append((self.cur, p))
+        self.cur = p
+
+    def _curveToOne(self, p1, p2, p3):
+        p0 = self.cur
+        prev = p0
+        for i in range(1, 9):
+            t = i / 8
+            mt = 1 - t
+            q = (mt**3 * p0[0] + 3 * mt * mt * t * p1[0] + 3 * mt * t * t * p2[0] + t**3 * p3[0],
+                 mt**3 * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t**3 * p3[1])
+            self.segs.append((prev, q))
+            prev = q
+        self.cur = p3
+
+    def _qCurveToOne(self, p1, p2):
+        p0 = self.cur
+        prev = p0
+        for i in range(1, 9):
+            t = i / 8
+            mt = 1 - t
+            q = (mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0], mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1])
+            self.segs.append((prev, q))
+            prev = q
+        self.cur = p2
+
+    def _closePath(self):
+        if self.cur != self.start:
+            self.segs.append((self.cur, self.start))
+
+    _endPath = _closePath
+
+
+YS = np.arange(YMIN, YMAX, BAND) + BAND / 2
+
+
+def profiles(glyphset, name):
+    """(left, right) ink extents per band: the min and max x of any edge
+    crossing the band (nan where the band is empty)."""
+    pen = _Spans(glyphset)
+    glyphset[name].draw(pen)
+    left = np.full(len(YS), np.inf)
+    right = np.full(len(YS), -np.inf)
+    lo_b = YS - BAND / 2
+    hi_b = YS + BAND / 2
+    for (x0, y0), (x1, y1) in pen.segs:
+        ya, yb = min(y0, y1), max(y0, y1)
+        sel = (hi_b >= ya) & (lo_b <= yb)
+        if not sel.any():
+            continue
+        if y1 == y0:
+            xs_lo = np.full(sel.sum(), min(x0, x1))
+            xs_hi = np.full(sel.sum(), max(x0, x1))
+        else:
+            ylo = np.clip(lo_b[sel], ya, yb)
+            yhi = np.clip(hi_b[sel], ya, yb)
+            xa = x0 + (ylo - y0) * (x1 - x0) / (y1 - y0)
+            xb = x0 + (yhi - y0) * (x1 - x0) / (y1 - y0)
+            xs_lo, xs_hi = np.minimum(xa, xb), np.maximum(xa, xb)
+        left[sel] = np.minimum(left[sel], xs_lo)
+        right[sel] = np.maximum(right[sel], xs_hi)
+    return left, right
+
+
+def dilate_right(right, d):
+    """Right profile grown by a disc of radius d."""
+    out = right.copy()
+    k = int(d // BAND)
+    for j in range(1, k + 1):
+        dx = math.sqrt(max(d * d - (j * BAND) ** 2, 0))
+        out[j:] = np.maximum(out[j:], right[:-j] + dx)
+        out[:-j] = np.maximum(out[:-j], right[j:] + dx)
+    return np.maximum(out, right + d)
+
+
+def source_names(font: TTFont) -> dict[str, str]:
+    """Compiled (production) glyph name -> source glyph name, through the cmap."""
+    src = ufoLib2.Font.open(SOURCES / "TiloSans-Regular.ufo")
+    by_cp = {u: g.name for g in src for u in g.unicodes}
+    return {name: by_cp[cp] for cp, name in font.getBestCmap().items() if cp in by_cp}
+
+
+def added_letters(font: TTFont) -> list[str]:
+    """Characters whose glyphs Tilo Sans added beyond Instrument Sans (the
+    sources' stored glyph order is upstream's)."""
+    src = ufoLib2.Font.open(SOURCES / "TiloSans-Regular.ufo")
+    upstream = set(src.lib["public.glyphOrder"])
+    by_cp = {u: g.name for g in src for u in g.unicodes}
+    return [chr(cp) for cp in sorted(font.getBestCmap())
+            if cp in by_cp and by_cp[cp] not in upstream and unicodedata.category(chr(cp))[0] in "LS"]
+
+
+def shape_pair(hbfont, text):
+    buf = hb.Buffer()
+    buf.add_str(text)
+    buf.guess_segment_properties()
+    hb.shape(hbfont, buf, {"kern": True, "liga": False, "calt": False})
+    return buf.glyph_infos, buf.glyph_positions
+
+
+def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, show: int = 0):
+    path = FONTS / font_file
+    tt = TTFont(path)
+    order = tt.getGlyphOrder()
+    names = source_names(tt)
+    face = hb.Face(hb.Blob.from_file_path(str(path)))
+    results = []  # (gap, master, pair, needed)
+    for master, (wdth, wght) in locations.items():
+        hbfont = hb.Font(face)
+        hbfont.set_variations({"wdth": wdth, "wght": wght})
+        gs = tt.getGlyphSet(location={"wdth": wdth, "wght": wght})
+        cache = {}
+
+        def prof(gid):
+            if gid not in cache:
+                left, right = profiles(gs, order[gid])
+                cache[gid] = (left, right, dilate_right(right, min_gap), dilate_right(right, min_gap + FIX_MARGIN))
+            return cache[gid]
+        for text in pairs:
+            infos, poss = shape_pair(hbfont, text)
+            if len(infos) != 2:
+                continue
+            a, b = infos[0].codepoint, infos[1].codepoint
+            shift = poss[0].x_advance + poss[1].x_offset - poss[0].x_offset
+            la, ra, ra_dil, ra_fix = prof(a)
+            lb = prof(b)[0]
+            ok = np.isfinite(ra) & np.isfinite(lb)
+            if not ok.any():
+                continue
+            gap = float(np.min(lb[ok] + shift - ra[ok]))
+            okd = np.isfinite(ra_dil) & np.isfinite(lb)
+            need = float(np.max(ra_dil[okd] - lb[okd] - shift)) if okd.any() else -1
+            need_fix = float(np.max(ra_fix[okd] - lb[okd] - shift)) if okd.any() else -1
+            results.append((gap, master, text, need, need_fix, names.get(order[a], order[a]), names.get(order[b], order[b])))
+    return results
+
+
+def kerning_pairs(text: str) -> list[str]:
+    return [text[i:i + 2] for i in range(len(text) - 1) if not text[i].isspace() and not text[i + 1].isspace()]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--show", type=int, default=0, help="also print the N tightest pairs")
+    parser.add_argument("--text", action="append", default=[], help="check only the pairs in these strings")
+    parser.add_argument("--min-gap", type=float, default=MIN_GAP)
+    parser.add_argument("--fix", action="store_true", help="add kerning exceptions to the sources for every collision")
+    args = parser.parse_args()
+    problems = run(args.text, args.min_gap, args.show, args.fix)
+    return 1 if problems and not args.fix else 0
+
+
+def pair_set(font_file: str) -> list[str]:
+    tt = TTFont(FONTS / font_file)
+    cmap = tt.getBestCmap()
+    # the added letters, and every accented letter of the Vietnamese
+    # alphabet: a collision in 'Tìm' is as much a Vietnamese problem as one
+    # in 'Tĩnh'
+    checked = sorted(set(added_letters(tt)) | {c for c in VIETNAMESE + VIETNAMESE.upper() if ord(c) in cmap and ord(c) > 0x7F})
+    ctx = sorted(set(CONTEXT) | set(checked))
+    pairs = set()
+    for v in checked:
+        for c in ctx:
+            pairs.add(v + c)
+            pairs.add(c + v)
+    return sorted(pairs)
+
+
+def run(texts=(), min_gap=MIN_GAP, show=0, fix=False, quiet=False, families=("upright", "italic")) -> list[str]:
+    """Check (and with fix=True, kern) the given families; returns the collisions."""
+    problems = []
+    fixes = {}
+    for key, (font_file, masters) in (("upright", UPRIGHT), ("italic", ITALIC)):
+        if key not in families:
+            continue
+        locations = dict(masters)
+        if font_file == UPRIGHT[0]:
+            locations.update(EXTRA)
+        pairs = sorted({p for t in texts for p in kerning_pairs(t)}) if texts else pair_set(font_file)
+        results = check(font_file, locations, pairs, min_gap)
+        results.sort()
+        for gap, master, text, need, need_fix, ga, gb in results:
+            if need > 0.5:
+                problems.append(f"{master:20s} {text!r:8s} {ga} {gb}: gap {gap:.0f}, kern +{math.ceil(need)} to reach {min_gap:g}")
+            if need_fix > 0.5 and master in masters:
+                fixes.setdefault(master, {})[(ga, gb)] = math.ceil(need_fix)
+        if show and not quiet:
+            print(f"-- {font_file}: tightest pairs")
+            for gap, master, text, *_ in results[:show]:
+                print(f"   {master:20s} {text!r:8s} gap {gap:.0f}")
+    if not quiet:
+        for line in problems:
+            print("COLLIDE " + line)
+        print(f"{len(problems)} colliding pair(s) (minimum gap {min_gap:g})")
+    if fix and fixes:
+        write_fixes(fixes)
+    return problems
+
+
+def write_fixes(fixes):
+    """Open each pair by `need` in its master, as a glyph-pair exception. Every
+    master of the family gets the exception (at the value its groups give
+    when it needs no fix), so the pair interpolates between defined values."""
+    italic = {"CondensedItalic", "CondensedBoldItalic", "Italic", "BoldItalic"}
+    fonts = {p.stem.replace("TiloSans-", ""): ufoLib2.Font.open(p) for p in SOURCES.glob("TiloSans-*.ufo")}
+    groups = {}
+    for m, f in fonts.items():
+        k1 = {g: n for n, ms in f.groups.items() if n.startswith("public.kern1.") for g in ms}
+        k2 = {g: n for n, ms in f.groups.items() if n.startswith("public.kern2.") for g in ms}
+        groups[m] = (k1, k2)
+
+    def value(m, a, b):
+        k1, k2 = groups[m]
+        for key in ((a, b), (a, k2.get(b, b)), (k1.get(a, a), b), (k1.get(a, a), k2.get(b, b))):
+            if key in fonts[m].kerning:
+                return fonts[m].kerning[key]
+        return 0
+
+    for master, pairs in fixes.items():
+        family = [m for m in fonts if (m in italic) == (master in italic)]
+        for (a, b), need in pairs.items():
+            for m in family:
+                if (a, b) not in fonts[m].kerning:
+                    fonts[m].kerning[(a, b)] = value(m, a, b)
+            fonts[master].kerning[(a, b)] += need
+    for f in fonts.values():
+        f.save()
+    print(f"kerning exceptions written for {sum(len(p) for p in fixes.values())} pair(s); rebuild and check again")
+
+if __name__ == "__main__":
+    sys.exit(main())

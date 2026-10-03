@@ -1,6 +1,8 @@
-# Vietnamese: stacked tone marks for decomposed text, dotless i/j under the
-# hook above, and the stylistic-set forms of the Vietnamese letters.
+# Vietnamese: stacked tone marks, the narrow tilde of ĩ Ĩ and y's dot below
+# for decomposed text, and the stylistic-set forms of the Vietnamese letters.
 # mark, mkmk and kern come from anchors and kerning; nothing here positions.
+# i and j lose their dot under the hook above through @CombiningTopAccents in
+# ccmp.fea, as under every other top mark.
 
 @VietStack = [circumflexcomb_acutecomb circumflexcomb_gravecomb circumflexcomb_hookabovecomb circumflexcomb_tildecomb
     brevecomb_acutecomb brevecomb_gravecomb brevecomb_hookabovecomb brevecomb_tildecomb];
@@ -22,19 +24,22 @@ feature ccmp {
         sub brevecomb tildecomb by brevecomb_tildecomb;
     } vietnamese_stack;
 
-    # The compressed stacks on capitals, so they stay inside the line.
+    # The smaller stacks on capitals.
     lookup vietnamese_stack_case {
         lookupflag UseMarkFilteringSet @VietStack;
         sub [A E O] @VietStack' by @VietStackCase;
     } vietnamese_stack_case;
 
-    lookup vietnamese_dotless {
-        sub [i j]' hookabovecomb by [idotless jdotless];
-        sub [i j]' @VietStack by [idotless jdotless];
-    } vietnamese_dotless;
+    # Inside a feature block a lookup flag carries over into the lookups that
+    # follow; these two must see every mark, so they reset it.
+    lookup vietnamese_narrow_tilde {
+        lookupflag 0;
+        sub [idotless I] tildecomb' by tildecomb.narrow;
+    } vietnamese_narrow_tilde;
 
     # y + dot below: the dot sits beside the descender, not on it.
     lookup vietnamese_ydot {
+        lookupflag 0;
         sub y dotbelowcomb by ydotbelow;
     } vietnamese_ydot;
 } ccmp;

@@ -1,12 +1,14 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["ufo2ft>=3.9", "ufoLib2", "fonttools[ufo,unicode]>=4.60", "glyphsLib>=6.15", "scipy"]
+# dependencies = ["ufo2ft>=3.9", "ufoLib2", "fonttools[ufo,unicode]>=4.60", "glyphsLib>=6.15", "scipy",
+#                 "skia-pathops", "shapely>=2", "uharfbuzz", "numpy"]
 # ///
 """Compile the Tilo Sans sources into variable TTFs.
 
     uv run vendor/fonts/tilo-sans/build.py            # upright + italic
     uv run vendor/fonts/tilo-sans/build.py --upright  # one of them
     uv run vendor/fonts/tilo-sans/build.py --check    # lint the sources only
+    uv run vendor/fonts/tilo-sans/build.py --fast     # skip the slower checks while iterating
 
 Output: vendor/fonts/tilo-sans/fonts/TiloSans[wdth,wght].ttf and
 TiloSans-Italic[wdth,wght].ttf (ignored by git).
@@ -29,6 +31,16 @@ master), its contents.plist entry, and its feature/kerning code:
 The lint step stops the build on errors a designer can make by hand (glyph
 missing from a master, incompatible masters, duplicate code points) and prints
 warnings for the subtler ones (mark with an advance width, wrong start point).
+
+Two optical checks follow (skipped with --fast):
+
+* scripts/components.py, on the sources: the parts of every accented glyph
+  keep their distance (a tone clear of the breve under it, a capital accent
+  clear of its letter) in every master;
+* scripts/pairs.py, on the compiled fonts: no two neighbouring letters
+  collide once kerned (a tone mark against an ascender, a horn against the
+  next letter, ĩ against T). `pairs.py --fix` writes the kerning that opens
+  them. The fonts are written either way, so a failing pair can be looked at.
 """
 
 from __future__ import annotations
@@ -49,6 +61,10 @@ from fontTools.otlLib.builder import buildStatTable
 from fontTools.pens.recordingPen import RecordingPen
 from fontTools.ttLib.tables import ttProgram
 from ufo2ft.filters.propagateAnchors import PropagateAnchorsFilter
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+import components  # noqa: E402
+import pairs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 SOURCES = ROOT / "sources"
@@ -376,11 +392,20 @@ def main() -> int:
     parser.add_argument("--italic", action="store_true", help="build only the italic family")
     parser.add_argument("--check", action="store_true", help="lint the sources; do not compile")
     parser.add_argument("--fast", action="store_true",
-                        help="skip the interpolation check (start points, kinks) while iterating; never for a commit")
+                        help="skip the interpolation, clearance and pair-collision checks while iterating; never for a commit")
     args = parser.parse_args()
     chosen = [k for k in ("upright", "italic") if getattr(args, k)] or ["upright", "italic"]
 
     failed = False
+    compiled: list[str] = []
+    if not args.fast:
+        problems = components.run(quiet=True)
+        for line in problems:
+            print(f"error   [clearance] {line}", file=sys.stderr)
+        if problems:
+            print(f"error   [clearance] {len(problems)} accent(s) too close to their letter or mark;"
+                  " see scripts/components.py", file=sys.stderr)
+            failed = True
     for key in chosen:
         family = FAMILIES[key]
         started = time.monotonic()
@@ -407,6 +432,15 @@ def main() -> int:
             continue
         out = compile_family(family, ds)
         print(f"[{key}] {out.relative_to(ROOT)}  ({time.monotonic() - started:.1f}s)")
+        compiled.append(key)
+    if compiled and not args.fast:
+        collisions = pairs.run(families=compiled, quiet=True)
+        for line in collisions:
+            print(f"error   [pairs] {line}", file=sys.stderr)
+        if collisions:
+            print(f"error   [pairs] {len(collisions)} colliding pair(s); `uv run scripts/pairs.py --fix` kerns them",
+                  file=sys.stderr)
+            failed = True
     return 1 if failed else 0
 
 

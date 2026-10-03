@@ -2,7 +2,6 @@
 <glyph name="i" format="2">
   <advance width="270"/>
   <unicode hex="0069"/>
-  <anchor x="134" y="0" name="bottom"/>
   <outline>
     <component base="idotless"/>
     <component base="dotaccentcomb" xOffset="-5"/>
