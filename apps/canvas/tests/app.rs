@@ -48,7 +48,7 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
     );
 }
 
-/// `look` through the host door answers with a stored PNG and the revision
+/// `look` through the host door answers with a stored JPEG and the revision
 /// it shows; the revision moves when the artwork changes, so a caller can
 /// tell a stale look from a fresh one. `inspect` names the marks by id.
 #[test]
@@ -68,10 +68,10 @@ fn look_and_inspect_answer_through_the_host_door() {
         .clone();
     assert_eq!(value["content"], json!(address));
     let hash = ui::tilo_actions::content_hash(&address).unwrap();
-    let png = tilo_content::ContentStore::for_app()
+    let jpeg = tilo_content::ContentStore::for_app()
         .read(hash)
         .expect("readable");
-    assert!(png.starts_with(b"\x89PNG"));
+    assert!(jpeg.starts_with(&[0xff, 0xd8, 0xff]));
 
     app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("pigment:ultramarine")])))
         .expect("paint");
@@ -91,6 +91,64 @@ fn look_and_inspect_answer_through_the_host_door() {
         .unwrap();
     assert_eq!(listed["marks_bottom_first"][0]["id"], "first", "{listed}");
     assert_eq!(listed["layers_top_first"][0]["marks"], 1);
+}
+
+/// `inspect` lists the newest marks first asked for, says how many more
+/// match, and leaves out what the caller already named or what is default.
+#[test]
+fn inspect_lists_the_newest_marks_within_a_limit() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    let strokes: Vec<NewStroke> = (0..5)
+        .map(|index| NewStroke {
+            id: Some(format!("s{index}")),
+            ..stroke("#204080")
+        })
+        .collect();
+    app.invoke(ArtworkResource::PAINT.with((None, strokes)))
+        .expect("paint");
+    let inspect: ActionRef<ArtworkResource, (String, u32)> =
+        ActionRef::new("inspect", &["layer", "limit"]);
+    let listed = app
+        .operate(inspect.with(("layer-1".into(), 2)))
+        .unwrap()
+        .unwrap()
+        .value
+        .unwrap();
+    let marks = listed["marks_bottom_first"].as_array().unwrap();
+    let ids: Vec<&str> = marks
+        .iter()
+        .filter_map(|mark| mark["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["s3", "s4"], "{listed}");
+    assert_eq!(
+        (listed["listed"].as_u64(), listed["matching"].as_u64()),
+        (Some(2), Some(5))
+    );
+    assert!(
+        listed["more"]
+            .as_str()
+            .is_some_and(|more| more.contains("2 of 5")),
+        "{listed}"
+    );
+    assert!(
+        marks[0].get("layer").is_none(),
+        "the layer asked for is not repeated: {listed}"
+    );
+    assert!(
+        marks[0]["bounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_f64().is_some_and(|value| value.fract() == 0.0)),
+        "bounds in whole units: {listed}"
+    );
+    let layer = &listed["layers_top_first"][0];
+    assert!(
+        layer.get("opacity").is_none() && layer.get("visible").is_none(),
+        "{listed}"
+    );
+    let too_many = app.operate(inspect.with(("layer-1".into(), 401)));
+    assert!(too_many.is_err(), "a limit past 400 is refused");
 }
 
 /// Every framework app answers `render`, the whole window as a stored

@@ -56,6 +56,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     render_text: Option<TextRenderer>,
     /// Draws the view over a past version, which `render` answers for a
     /// `version`. `None` in a view that is itself a past version.
+    /// Used by native-only `render` / past-version draw; unused on wasm.
+    #[allow(dead_code, reason = "used by native-only render / past-version draw; unused on wasm")]
     past: Option<super::preview::DrawPast>,
 }
 

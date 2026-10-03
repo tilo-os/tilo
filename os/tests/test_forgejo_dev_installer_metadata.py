@@ -41,6 +41,7 @@ class MetadataTests(unittest.TestCase):
             with self.subTest(descriptor=descriptor):
                 _, files, prefix = fixture(descriptor)
                 self.assertEqual(medium.metadata(prefix), files)
+                self.assertEqual(medium.metadata(prefix, with_offset=True), (files, len(prefix)))
 
     def test_corrupt_duplicate_oversized_and_truncated_entries_are_refused(self):
         _, _, prefix = fixture()

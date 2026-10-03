@@ -418,6 +418,12 @@ artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
 and binds the assembly source to the live run. This avoids a full disk download
 when rechecking provenance. The downloaded disk still needs its full SHA-256
 check; metadata verification alone does not prove its contents or bootability.
+`python3 os/dev/download-dev-installer.py INTERNAL_RUN_ID --output DISK.qcow2`
+checks that live CI authority, then streams its ZIP payload through zstd into
+a new disk file. It verifies ZIP CRC/lengths plus the complete compressed and
+decoded CI hashes, writes a verified receipt, and never caches the ZIP archive.
+It reserves 8 GiB of host free space throughout extraction. A failed partial
+disk is unverified and has no verified receipt; it cannot be used for installation.
 For generic encrypted targets, `--resume` repeats the boot check against the
 completed install without copying the OS again. A Lenovo board install can use
 `--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
