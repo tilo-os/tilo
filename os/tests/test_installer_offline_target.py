@@ -55,6 +55,34 @@ class OfflineTargetTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'manifest differs'):
                     target.import_image(root)
 
+    def test_development_import_validates_boot_layout_without_changing_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            metadata['schema'] = 'tilo.installer-dev-target.v1'
+            receipt = Path(directory) / 'receipt.json'
+            receipt.write_text(json.dumps(metadata))
+            mounted = Path(directory) / 'mounted'
+            mounted.mkdir()
+            image_id = 'sha256:' + 'e' * 64
+            calls = []
+            def command(*argv, **kwargs):
+                calls.append(argv)
+                if '{{.Id}}' in argv:
+                    return image_id
+                if '{{.Digest}}' in argv:
+                    return metadata['target_digest']
+                if argv[:3] == ('podman', 'image', 'mount'):
+                    return str(mounted)
+                return ''
+            with patch.object(target, 'RECEIPT', receipt), \
+                    patch.object(target, 'read_target', return_value=(metadata, root / 'oci')), \
+                    patch.object(target, 'run', side_effect=command):
+                self.assertEqual(target.import_image(root), image_id)
+            self.assertIn(('python3', '/usr/libexec/tilo-installer-dev-target-uki.py',
+                           'validate-image', '--image-root', str(mounted)), calls)
+            self.assertIn(('podman', 'image', 'unmount', image_id), calls)
+            self.assertFalse(any('commit' in argv or 'build' in argv or 'push' in argv for argv in calls))
+
     def test_command_failure_retains_exit_status_without_arguments(self):
         for code in (-9, 125):
             with self.subTest(returncode=code), patch.object(

@@ -116,6 +116,7 @@ suites = [
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_offline_target.py",
+  "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_overlay.py",
   "os/tests/test_kernel_checkpoint_restore.py",
   "os/tests/test_kernel_config_values.py",
