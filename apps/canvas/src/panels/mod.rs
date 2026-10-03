@@ -13,6 +13,7 @@ pub mod history;
 pub mod inspector;
 pub mod layers;
 pub mod pane;
+pub mod picture;
 pub mod well;
 
 use ui::icons::Icon;

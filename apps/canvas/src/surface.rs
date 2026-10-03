@@ -39,7 +39,7 @@ use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
-use crate::render::Options;
+use crate::render::{Options, Renderer};
 use crate::resource::{ArtworkResource, ExportSvg, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
@@ -404,12 +404,69 @@ impl CanvasSurface {
         }
     }
 
-    /// Enter a mark: edit a path's points or a text's words.
+    /// Enter a mark: edit a path's points or a text's words, crop a
+    /// picture.
     fn enter(&mut self, id: &str) -> bool {
         if self.read_only {
             return false;
         }
+        if self
+            .art
+            .mark(id)
+            .is_some_and(|mark| matches!(mark.shape, Shape::Image { .. }))
+        {
+            self.select(vec![id.to_owned()]);
+            self.tools.crop.set(true);
+            return true;
+        }
         self.start_text_edit(id) || self.start_points(id)
+    }
+
+    /// The picture being cropped: the one image selected in crop mode.
+    fn cropping(&self) -> Option<&Mark> {
+        if !self.tools.crop.with(|on| *on) {
+            return None;
+        }
+        match self.selection.as_slice() {
+            [id] => self
+                .art
+                .mark(id)
+                .filter(|mark| matches!(mark.shape, Shape::Image { .. })),
+            _ => None,
+        }
+    }
+
+    /// Crop mode ends when its picture is no longer the one selected.
+    fn follow_crop(&self) {
+        if self.cropping().is_none() && self.tools.crop.with(|on| *on) {
+            self.tools.crop.set(false);
+        }
+    }
+
+    /// A picture's shape after a handle drag in crop mode, `affine` in
+    /// artwork units: an edge or corner crops it, the picture staying put;
+    /// the turn handle straightens it.
+    fn cropped(mark: &Mark, handle: SelectionHandle, affine: Affine) -> Shape {
+        let mut shape = mark.shape.clone();
+        let Some(placement) = crate::picture::Placement::of(&shape) else {
+            return shape;
+        };
+        let placement = if handle == SelectionHandle::Rotate {
+            let [a, b, ..] = affine.as_coeffs();
+            let turn = b.atan2(a).to_degrees();
+            crate::picture::Placement {
+                straighten: ((placement.straighten + turn) * 10.0)
+                    .round()
+                    .clamp(-450.0, 450.0)
+                    / 10.0,
+                ..placement
+            }
+        } else {
+            let local = mark.affine().inverse() * affine * mark.affine();
+            placement.recropped(local.transform_rect_bbox(placement.frame))
+        };
+        placement.apply(&mut shape);
+        shape
     }
 
     fn commit_points(&mut self) {
@@ -844,12 +901,11 @@ impl CanvasSurface {
                 now,
                 ids,
                 affine,
+                handle,
                 ..
             } => {
-                if start.distance(now) * zoom >= 1.0
-                    && let Some(action) = edit::transform(ids, affine)
-                {
-                    self.dispatch(&action);
+                if start.distance(now) * zoom >= 1.0 {
+                    self.release_handle(handle, ids, affine);
                 }
             }
             Drag::Stroke { draft, id, ink } => {
@@ -888,6 +944,35 @@ impl CanvasSurface {
                 }
             }
         }
+    }
+
+    /// A handle let go: the marks stretched or turned, or in crop mode the
+    /// picture cropped or straightened.
+    fn release_handle(&self, handle: SelectionHandle, ids: Vec<String>, affine: Affine) {
+        let Some(mark) = self.cropping() else {
+            if let Some(action) = edit::transform(ids, affine) {
+                self.dispatch(&action);
+            }
+            return;
+        };
+        let shape = Self::cropped(mark, handle, affine);
+        let Some(placement) = crate::picture::Placement::of(&shape) else {
+            return;
+        };
+        let edit = if handle == SelectionHandle::Rotate {
+            EditMarks {
+                ids,
+                straighten: Some(placement.straighten),
+                ..EditMarks::default()
+            }
+        } else {
+            EditMarks {
+                ids,
+                crop: Some(placement.crop.to_vec()),
+                ..EditMarks::default()
+            }
+        };
+        self.dispatch(&CanvasAction::edit(edit));
     }
 
     fn finish_shape(&mut self, start: Point, now: Point) {
@@ -1079,6 +1164,9 @@ impl CanvasSurface {
                 _ => {}
             }
         }
+        if self.crop_key(key, modifiers) {
+            return true;
+        }
         let nudge = if modifiers.shift_key() { 10.0 } else { 1.0 };
         let step = match key {
             Key::Named(NamedKey::ArrowLeft) => Some([-nudge, 0.0]),
@@ -1127,6 +1215,34 @@ impl CanvasSurface {
                 }
                 false
             }
+        }
+    }
+
+    /// C crops the selected picture or ends cropping; Enter and Escape end
+    /// it too.
+    fn crop_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
+        let cropping = self.cropping().is_some();
+        match key {
+            Key::Named(NamedKey::Enter | NamedKey::Escape) if cropping => {
+                self.tools.crop.set(false);
+                true
+            }
+            Key::Character(ch) if ch.as_str() == "c" && !modifiers.alt_key() => {
+                if cropping {
+                    self.tools.crop.set(false);
+                    return true;
+                }
+                let [id] = self.selection.as_slice() else {
+                    return false;
+                };
+                let id = id.clone();
+                let picture = self
+                    .art
+                    .mark(&id)
+                    .is_some_and(|mark| matches!(mark.shape, Shape::Image { .. }));
+                picture && self.enter(&id)
+            }
+            _ => false,
         }
     }
 
@@ -1239,7 +1355,21 @@ impl CanvasSurface {
     /// `None` when it is the artwork as it is.
     fn shown(&self) -> Option<Artwork> {
         let mut shown: Option<Artwork> = None;
+        let cropping = self.cropping().map(|mark| mark.id.clone());
         match &self.drag {
+            Some(Drag::Handle {
+                ids,
+                affine,
+                handle,
+                ..
+            }) if *affine != Affine::IDENTITY && cropping.is_some() => {
+                let art = shown.get_or_insert_with(|| (*self.art).clone());
+                for mark in &mut art.marks {
+                    if ids.contains(&mark.id) {
+                        mark.shape = Self::cropped(mark, *handle, *affine);
+                    }
+                }
+            }
             Some(Drag::Move { ids, affine, .. } | Drag::Handle { ids, affine, .. })
                 if *affine != Affine::IDENTITY =>
             {
@@ -1262,6 +1392,18 @@ impl CanvasSurface {
                 let art = shown.get_or_insert_with(|| (*self.art).clone());
                 if let Some(mark) = art.marks.iter_mut().find(|mark| mark.id == points.id) {
                     mark.shape = shape;
+                }
+            }
+        }
+        let live: Vec<crate::tools::Live> = self.tools.live.borrow().clone();
+        for control in live {
+            let Some(value) = control.moved() else {
+                continue;
+            };
+            let art = shown.get_or_insert_with(|| (*self.art).clone());
+            for mark in &mut art.marks {
+                if control.ids.contains(&mark.id) {
+                    (control.apply)(mark, value);
                 }
             }
         }
@@ -1412,6 +1554,15 @@ impl CanvasSurface {
             .collect();
         let mut renderer = self.tools.renderer.borrow_mut();
         let renderer = &mut *renderer;
+        let pictures = art
+            .marks
+            .iter()
+            .filter(|mark| matches!(mark.shape, Shape::Image { .. }))
+            .filter_map(|mark| {
+                let embedded = embedded_picture(renderer, text, art, mark)?;
+                Some((mark.id.clone(), embedded))
+            })
+            .collect();
         let svg = crate::svg::export(
             art,
             ground,
@@ -1426,6 +1577,7 @@ impl CanvasSurface {
                     .map(|picture| picture.bytes)
             },
             outlines,
+            pictures,
         );
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
@@ -1586,12 +1738,77 @@ impl CanvasSurface {
         theme: &Theme,
         text: &mut TextRenderer,
     ) {
+        self.overlay_crop(scene, to_screen, theme);
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme, text);
         self.overlay_paths(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
         }
+    }
+
+    /// While a picture is cropped: the rest of the picture, faint, around
+    /// its frame, and the picture's edge, as far as a crop can reach.
+    fn overlay_crop(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
+        let Some(mark) = self.cropping() else {
+            return;
+        };
+        let shown;
+        let mark = match self.shown() {
+            Some(art) => {
+                shown = art;
+                shown.mark(&mark.id).unwrap_or(mark)
+            }
+            None => mark,
+        };
+        let (Shape::Image { src, .. }, Some(placement)) =
+            (&mark.shape, crate::picture::Placement::of(&mark.shape))
+        else {
+            return;
+        };
+        let mut renderer = self.tools.renderer.borrow_mut();
+        let Some(size) = renderer.pictures.size(src) else {
+            return;
+        };
+        let at = to_screen * mark.affine();
+        let to_local = placement.picture_to_local(size);
+        let whole = to_local
+            * ui::vello::kurbo::Shape::to_path(
+                &Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1)),
+                0.1,
+            );
+        let device = at.determinant().abs().sqrt() / placement.pixels_per_unit(size).max(1e-9);
+        if let Some((image, step)) =
+            renderer
+                .pictures
+                .shown(src, device, &crate::picture::Treatment::default())
+        {
+            let mut outside = whole.clone();
+            outside.extend(ui::vello::kurbo::Shape::path_elements(
+                &placement.frame,
+                0.1,
+            ));
+            scene.push_layer(
+                Fill::EvenOdd,
+                ui::vello::peniko::BlendMode::default(),
+                0.35,
+                at,
+                &outside,
+            );
+            scene.fill(
+                Fill::NonZero,
+                at,
+                &ui::vello::peniko::ImageBrush::new(image),
+                Some(to_local * Affine::scale(step)),
+                &whole,
+            );
+            scene.pop_layer();
+        }
+        drop(renderer);
+        let mut edge = whole;
+        edge.apply_affine(at);
+        let dashes = Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]);
+        scene.stroke(&dashes, Affine::IDENTITY, theme.accent_primary, None, &edge);
     }
 
     /// What is hovered and picked: outlines, the frame and its guides.
@@ -1624,6 +1841,11 @@ impl CanvasSurface {
             );
         }
         let preview = match &self.drag {
+            // Straightening turns the picture, not its frame.
+            Some(Drag::Handle {
+                handle: SelectionHandle::Rotate,
+                ..
+            }) if self.cropping().is_some() => Affine::IDENTITY,
             Some(Drag::Move { affine, .. } | Drag::Handle { affine, .. }) => *affine,
             _ => Affine::IDENTITY,
         };
@@ -1905,6 +2127,67 @@ impl CanvasSurface {
 
 /// An anchor of a path being drawn or edited, and its handles when
 /// `handles`; `active` fills it.
+/// An image mark's picture as it shows in its frame, untransformed and
+/// unclipped (the document does that), for an SVG to embed: cropped,
+/// turned and graded, at the picture's own resolution; a JPEG when it is
+/// opaque.
+fn embedded_picture(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    mark: &Mark,
+) -> Option<crate::svg::Embedded> {
+    let Shape::Image { src, .. } = &mark.shape else {
+        return None;
+    };
+    let placement = crate::picture::Placement::of(&mark.shape)?;
+    let size = renderer.pictures.size(src)?;
+    let frame = placement.frame;
+    let longest = frame.width().max(frame.height()).max(1.0);
+    let scale = placement
+        .pixels_per_unit(size)
+        .min(f64::from(crate::picture::MAX_PICTURE_SIDE) / longest);
+    let mut layer = art.layer(&mark.layer)?.clone();
+    layer.medium.clear();
+    layer.opacity = 1.0;
+    if let Some(adjust) = &mut layer.adjust {
+        adjust.vignette = None;
+    }
+    let alone = Mark {
+        transform: None,
+        clip: String::new(),
+        style: crate::model::Style {
+            adjust: mark.style.adjust.clone(),
+            ..crate::model::Style::default()
+        },
+        ..mark.clone()
+    };
+    let solo = Artwork {
+        layers: vec![layer],
+        marks: vec![alone],
+        ..art.clone()
+    };
+    let options = Options {
+        bare: true,
+        ..Options::default()
+    };
+    let (rgba, width, height) =
+        view_ops::render_rgba(renderer, text, &solo, frame, scale, &options).ok()?;
+    let opaque = rgba.chunks_exact(4).all(|pixel| pixel.get(3) == Some(&255));
+    let (bytes, mime) = if opaque {
+        (
+            view_ops::encode_jpeg_at(&rgba, width, height, 92).ok()?,
+            "image/jpeg",
+        )
+    } else {
+        (
+            view_ops::encode_png(&rgba, width, height).ok()?,
+            "image/png",
+        )
+    };
+    Some(crate::svg::Embedded { bytes, mime })
+}
+
 fn draw_anchor(
     scene: &mut Scene,
     (to_screen, theme): (Affine, &Theme),
@@ -2015,6 +2298,7 @@ impl Widget for CanvasSurface {
     ) {
         self.follow_tool();
         self.follow_view();
+        self.follow_crop();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),

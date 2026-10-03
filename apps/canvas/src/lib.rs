@@ -14,6 +14,7 @@ pub const APP_ID: &str = "so.tilo.canvas";
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
+pub mod adjust;
 pub mod doc;
 pub mod fonts;
 pub mod gesture;
@@ -21,6 +22,7 @@ pub mod locales;
 pub mod media;
 pub mod model;
 pub mod panels;
+pub mod picture;
 pub mod preview;
 pub mod render;
 pub mod resource;
@@ -112,6 +114,14 @@ impl ResourceApp for App {
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
             .collect()
+    }
+
+    /// Pictures open as a new artwork the size of the picture.
+    const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
+
+    fn open_file(name: &str, bytes: &[u8]) -> Result<Invoke<ArtworkResource>, String> {
+        let open = resource::open_picture(name, bytes)?;
+        Invoke::apply(&open).map_err(|error| error.to_string())
     }
 
     fn label(art: &Artwork) -> String {

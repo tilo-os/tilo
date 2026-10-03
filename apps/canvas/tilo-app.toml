@@ -13,9 +13,10 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 # Pictures an agent looks at or exports are kept in the app's content store;
 # an SVG or reference picture may be named by a path the sandbox lets it read.
-# Marks are copied and pasted through the clipboard.
+# Marks are copied and pasted through the clipboard. Grading a picture's
+# pixels spreads over a few threads.
 [capabilities]
-optional = ["clipboard", "app-files", "files.paths"]
+optional = ["clipboard", "app-files", "files.paths", "threads"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -40,6 +41,7 @@ bin = "bin/canvas"
 type = "gui"
 splash-budget = 250
 
+# Pictures open as a new artwork the size of the picture.
 [providers]
-mime = []
-ext = []
+mime = ["image/png", "image/jpeg", "image/webp"]
+ext = ["png", "jpg", "jpeg", "webp"]

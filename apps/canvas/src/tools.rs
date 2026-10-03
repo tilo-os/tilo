@@ -12,7 +12,7 @@ use ui::icons::Icon;
 use ui::vello::peniko::Color;
 
 use crate::gesture::Ink;
-use crate::model::Artwork;
+use crate::model::{Artwork, Mark};
 use crate::render::Renderer;
 
 /// What the pointer does on the canvas.
@@ -121,9 +121,39 @@ pub struct Tools {
     pub sidebar: LocalState<bool>,
     /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
+    /// The selected picture's handles crop it, and its turn handle
+    /// straightens it, instead of stretching and turning the mark.
+    pub crop: LocalState<bool>,
+    /// The inspector's controls being dragged, shown on the canvas before
+    /// they are let go and become an edit.
+    pub live: Rc<RefCell<Vec<Live>>>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+}
+
+/// A control whose value the canvas shows on marks while it is dragged.
+#[derive(Clone)]
+pub struct Live {
+    /// The marks it changes.
+    pub ids: Vec<String>,
+    /// The control's value, as it moves.
+    pub state: LocalState<f64>,
+    /// Its value when it was built: what the artwork already shows.
+    pub committed: f64,
+    /// The value onto a mark.
+    pub apply: OntoMark,
+}
+
+/// How a control's value changes a mark.
+pub type OntoMark = Rc<dyn Fn(&mut Mark, f64)>;
+
+impl Live {
+    /// The value while it differs from what the artwork has.
+    pub fn moved(&self) -> Option<f64> {
+        let value = self.state.with(|value| *value);
+        ((value - self.committed).abs() > 1e-9).then_some(value)
+    }
 }
 
 /// A change of view the canvas makes when asked.
@@ -154,6 +184,8 @@ impl Default for Tools {
             view: LocalState::new(None),
             sidebar: LocalState::new(true),
             stop: LocalState::new(0),
+            crop: LocalState::new(false),
+            live: Rc::default(),
             renderer: Rc::default(),
         }
     }

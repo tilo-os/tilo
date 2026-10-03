@@ -3,7 +3,8 @@
 //! ```text
 //! title, width, height      scalars
 //! ground                    JSON of Ground
-//! layers.<id>               { name, order, medium, opacity, visible, texture, locked }
+//! layers.<id>               { name, order, medium, opacity, visible, texture, locked,
+//!                             adjust: JSON of Adjust, when it has one }
 //! marks.<id>                { layer, order, body: JSON of MarkBody }
 //! media.<id>                JSON of MediumSpec
 //! reference                 JSON of Reference, when there is one
@@ -104,6 +105,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 visible: flag(doc, &obj, "visible").unwrap_or(true),
                 texture: number(doc, &obj, "texture").unwrap_or(0.0),
                 locked: flag(doc, &obj, "locked").unwrap_or(false),
+                adjust: json(doc, &obj, "adjust"),
                 id,
             })
         })
@@ -196,6 +198,17 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
     }
     if flag(doc, &obj, "locked").unwrap_or(false) != layer.locked {
         doc.put(&obj, "locked", layer.locked)?;
+    }
+    match &layer.adjust {
+        Some(adjust) => {
+            let encoded = serde_json::to_string(adjust).unwrap_or_default();
+            put_text(doc, &obj, "adjust", &encoded)?;
+        }
+        None => {
+            if doc.get(&obj, "adjust")?.is_some() {
+                doc.delete(&obj, "adjust")?;
+            }
+        }
     }
     Ok(())
 }
