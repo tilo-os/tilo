@@ -1,0 +1,16 @@
+# The typography ratchet for apps-file-explorer: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/file-explorer/src/breadcrumb_bar.rs font_size_const 1
+apps/file-explorer/src/breadcrumb_bar.rs legacy_size_api 7
+apps/file-explorer/src/files_app.rs legacy_size_api 7
+apps/file-explorer/src/files_app.rs raw_type_step 7
+apps/file-explorer/src/files_app.rs type_step_arithmetic 3
+apps/file-explorer/src/framework_history.rs legacy_size_api 2
+apps/file-explorer/src/framework_history.rs raw_type_step 2
+apps/file-explorer/src/places_sidebar.rs legacy_size_api 6
+apps/file-explorer/src/places_sidebar.rs raw_type_step 3
+apps/file-explorer/src/places_sidebar.rs type_step_arithmetic 3
+apps/file-explorer/src/views/file_view.rs legacy_size_api 15
+apps/file-explorer/src/views/file_view.rs raw_type_step 2
+apps/file-explorer/src/views/file_view.rs type_step_arithmetic 2

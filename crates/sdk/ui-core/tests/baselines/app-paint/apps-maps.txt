@@ -1,0 +1,22 @@
+# The app-paint ratchet for apps-maps: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/maps/src/app.rs desktop_ground 8
+apps/maps/src/app.rs glyph_icon 8
+apps/maps/src/app.rs literal_radius 3
+apps/maps/src/app.rs ramp_slot 1
+apps/maps/src/app.rs raw_paint 5
+apps/maps/src/canvas.rs desktop_ground 6
+apps/maps/src/canvas.rs ramp_slot 4
+apps/maps/src/canvas.rs raw_paint 1
+apps/maps/src/draw.rs raw_paint 9
+apps/maps/src/endpoint_editor.rs desktop_ground 1
+apps/maps/src/endpoint_editor.rs glyph_icon 1
+apps/maps/src/map_controls.rs literal_radius 3
+apps/maps/src/model.rs glyph_icon 15
+apps/maps/src/offline_panel.rs desktop_ground 2
+apps/maps/src/offline_panel.rs glyph_icon 1
+apps/maps/src/offline_panel.rs literal_radius 4
+apps/maps/src/search_box.rs desktop_ground 2
+apps/maps/src/tiles.rs desktop_ground 1
+apps/maps/src/tiles.rs raw_paint 3

@@ -1,0 +1,6 @@
+# The spacing ratchet for apps-notes: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/notes/src/app.rs pixel_const 4
+apps/notes/src/main_panel.rs pixel_const 7
+apps/notes/src/shortcuts_overlay.rs pixel_const 5
