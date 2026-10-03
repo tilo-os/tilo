@@ -72,6 +72,13 @@ pub trait ContentCipher: Send {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Vec<u8>, String>;
+
+    /// Whether this member holds the key of content-key `epoch`. A payload
+    /// of an epoch it does not hold yet (sealed by a member admitted after
+    /// this one last caught up) waits for the keys instead of being refused.
+    fn holds_epoch(&self, _epoch: u64) -> bool {
+        true
+    }
 }
 
 /// The installed content ciphers, by route. A route without one is

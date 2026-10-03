@@ -346,6 +346,14 @@ fn a_device_that_lost_its_state_is_admitted_again() {
         .unwrap();
     assert!(!unchanged.changed());
     let again = request(&mut member, &phone, 2);
+    // Replaying the journal, with the admission of the key package the
+    // phone lost, asks for nothing more: the request it just sent stands.
+    let mut replayed = Vec::new();
+    for frame in steward.journal().frames().to_vec() {
+        replayed.extend(member.receive(frame, &vault()).unwrap());
+    }
+    assert!(!replayed.contains(&MemberEvent::Desynchronised));
+    assert_eq!(member.access(), Access::Waiting);
     let outcome = steward
         .reconcile(
             &allowed(&[&phone]),
@@ -357,6 +365,46 @@ fn a_device_that_lost_its_state_is_admitted_again() {
     assert_eq!(outcome.admitted, vec![phone.public()]);
     deliver(&mut steward, &mut member, &phone);
     let sealed = seal(&steward, artifact, b"welcome back");
+    assert!(opens(&member, artifact, &sealed));
+}
+
+/// A member that asks again within the same second (its Welcome did not
+/// open, or the admission it joined with was replaced) still asks with a
+/// newer request, so the steward admits it again instead of leaving it
+/// without keys.
+#[test]
+fn a_member_asking_again_within_a_second_is_admitted_again() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let mut steward = steward(&owner, channel);
+    let mut member = laptop.member(channel, &owner);
+    let first = request(&mut member, &laptop, 100);
+    let second = request(&mut member, &laptop, 100);
+    assert!(second.issued_at > first.issued_at);
+    let allowed = allowed(&[&laptop]);
+    steward
+        .reconcile(&allowed, &requests(vec![(&laptop, first)]), &vault())
+        .unwrap();
+    let replaced = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, second)]), &vault())
+        .unwrap();
+    assert_eq!(replaced.admitted, vec![laptop.public()]);
+    deliver(&mut steward, &mut member, &laptop);
+    assert_eq!(
+        member.access(),
+        Access::Removed,
+        "it joined with the admission the steward replaced"
+    );
+
+    let again = request(&mut member, &laptop, 100);
+    let readmitted = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, again)]), &vault())
+        .unwrap();
+    assert_eq!(readmitted.admitted, vec![laptop.public()]);
+    deliver(&mut steward, &mut member, &laptop);
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"after the readmission");
     assert!(opens(&member, artifact, &sealed));
 }
 
