@@ -331,10 +331,7 @@ fn demo_environments() -> Vec<terminal::target::EnvironmentSummary> {
             key: "work".into(),
             name: "Work".into(),
             tools: vec!["pandoc".into(), "python3".into(), "jq".into()],
-            grants: vec![
-                ("/var/home/you/src".into(), true),
-                ("/var/home/you/Documents".into(), false),
-            ],
+            grants: vec![("~/src".into(), true), ("~/Documents".into(), false)],
         },
     ]
 }

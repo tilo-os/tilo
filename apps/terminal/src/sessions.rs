@@ -35,9 +35,8 @@ enum Source {
     /// Hosted in-process by the shell: the session supervisor below the
     /// runtime directory. The first connection was handed over at
     /// construction; later ones are made the same way the host made it.
-    #[cfg(unix)]
     Hosted {
-        first: Option<std::os::unix::net::UnixStream>,
+        first: Option<crate::HostedProcessServices>,
     },
     /// Opens through a script — for tests. Behaves as a shell-hosted tab.
     #[cfg(test)]
@@ -53,7 +52,6 @@ impl std::fmt::Debug for Source {
         f.write_str(match self {
             Self::None => "None",
             Self::Standalone => "Standalone",
-            #[cfg(unix)]
             Self::Hosted { .. } => "Hosted",
             #[cfg(test)]
             Self::Scripted(_) => "Scripted",
@@ -122,8 +120,7 @@ impl Sessions {
     }
 
     /// Hosted by the shell, with the first supervisor connection.
-    #[cfg(unix)]
-    pub fn hosted(first: std::os::unix::net::UnixStream) -> Self {
+    pub fn hosted(first: crate::HostedProcessServices) -> Self {
         Self::with(
             Source::Hosted { first: Some(first) },
             OpenState::Unopened,
@@ -154,7 +151,6 @@ impl Sessions {
         match self.source {
             Source::None => false,
             Source::Standalone => crate::inner::environments_available(),
-            #[cfg(unix)]
             Source::Hosted { .. } => true,
             #[cfg(test)]
             Source::Scripted(_) => true,
@@ -190,15 +186,8 @@ impl Sessions {
                 "this terminal has no process service".into(),
             )),
             Source::Standalone => TerminalBackend::open(target, requested_by),
-            #[cfg(unix)]
             Source::Hosted { first } => {
-                let stream = match first.take() {
-                    Some(stream) => stream,
-                    None => crate::HostedProcessServices::default().ush.ok_or_else(|| {
-                        OpenError::Unavailable("the shell runtime is not running".into())
-                    })?,
-                };
-                crate::inner::ush_backend_on(&stream, &[], target, requested_by)
+                crate::HostedProcessServices::open_session(first.take(), target, requested_by)
             }
             #[cfg(test)]
             Source::Scripted(open) => open(target, requested_by),
@@ -212,7 +201,6 @@ impl Sessions {
         let scripted = matches!(self.source, Source::Scripted(_));
         #[cfg(not(test))]
         let scripted = false;
-        #[cfg(unix)]
         if scripted || matches!(self.source, Source::Hosted { .. }) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
             self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
@@ -242,7 +230,6 @@ impl Sessions {
         if !self.is_live() {
             return;
         }
-        #[cfg(unix)]
         if matches!(self.source, Source::Hosted { .. }) {
             self.legacy_vms = xdg_paths::xdg::data_home()
                 .map(|data| legacy_vms_under(&data))
@@ -295,35 +282,16 @@ impl Sessions {
         Ok(())
     }
 
-    #[cfg(unix)]
     fn directory_request(
         &self,
         request: &serde_json::Value,
     ) -> Result<Vec<EnvironmentSummary>, String> {
-        use std::io::{BufRead, Write};
-        // The directory never consumes the tab's first connection: that one
-        // carries the session.
-        let stream = match &self.source {
-            Source::Hosted { .. } => crate::HostedProcessServices::default().ush,
-            _ => None,
+        // Only a shell-hosted tab reaches the supervisor's directory, and
+        // never over its first connection: that one carries the session.
+        if !matches!(self.source, Source::Hosted { .. }) {
+            return Err("environments are managed through Tilo's shell runtime".into());
         }
-        .ok_or_else(|| "environments are managed through Tilo's shell runtime".to_string())?;
-        let mut line = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-        line.push(b'\n');
-        (&stream).write_all(&line).map_err(|e| e.to_string())?;
-        let mut reply = String::new();
-        std::io::BufReader::new(&stream)
-            .read_line(&mut reply)
-            .map_err(|e| e.to_string())?;
-        parse_directory_reply(&reply)
-    }
-
-    #[cfg(not(unix))]
-    fn directory_request(
-        &self,
-        _request: &serde_json::Value,
-    ) -> Result<Vec<EnvironmentSummary>, String> {
-        Err("environments are managed through Tilo's shell runtime".into())
+        parse_directory_reply(&crate::HostedProcessServices::ask(request)?)
     }
 }
 

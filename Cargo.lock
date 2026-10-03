@@ -14354,7 +14354,6 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
- "collab-types",
  "libc",
  "portable-pty",
  "runtime-dylib",

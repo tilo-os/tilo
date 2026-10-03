@@ -152,38 +152,6 @@ pub struct EnvironmentSummary {
     pub grants: Vec<(String, bool)>,
 }
 
-impl EnvironmentSummary {
-    /// Summarise an environment record.
-    pub fn of(key: &str, env: &tilo_environment::Environment) -> Self {
-        Self {
-            key: key.to_owned(),
-            name: if env.name.trim().is_empty() {
-                tilo_environment::DEFAULT_NAME.to_owned()
-            } else {
-                env.name.clone()
-            },
-            tools: env
-                .tools
-                .iter()
-                .flat_map(|tool| tool.packages.iter().cloned())
-                .collect(),
-            grants: env
-                .grants
-                .0
-                .iter()
-                .filter(|cap| tilo_environment::is_runtime_grant(cap))
-                .filter_map(|cap| match &cap.scope {
-                    collab_types::caps::Scope::FsPath(path) => Some((
-                        path.clone(),
-                        cap.verb.implies(collab_types::caps::Verb::Write),
-                    )),
-                    _ => None,
-                })
-                .collect(),
-        }
-    }
-}
-
 /// Every target the picker offers, in order: each environment, then the
 /// device's own shell, then legacy VMs (only when the legacy VM service
 /// reports any).
