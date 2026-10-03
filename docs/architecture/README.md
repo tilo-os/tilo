@@ -62,13 +62,22 @@ revealing a caret, opening a system file picker. Open/save of a file that lives 
 shared filesystem is a document action on that file resource, not an effect. `View` stays
 local presentation (which week, where the caret is).
 
+An app's effects are a typed vocabulary (`#[derive(Effect)]` on an enum) answered by the
+view or surface that holds the state they need (`ViewCx::effects`,
+`ResourceSurface::effect`). The framework publishes them on the resource with their live
+availability, and routes every caller to the handler as a typed value. Long work is a job
+(`EffectCx::thread` / `spawn` / `reply`) with progress and cancellation; it completes on the
+UI thread and changes the document only through the resource's actions.
+
 ### Sync and undo of outside consequences
 
 Collaborators sync the document actions (the CRDT). An external system (CalDAV, the shared
 filesystem) is a **projection** drained by an `Effect` that reads queues the document
 actions wrote. Peers replay those actions and converge; the Effect on each machine drains
 the queue — it is not itself the history, and Effects are not undoable (they have no
-heads).
+heads). The framework runs the drain (`ViewCx::drain`): in the live app after every
+change, on every participant's device, never in History; the drain acknowledges each
+entry with an action.
 
 If an action's `apply` records an outside consequence in the document (outbox,
 `del_outbox`, a filesystem op queue), undo of that action is the **inverse document

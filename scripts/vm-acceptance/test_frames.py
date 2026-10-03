@@ -1,0 +1,119 @@
+"""Unit tests for the frame checks' reading of the session's frame trace.
+
+    python3 -m unittest discover -s scripts/vm-acceptance -p 'test_*.py'
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from acceptance.core import Unobservable, _parse_trace, frame_stats, transition_stats  # noqa: E402
+
+HEADER = ("seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,"
+          "clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,"
+          "backpressured,deadline_late_us,wake,cpu_us")
+
+
+def ticks(*specs):
+    """Rows from (start_ms, sleep_ms, kind, extra) with kind 'p' painted, 'b' backpressured,
+    '-' idle; period and seq follow from the starts."""
+    rows, prev = [], None
+    for seq, (start_ms, sleep_ms, kind, extra) in enumerate(specs):
+        start = int(start_ms * 1000)
+        r = {"seq": seq, "start_us": start, "period_us": 0 if prev is None else start - prev,
+             "input_us": 50, "pump_us": 300, "layout_us": 0, "scene_us": 0, "submit_us": 0,
+             "testctl_us": 10, "clients_us": 5, "sleep_us": int(sleep_ms * 1000),
+             "painted": int(kind == "p"), "present_async": int(kind == "p"),
+             "input_latency_us": "", "input_retirement_latency_us": "",
+             "backpressured": int(kind == "b"), "deadline_late_us": 0, "wake": "cadence",
+             "cpu_us": 1000}
+        r.update(extra)
+        rows.append(r)
+        prev = start
+    return rows
+
+
+class TransitionTest(unittest.TestCase):
+    def test_a_transition_held_behind_a_slow_display_is_judged_by_the_compositor(self):
+        # The display retires a frame every ~66 ms; the compositor paints on time each time.
+        specs = [(0, 300, "-", {})]
+        t = 300.0
+        for i in range(12):
+            extra = {"deadline_late_us": 3000}
+            if i == 0:
+                extra = {"input_latency_us": 2000, "deadline_late_us": 9_000_000}
+            specs += [(t, 0.5, "p", extra), (t + 3, 63, "b", {})]
+            t += 66
+        specs.append((t, 2000, "-", {}))
+        st = transition_stats(ticks(*specs))
+        self.assertEqual(st["frames"], 12)
+        self.assertEqual(st["blocked_ticks"], 12)
+        self.assertLessEqual(st["late_ms_p95"], 3.0)
+        self.assertEqual(st["input_to_first_frame_compositor_ms"], 2.0)
+        self.assertAlmostEqual(st["present_interval_ms_p50"], 66.0)
+        self.assertGreater(st["display_wait_ms"], 600)
+
+    def test_a_stale_deadline_counts_only_from_when_the_frame_could_be_made(self):
+        rows = ticks((0, 300, "-", {}),
+                     (300, 1, "p", {"input_latency_us": 1500}),
+                     # No retirement seen yet: the deadline is from before the last frame.
+                     (316, 1, "p", {"deadline_late_us": 1_500_000}),
+                     (2000, 0, "-", {}))
+        st = transition_stats(rows)
+        self.assertLess(st["late_ms_max"], 17)
+
+    def test_a_loop_blocked_inside_a_frame_is_a_late_frame(self):
+        rows = ticks((0, 300, "-", {}),
+                     (300, 1, "p", {"input_latency_us": 1500}),
+                     (317, 1, "p", {"input_us": 120_000, "deadline_late_us": 400_000, "cpu_us": 9000}),
+                     (440, 1500, "p", {"deadline_late_us": 600}),
+                     (2000, 0, "-", {}))
+        st = transition_stats(rows)
+        self.assertGreater(st["late_ms_max"], 100)
+        self.assertGreater(st["longest_tick_ms"], 100)
+        self.assertEqual(st["longest_tick_cpu_ms"], 9.0)
+
+    def test_presenter_waits_before_the_input_are_not_taken_out(self):
+        rows = ticks((0, 0.5, "p", {}),
+                     (1, 80, "b", {}),  # a wait that ended long before the input arrived
+                     (82, 300, "-", {}),
+                     (400, 20, "b", {}),
+                     (421, 1, "p", {"input_latency_us": 30_000}),
+                     (2000, 0, "-", {}))
+        st = transition_stats(rows)
+        self.assertEqual(st["input_to_first_frame_compositor_ms"], 10.0)
+
+    def test_nothing_asked_for_is_no_frames(self):
+        st = transition_stats(ticks((0, 300, "-", {}), (300, 300, "-", {})))
+        self.assertEqual(st["frames"], 0)
+        self.assertIsNone(st["late_ms_p95"])
+
+
+class FrameStatsTest(unittest.TestCase):
+    def test_wall_time_belongs_to_the_tick_that_spent_it(self):
+        # Tick 1 paints and works 40 ms before parking; tick 2 is idle and quick.
+        rows = ticks((0, 10, "-", {}), (10, 5, "p", {"cpu_us": 39_000}), (55, 1, "-", {}),
+                     (57, 0, "-", {}))
+        st = frame_stats(rows)
+        self.assertEqual(st["work_ms_p95"], 40.0)
+        self.assertEqual(st["cpu_ms_p95"], 39.0)
+
+
+class ParseTest(unittest.TestCase):
+    def test_rows_and_the_newest_seq(self):
+        text = "\n".join([HEADER, "7,1,1,1,1,1,1,1,1,1,1,1,1,,,0,0,io,12", "8,2,1", "LASTSEQ:8",
+                          "receipt: x"])
+        rows, last = _parse_trace(text)
+        self.assertEqual([r["seq"] for r in rows], [7])
+        self.assertEqual(rows[0]["cpu_us"], 12)
+        self.assertEqual(last, "8")
+
+    def test_no_trace_is_unobservable(self):
+        with self.assertRaises(Unobservable):
+            _parse_trace("receipt: x\n")
+
+
+if __name__ == "__main__":
+    unittest.main()
