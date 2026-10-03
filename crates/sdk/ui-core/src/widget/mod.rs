@@ -2363,6 +2363,7 @@ pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
 pub use color_swatch::ColorSwatchFace;
 pub mod popover;
+pub use crate::standalone_history_host::history_button;
 pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
 pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};

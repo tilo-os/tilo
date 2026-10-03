@@ -844,14 +844,8 @@ pub fn build_shot_scenario(
     }
     // Validation should have rejected unknown names; keep a hard error
     // so a table/spec drift cannot silently fall through to the default.
-    Err(LaunchError::Scenario(format!(
-        "unknown screenshot scenario {name:?}; expected one of {}",
-        table
-            .iter()
-            .map(|pose| format!("{:?}", pose.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
+    let declared: Vec<&str> = table.iter().map(|pose| pose.name).collect();
+    Err(LaunchError::Scenario(unknown_scenario(name, &declared)))
 }
 
 pub enum LaunchError {
@@ -1263,6 +1257,10 @@ fn run_with_args_with_attachment(
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
+    // A capture shows the same date and time on every run.
+    if args.shots.is_some() || args.responsive_matrix.is_some() {
+        crate::clock::freeze_for_capture();
+    }
     crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
         crate::i18n::PseudoLocale::Expanded
     } else {
@@ -1305,13 +1303,13 @@ fn run_with_args_with_attachment(
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
-                    driver.render_window_png(out);
+                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+                    driver.render_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
                         driver.resize_component_capture(viewport);
-                        driver.render_window_png(
-                            &directory.join(format!("{}-{name}.png", spec.app_id)),
-                        );
+                        driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+                        driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
                     }
                 }
                 close_component_capture(&mut driver)?;
@@ -1359,8 +1357,9 @@ fn run_with_args_with_attachment(
         }
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
-        let harness = build_history_capture(spec, &args, root, viewport)?;
-        harness.render_window_png(out);
+        let mut harness = build_history_capture(spec, &args, root, viewport)?;
+        harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
+        harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
         return Ok(());
     }
@@ -1382,8 +1381,9 @@ fn run_with_args_with_attachment(
                 handler(&matrix_args)?;
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
-                let harness = build_history_capture(spec, &matrix_args, root, viewport)?;
-                harness.render_window_png(&out);
+                let mut harness = build_history_capture(spec, &matrix_args, root, viewport)?;
+                harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
+                harness.render_png(&out);
             }
             println!(
                 "{}: wrote {name} responsive shot to {}",
@@ -1980,17 +1980,33 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
-        return Err(LaunchError::Scenario(format!(
-            "unknown screenshot scenario {scenario:?}; expected one of {}",
-            spec.scenarios
-                .iter()
-                .map(|name| format!("{name:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+        return Err(LaunchError::Scenario(unknown_scenario(
+            scenario,
+            spec.scenarios,
         )));
     }
     Ok(())
 }
+
+/// The refusal of an undeclared `--scenario`, listing the declared ones.
+fn unknown_scenario(name: &str, declared: &[&str]) -> String {
+    if declared.is_empty() {
+        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
+    } else {
+        format!(
+            "unknown screenshot scenario {name:?}; expected one of {}",
+            declared
+                .iter()
+                .map(|name| format!("{name:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// How long a capture waits for the window to settle (animations finished,
+/// thumbnails loaded) before it writes anyway.
+pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
 
 /// Resolve the palette, text scale, and motion policy used by screenshot
 /// capture. An explicit `--text-scale` wins over the
@@ -2013,9 +2029,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
-        .ok();
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let theme = theme.with_text_scale(shot_text_scale(
         args.text_scale,
         environment_scale.as_deref(),

@@ -76,6 +76,14 @@ pub trait ResourceApp: 'static {
         &[]
     }
 
+    /// The viewport a named scenario is captured at, when it is not
+    /// [`Self::SHOT_VIEWPORT`]: a narrow-window scenario names its narrow
+    /// size here instead of the app building its own capture root.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        let _ = name;
+        None
+    }
+
     /// The actions that stage the resource for a capture: `Some(name)` for
     /// `--shots --scenario NAME`, `None` for a plain `--shots`. They apply
     /// through the same door as every control; then the views stage their
@@ -352,8 +360,11 @@ fn capture<A: ResourceApp>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
-    A::SHOT_VIEWPORT
+fn shot_viewport<A: ResourceApp>(args: &LaunchArgs) -> (u32, u32) {
+    args.scenario
+        .as_deref()
+        .and_then(A::scenario_viewport)
+        .unwrap_or(A::SHOT_VIEWPORT)
 }
 
 #[cfg(tilo_native_runner)]

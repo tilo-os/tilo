@@ -333,11 +333,64 @@ fn the_framework_paints_the_window_ground_live_and_in_shots() {
         };
         // What the app's own frame paints, before any clear colour: a live
         // window, a hosted tile and a capture all show this.
-        corners(&harness.render_rgba(), "drawn");
+        corners(&harness.render_rgba_transparent(), "drawn");
         let shot = out.path().join(format!("{}.png", theme.name));
-        harness.render_window_png(&shot);
+        harness.render_png(&shot);
         let png = tilo_app::png::read_rgba8(&shot).unwrap();
         assert_eq!((png.width, png.height), (width, height));
         corners(&png.rgba, "shot");
+    }
+}
+
+/// A capture prepares the component in the host's appearance and only then
+/// switches to the theme the shot names. Every retained control face must
+/// follow: a framework `cx.button` in a light shot is the light neutral
+/// face, not the dark one it was first painted with.
+#[test]
+fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
+    fn find<'a>(
+        node: &'a tilo_app::headless::InspectionNode,
+        name: &str,
+    ) -> Option<&'a tilo_app::headless::InspectionNode> {
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|s| s.name.as_deref() == Some(name))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let harness = app.harness();
+    harness.set_theme(Theme::dark());
+    let _ = harness.render_rgba();
+    let light = Theme::light();
+    harness.set_theme(light.clone());
+    let rgba = harness.render_rgba();
+    let (width, _) = harness.frame_output().logical_size;
+    let inspection = harness.inspection();
+    let button = find(&inspection.root, "Clear done").expect("the button is in the tree");
+    let [x, y, _, h] = button.rect;
+    let face = tilo_app::widget::ButtonFace::new(
+        tilo_app::vello::kurbo::Rect::new(0.0, 0.0, 80.0, 32.0),
+        "x",
+    );
+    let (fill, _, _) = face.colors(&light);
+    let expected = fill.to_rgba8();
+    let row = (y + h / 2.0).round() as usize;
+    let col = (x + 4.0).round() as usize;
+    let at = (row * width as usize + col) * 4;
+    let probe = &rgba[at..at + 4];
+    for (channel, (got, want)) in probe
+        .iter()
+        .zip([expected.r, expected.g, expected.b])
+        .enumerate()
+    {
+        assert!(
+            got.abs_diff(want) <= 2,
+            "channel {channel}: the button paints {probe:?}, the light neutral face is {expected:?}"
+        );
     }
 }
