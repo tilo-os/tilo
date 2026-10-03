@@ -73,6 +73,7 @@ impl ResourceApp for SpeedTestShell {
             "running",
             "complete",
             "error",
+            "complete-slow",
             "complete-narrow",
             "complete-short",
         ]
