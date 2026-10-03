@@ -319,7 +319,8 @@ def compare_page(chars: list[str], samples: list[tuple[str, str]], args, fb: Fal
     ours_style = f"font-family:'Tilo Sans'; {args.feature_css and 'font-feature-settings:' + args.feature_css + ';'}"
 
     def theirs(wght: int) -> str:
-        feats = f"font-feature-settings: {fb.features};" if fb.features else ""
+        # single quotes: the style sits in a double-quoted HTML attribute
+        feats = f"font-feature-settings: {fb.features.replace(chr(34), chr(39))};" if fb.features else ""
         w = round(wght * fb.weight_scale)
         return f"font-family:'{fb_family}'; font-variation-settings: 'wght' {w}; font-weight:{w}; {feats}"
 
