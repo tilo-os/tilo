@@ -275,7 +275,10 @@ impl ShotFrame {
             &self.presence,
         );
     }
+}
 
+#[cfg(not(target_arch = "wasm32"))]
+impl ShotFrame {
     /// Rasterise `scene` over the window ground at the frame's viewport and
     /// publish it to `out` as a PNG, creating the parent directory.
     ///
@@ -283,7 +286,6 @@ impl ShotFrame {
     ///
     /// Panics when the offscreen renderer cannot publish the file, as
     /// [`OffscreenRenderer::render_png`] does.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_png(&self, scene: &Scene, out: &Path) {
         self.write_png_on(scene, self.theme.tokens.colors.surfaces.content, out);
     }
@@ -294,12 +296,10 @@ impl ShotFrame {
     /// # Panics
     ///
     /// As [`ShotFrame::write_png`].
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_png_transparent(&self, scene: &Scene, out: &Path) {
         self.write_png_on(scene, Color::TRANSPARENT, out);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn write_png_on(&self, scene: &Scene, background: Color, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
