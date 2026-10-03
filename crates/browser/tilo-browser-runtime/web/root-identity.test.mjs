@@ -128,13 +128,17 @@ test('an envelope stored earlier still opens (native code reads the same one)', 
 test('certifying a device hands the wasm runtime the root as a signer', async () => {
   const {identity} = await createIdentity({...OPTIONS, passkey: false});
   const seen = [];
-  const runtime = {issueDeviceCert: async (...args) => { seen.push(args); return '{"cert":1}'; }};
+  const runtime = {
+    issueDeviceCert: async (...args) => { seen.push(args); return '{"cert":1}'; },
+    deviceCertCanonical: json => (json === '{"cert":1}' ? Uint8Array.from([0xfb, 0xff, 1]) : undefined),
+  };
   const node = 'AB'.repeat(32);
-  assert.equal(await certifyDevice({identity, runtime, devicePublicKey: node}), '{"cert":1}');
+  assert.equal(await certifyDevice({identity, runtime, devicePublicKey: node}), '+/8B', 'canonical, base64');
+  assert.equal(await certifyDevice({identity, runtime, devicePublicKey: node, encoding: 'json'}), '{"cert":1}');
   assert.deepEqual(seen[0].slice(1), ['ab'.repeat(32), 'Tilo node', 'node']);
   assert.equal(seen[0][0], identity);
   await certifyDevice({identity, runtime, devicePublicKey: new Uint8Array(32).fill(1), label: 'Phone', role: 'browser'});
-  assert.deepEqual(seen[1].slice(1), ['01'.repeat(32), 'Phone', 'browser']);
+  assert.deepEqual(seen[2].slice(1), ['01'.repeat(32), 'Phone', 'browser']);
   await assert.rejects(certifyDevice({identity, runtime, devicePublicKey: 'abcd'}), {code: 'malformed'});
   identity.lock();
   await assert.rejects(certifyDevice({identity, runtime, devicePublicKey: node}), {code: 'locked'});
@@ -168,7 +172,7 @@ test('the identity created or unlocked last is the default for the calls that ta
   assert.equal(credentials.log.at(-1).rpId, 'tilo.so');
   const seen = [];
   const runtime = {issueDeviceCert: async (...args) => { seen.push(args); return '{}'; }};
-  await certifyDevice({devicePublicKey: 'ab'.repeat(32), runtime});
+  await certifyDevice({devicePublicKey: 'ab'.repeat(32), runtime, encoding: 'json'});
   assert.equal(seen[0][0], identity);
   identity.lock();
   assert.equal(currentIdentity(), undefined);
@@ -189,5 +193,8 @@ test('a node certificate is installed with its install token', async () => {
   assert.deepEqual(answer, {device_public_key: 'aa', user_public_key: 'bb'});
   assert.equal(calls[0].url, 'https://node.example/peer/v1/install');
   assert.equal(calls[0].init.body, '{"cert":1}');
+  await installNodeCertificate({origin: 'https://node.example', certificate: '+/8B', installToken: 'token', fetch});
+  assert.deepEqual([...calls[1].init.body], [0xfb, 0xff, 1]);
+  assert.equal(calls[1].init.headers['content-type'], 'application/octet-stream');
   await assert.rejects(installNodeCertificate({origin: 'https://node.example', certificate: {}, installToken: 'other', fetch}), {code: 'install-token-refused'});
 });

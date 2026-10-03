@@ -474,8 +474,8 @@ unlockIdentity(envelope, {passkey: true, rpId?} | {prfOutput, credentialId} | {r
 addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>;
 // A native node that hosts and governs the person's workspaces: host, owns
 // and reads all workspaces, admits no devices, one year. Never the root.
-certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser'})
-  : Promise<string /* DeviceCert JSON */>;
+certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser', encoding?: 'canonical' | 'json'})
+  : Promise<string /* canonical DeviceCert, base64 (what a native device keeps on disk); or JSON */>;
 installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
 // The page's own device, certified by the root itself against the host's
 // certificate (which must be a host of this root), no approver. Defaults:
@@ -496,7 +496,7 @@ the new passkey lands on another authenticator instead of replacing one; its
 A node provisioned without a certificate (`tilo-relay run --web …
 --install-token-file PATH`) creates its device key, prints
 `{"event": "awaiting_certificate", "devicePublicKey": …}` and serves only
-`POST /peer/v1/install` (the certificate as JSON, the token in
+`POST /peer/v1/install` (the certificate as JSON or canonical bytes, the token in
 `x-tilo-install-token`; every other route answers `503`). Once a valid host
 certificate for its key is installed it starts as that identity's host on the
 same origin.

@@ -27,7 +27,8 @@
 //!
 //! A host started without a certificate serves only `/install` until it has
 //! one: the body is the root-signed `DeviceCert` for its device key as JSON
-//! (what a page's root issues), with the install token the host was
+//! (what a page's root issues) or in its canonical encoding, with the
+//! install token the host was
 //! provisioned with in [`INSTALL_TOKEN_HEADER`]. `200` answers
 //! [`Installed`] as JSON; every other route answers `503` meanwhile.
 //!
