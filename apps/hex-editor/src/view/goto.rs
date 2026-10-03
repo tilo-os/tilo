@@ -23,9 +23,13 @@ pub(super) struct GotoForm {
     input: TextInput,
     rect: Rect,
     caption_h: f64,
+    hint_h: f64,
     gap: f64,
     submitted: bool,
 }
+
+/// What the field accepts, said under it so nobody has to guess.
+const HINT: &str = "Hex with 0x, or decimal";
 
 impl GotoForm {
     pub fn new() -> Self {
@@ -37,6 +41,7 @@ impl GotoForm {
                 .with_placeholder("0x1F or 31"),
             rect: Rect::ZERO,
             caption_h: 0.0,
+            hint_h: 0.0,
             gap: 0.0,
             submitted: false,
         }
@@ -75,11 +80,13 @@ impl Widget for GotoForm {
     ) -> NodeId {
         let caption = theme.text(TextRole::Subheading);
         self.caption_h = f64::from(caption.line_height_px());
+        self.hint_h = f64::from(theme.text(TextRole::Caption).line_height_px());
         self.gap = f64::from(theme.tokens.spacing.s2);
         // The popover's own padding on both sides brings the panel to the
         // utility panel width.
         let width = theme.tokens.metrics.panel_width_utility - 2.0 * theme.tokens.spacing.s4;
-        let height = self.caption_h + self.gap + ControlSize::Regular.height(theme);
+        let height =
+            self.caption_h + self.gap + ControlSize::Regular.height(theme) + self.gap + self.hint_h;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a form's height is a small logical-pixel value"
@@ -111,7 +118,7 @@ impl Widget for GotoForm {
             self.rect.x0,
             self.rect.y0 + self.caption_h + self.gap,
             self.rect.x1,
-            self.rect.y1,
+            self.rect.y1 - self.hint_h - self.gap,
         ));
     }
 
@@ -132,6 +139,14 @@ impl Widget for GotoForm {
             &theme.text(TextRole::Subheading),
         );
         self.input.draw(scene, transform, text, theme, presence);
+        text.draw_style(
+            scene,
+            HINT,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate(Vec2::new(self.rect.x0, self.rect.y1 - self.hint_h)),
+            None,
+            &theme.text(TextRole::Caption),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
