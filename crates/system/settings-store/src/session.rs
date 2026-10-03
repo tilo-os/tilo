@@ -261,10 +261,11 @@ impl SessionSettings {
             return Ok(());
         }
         let copy = load_at(&self.paths.copy);
-        let previous = std::mem::take(&mut state.copy);
-        let touched = state.take_in(&copy, &previous);
+        let (person, device) = (state.person.clone(), state.device.clone());
+        let touched = state.take_in(&copy, &state.copy.clone());
         if let Err(error) = persist(&self.paths, state, touched) {
-            state.copy = previous;
+            state.person = person;
+            state.device = device;
             return Err(error);
         }
         state.copy = copy;
