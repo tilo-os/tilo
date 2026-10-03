@@ -188,8 +188,11 @@ pub(crate) fn state_from_doc(doc: &Doc) -> StoreState {
 
 /// Moderation child with report drafts / set-note for the framework door.
 pub(crate) fn report_document_children(state: &StoreState) -> Vec<Resource> {
-    let mut moderation =
-        Resource::new("store:moderation", "store.moderation", "Trust & moderation");
+    let mut moderation = Resource::new(
+        "store:moderation",
+        "store.moderation",
+        "Trust and moderation",
+    );
     if let Ok(show) = ActionSpec::operation(
         "show",
         "Show trust and moderation",

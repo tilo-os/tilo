@@ -795,7 +795,7 @@ impl StoreApp {
         if let Some(binding) = remote_form_binding() {
             add = add.on_action(binding);
         }
-        let mut refresh = Button::new("store.remote.refresh", "Refresh", None);
+        let mut refresh = Button::new("store.remote.refresh", "Refresh remotes", None);
         if let Some(binding) = remote_refresh_binding() {
             refresh = refresh.on_action(binding);
         }
