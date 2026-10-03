@@ -179,7 +179,6 @@ struct NativeRedrawReasons {
     /// motion while the shell must still repaint its own cursor.
     visible_input: bool,
     session: bool,
-    accessibility: bool,
     revision: bool,
     hidden_desktop_animation: bool,
     apps: bool,
@@ -199,7 +198,6 @@ impl NativeRedrawReasons {
             || self.backend_event
             || self.visible_input
             || self.session
-            || self.accessibility
             || self.revision
             || (!session_locked
                 && (self.hidden_desktop_animation
@@ -371,6 +369,61 @@ impl WakeTally {
 /// desktop frame visible until unrelated input happens to trigger a repaint.
 fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
+}
+
+/// Wall clock and date for the lock surface, read here rather than in its
+/// pure paint and tree builders.
+struct LockClock {
+    clock: String,
+    date: String,
+}
+
+impl LockClock {
+    fn now() -> Self {
+        let now = chrono::Local::now();
+        Self {
+            clock: now.format("%H:%M").to_string(),
+            date: now.format("%A, %B %-d").to_string(),
+        }
+    }
+
+    fn view<'a>(
+        &'a self,
+        lock: &'a LockController,
+        notification_count: usize,
+        now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+    ) -> LockView<'a> {
+        LockView {
+            password_len: lock.buffer_len(),
+            error: lock.error(),
+            clock: &self.clock,
+            date: &self.date,
+            notification_count,
+            verifying: lock.is_verifying(),
+            now_playing,
+        }
+    }
+}
+
+/// Hand AccessKit the current semantic tree. It needs a laid-out widget tree,
+/// not a presented frame: an activation or action is answered in the tick
+/// that drained it, whether or not that tick paints.
+fn publish_accessibility_tree(
+    accessibility: &mut NativeAccessibility,
+    frame_builder: &FrameBuilder,
+    outputs: &[Output],
+    lock: Option<&LockView<'_>>,
+    focus: Option<NodeId>,
+) {
+    accessibility.set_window_focus(true);
+    if let Some(view) = lock {
+        let outputs = lock_outputs(outputs, frame_builder.scene_size());
+        accessibility.update_if_active(|| {
+            lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
+        });
+    } else {
+        accessibility.update_if_active(|| frame_builder.build_a11y_tree_update(focus, 1.0));
+    }
 }
 
 /// A widget poll already ran in this tick's pump. Its deadline waking the
@@ -9782,7 +9835,6 @@ pub fn run() {
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
-            accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
             // A client frame callback is not a present. A configure ack or a
@@ -9950,53 +10002,31 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
-            native_accessibility.set_window_focus(true);
             if session.is_locked() {
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: frame_builder.chrome().notification_count(),
-                    verifying: lock.is_verifying(),
-                    now_playing: lock_player.as_ref(),
-                };
-                native_accessibility.update_if_active(|| {
-                    lock_screen::build_accessibility_tree(
-                        &lock_outputs,
-                        frame_builder.theme(),
-                        &view,
-                    )
-                });
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    Some(&view),
+                    test_control_ctx.focus,
+                );
                 if frame_builder.narrator_enabled() {
                     frame_builder.narrate(&lock_screen::narration_tree(&view));
                 }
             } else {
-                native_accessibility.update_if_active(|| {
-                    frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
-                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    None,
+                    test_control_ctx.focus,
+                );
                 frame_builder.note_keyboard_focus(test_control_ctx.focus);
                 frame_builder.narrate_chrome();
             }
@@ -10008,42 +10038,16 @@ pub fn run() {
             frame_builder.set_session_locked(session.is_locked());
             let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
-                // The lock overlay covers every known output, centred on each (single on
-                // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                // Count-only summary on the lock screen — no bodies leak.
-                let notif_count = frame_builder.chrome().notification_count();
-                // Wall clock/date computed here (not in the pure paint) so the lock surface renders as themed compositor chrome.
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: notif_count,
-                    verifying: lock.is_verifying(),
-                    now_playing: lock_player.as_ref(),
-                };
+                // The lock overlay covers every known output (single on winit/headless;
+                // DRM lays monitors side-by-side).
+                let lock_outputs = lock_outputs(backend.outputs(), frame_builder.scene_size());
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    // Count-only summary on the lock screen — no bodies leak.
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
@@ -10476,7 +10480,7 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
-        } else if had_backend_events {
+        } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
@@ -10488,6 +10492,25 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
+            // An assistive client waits on this tree, not on pixels: a static
+            // screen may not paint again for as long as it stays unchanged.
+            if accessibility_changed {
+                let clock = session.is_locked().then(LockClock::now);
+                let view = clock.as_ref().map(|clock| {
+                    clock.view(
+                        &lock,
+                        frame_builder.chrome().notification_count(),
+                        lock_player.as_ref(),
+                    )
+                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    view.as_ref(),
+                    test_control_ctx.focus,
+                );
+            }
         }
         if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
@@ -11537,10 +11560,6 @@ mod tests {
             },
             NativeRedrawReasons {
                 session: true,
-                ..NativeRedrawReasons::default()
-            },
-            NativeRedrawReasons {
-                accessibility: true,
                 ..NativeRedrawReasons::default()
             },
             NativeRedrawReasons {
