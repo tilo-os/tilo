@@ -105,6 +105,10 @@ struct WetPreview {
 const WET_INTERVAL: ui::time::Duration = ui::time::Duration::from_millis(16);
 
 /// What a scene shows.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the grid, the reference, the ground and the selection are shown independently"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Options {
     /// Only these layers, when given.
@@ -123,6 +127,8 @@ pub struct Options {
     pub wet: Option<Mark>,
     /// Only these marks of plain layers, when given.
     pub marks: Option<Vec<String>>,
+    /// The selection's outline over the artwork.
+    pub selection: bool,
 }
 
 /// The ground where an artwork's colour cannot be read: white primed
@@ -149,54 +155,68 @@ impl Renderer {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &board);
         let live: Vec<String> = art.layers.iter().map(|layer| layer.id.clone()).collect();
         self.painted.retain(|id, _| live.contains(id));
-        for layer in &art.layers {
-            let shown = options
+        let drawn: Vec<&Layer> = art.layers.iter().filter(|layer| !layer.is_mask()).collect();
+        let shown = |layer: &Layer| {
+            options
                 .layers
                 .as_ref()
-                .is_none_or(|only| only.contains(&layer.id));
-            if !layer.visible || !shown {
+                .is_none_or(|only| only.contains(&layer.id))
+        };
+        // A mask asked for by name shows as its greys.
+        for mask in art
+            .layers
+            .iter()
+            .filter(|layer| layer.is_mask() && options.layers.is_some() && shown(layer))
+        {
+            let grey = byte_of(mask.base * 255.0);
+            let base = Color::from_rgba8(grey, grey, grey, 255);
+            scene.fill(Fill::NonZero, transform, base, None, &board);
+            self.draw_plain(art, mask, options, scene, (transform, text));
+        }
+        let mut at = 0;
+        while let Some(base) = drawn.get(at) {
+            // The layers clipped to `base`: those directly above it that clip.
+            let mut end = at.saturating_add(1);
+            while drawn.get(end).is_some_and(|layer| layer.clip) {
+                end = end.saturating_add(1);
+            }
+            let clipped = drawn.get(at.saturating_add(1)..end).unwrap_or_default();
+            at = end;
+            if !base.visible {
+                // What is clipped to a hidden layer is hidden with it.
                 continue;
             }
-            if let Some(medium) =
-                media::resolve(art, &layer.medium).filter(|_| !layer.medium.is_empty())
-            {
-                if options.marks.is_some() {
-                    continue;
+            if !shown(base) {
+                // Shown alone, a clipped layer is shown whole.
+                for layer in clipped.iter().filter(|layer| layer.visible && shown(layer)) {
+                    self.draw_layer(art, layer, options, scene, (transform, text));
                 }
-                let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
-                self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
-            } else {
-                let palette = media::palette_for(art, &layer.id);
+                continue;
+            }
+            let over: Vec<&Layer> = clipped
+                .iter()
+                .copied()
+                .filter(|layer| layer.visible && shown(layer))
+                .collect();
+            if over.is_empty() {
+                self.draw_layer(art, base, options, scene, (transform, text));
+                continue;
+            }
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &board);
+            self.draw_layer(art, base, options, scene, (transform, text));
+            for layer in over {
+                // Paint only lands where the layer below already has some.
                 scene.push_layer(
                     Fill::NonZero,
-                    BlendMode::default(),
-                    narrow(layer.opacity),
+                    BlendMode::new(Mix::Normal, Compose::SrcAtop),
+                    1.0,
                     transform,
                     &board,
                 );
-                let tooth = (layer.texture > 0.0)
-                    .then(|| Speckle::new(self.tooth(art), 1.0 / cell_scale(art), layer.texture));
-                for mark in art.marks_of(&layer.id).filter(|mark| {
-                    options
-                        .marks
-                        .as_ref()
-                        .is_none_or(|only| only.contains(&mark.id))
-                }) {
-                    draw_mark(
-                        art,
-                        mark,
-                        &palette,
-                        scene,
-                        (transform, text, &mut self.pictures),
-                        tooth.as_ref(),
-                        layer.adjust.as_ref(),
-                    );
-                }
-                if let Some(amount) = layer.adjust.as_ref().and_then(|adjust| adjust.vignette) {
-                    vignette(scene, transform, board, amount);
-                }
+                self.draw_layer(art, layer, options, scene, (transform, text));
                 scene.pop_layer();
             }
+            scene.pop_layer();
         }
         scene.pop_layer();
         if options.reference
@@ -212,16 +232,125 @@ impl Renderer {
             self.draw_reference(art, scene, transform);
             scene.pop_layer();
         }
+        if options.selection
+            && let Some(selection) = &art.selection
+        {
+            let path = transform * BezPath::from_svg(&selection.d).unwrap_or_default();
+            selection_outline(scene, &path, 1.5, 0.0);
+        }
         if options.grid {
             draw_grid(art, options.view.unwrap_or(board), scene, transform, text);
         }
+    }
+
+    /// Draw one layer, through its mask when it has one switched on.
+    fn draw_layer(
+        &mut self,
+        art: &Artwork,
+        layer: &Layer,
+        options: &Options,
+        scene: &mut Scene,
+        (transform, text): (Affine, &mut TextRenderer),
+    ) {
+        let board = art.bounds();
+        let mask = art.mask_of(&layer.id).filter(|mask| mask.visible);
+        if mask.is_some() {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &board);
+        }
+        if let Some(medium) =
+            media::resolve(art, &layer.medium).filter(|_| !layer.medium.is_empty())
+        {
+            if options.marks.is_none() {
+                let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
+                self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
+            }
+        } else {
+            self.draw_plain(art, layer, options, scene, (transform, text));
+        }
+        if let Some(mask) = mask {
+            // The mask's lightness is how much of the layer shows.
+            scene.push_luminance_mask_layer(Fill::NonZero, 1.0, transform, &board);
+            let grey = byte_of(mask.base * 255.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::from_rgba8(grey, grey, grey, 255),
+                None,
+                &board,
+            );
+            let plain = Options {
+                marks: None,
+                ..options.clone()
+            };
+            self.draw_plain(art, mask, &plain, scene, (transform, text));
+            if mask.invert {
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::new(Mix::Difference, Compose::SrcOver),
+                    1.0,
+                    transform,
+                    &board,
+                );
+                scene.fill(Fill::NonZero, transform, MASK_SHOWN, None, &board);
+                scene.pop_layer();
+            }
+            scene.pop_layer();
+            scene.pop_layer();
+        }
+    }
+
+    /// Draw a plain layer's marks as vector art.
+    fn draw_plain(
+        &mut self,
+        art: &Artwork,
+        layer: &Layer,
+        options: &Options,
+        scene: &mut Scene,
+        (transform, text): (Affine, &mut TextRenderer),
+    ) {
+        let board = art.bounds();
+        let palette = media::palette_for(art, &layer.id);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            narrow(layer.opacity),
+            transform,
+            &board,
+        );
+        let tooth = (layer.texture > 0.0)
+            .then(|| Speckle::new(self.tooth(art), 1.0 / cell_scale(art), layer.texture));
+        for mark in art.marks_of(&layer.id).filter(|mark| {
+            options
+                .marks
+                .as_ref()
+                .is_none_or(|only| only.contains(&mark.id))
+        }) {
+            draw_mark(
+                art,
+                mark,
+                &palette,
+                scene,
+                (transform, text, &mut self.pictures),
+                tooth.as_ref(),
+                layer.adjust.as_ref(),
+            );
+        }
+        if let Some(amount) = layer.adjust.as_ref().and_then(|adjust| adjust.vignette) {
+            vignette(scene, transform, board, amount);
+        }
+        scene.pop_layer();
     }
 
     /// The colour of the paint at `at`: the topmost shown layer's there,
     /// else the ground's. A painted layer answers from its simulation as last
     /// drawn.
     pub fn sample(&mut self, art: &Artwork, at: Point) -> Color {
-        for layer in art.layers.iter().rev().filter(|layer| layer.visible) {
+        for layer in art
+            .layers
+            .iter()
+            .rev()
+            .filter(|layer| layer.visible && !layer.is_mask())
+        {
             if let Some(entry) = self.painted.get(&layer.id)
                 && let Some(image) = &entry.image
                 && let Some(colour) = pixel(image, Affine::scale(cell_scale(art)) * at)
@@ -743,6 +872,29 @@ fn vignette(scene: &mut Scene, transform: Affine, area: Rect, amount: f64) {
     );
     scene.fill(Fill::NonZero, transform, &gradient, Some(to_area), &area);
     scene.pop_layer();
+}
+
+/// A mask's full lightness, where all of its layer shows: a value of the
+/// artwork's data, the white of a blank ground, not a colour of the theme.
+const MASK_SHOWN: Color = BLANK_GROUND;
+
+/// A selection's outline, `path` already where it is drawn: black dashes
+/// over white, `width` wide, the dashes `phase` along (marching ants). The
+/// selection's colours, not the theme's: it is drawn over the artwork.
+///
+/// Light under dark dashes reads over any artwork, in every theme: the
+/// white of a blank ground and the black of a shadow, made solid.
+pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f64) {
+    let under = Stroke::new(width * 1.5);
+    let dashes = Stroke::new(width).with_dashes(phase, [4.0 * width, 4.0 * width]);
+    scene.stroke(&under, Affine::IDENTITY, BLANK_GROUND, None, path);
+    scene.stroke(
+        &dashes,
+        Affine::IDENTITY,
+        SHADOW_INK.with_alpha(1.0),
+        None,
+        path,
+    );
 }
 
 /// The straight-alpha pixel of `image` at `at` (pixel coordinates).

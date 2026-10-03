@@ -62,10 +62,10 @@ from the crates.io originals only in that publication identity (name,
 description, readme, packaged files, renamed dependencies);
 `tools/verify-vendor-trees.py` sets those lines aside.
 
-crates.io crates in the workspace that depend on `winit` (accesskit_winit for
-the shell, smithay) get the fork through `crates/forks/winit`, a facade named
-`winit` that re-exports tilo-winit, so every crate sees one set of winit
-types. vello had no crates.io dependents, so its `[patch]` entries are gone.
+No crates.io crate in the workspace depends on `winit` any more (the shell
+uses `tilo-accesskit-winit`, and Smithay's `backend_winit` is off), so every
+crate sees tilo-winit's types without a `[patch]`. vello had no crates.io
+dependents either, so its `[patch]` entries are gone too.
 
 The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature

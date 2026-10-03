@@ -17,6 +17,10 @@ use crate::resource::ArtworkResource;
 use crate::tools::Tools;
 
 /// A layer as its row shows it.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "shown, held still, being a mask and clipped are independent facts of a layer"
+)]
 #[derive(Clone, Default, PartialEq)]
 struct LayerRow {
     id: String,
@@ -25,6 +29,11 @@ struct LayerRow {
     visible: bool,
     locked: bool,
     opacity: f64,
+    /// Another layer's mask.
+    is_mask: bool,
+    /// The mask's inversion, when the layer has one.
+    mask: Option<bool>,
+    clip: bool,
 }
 
 /// The short name of a medium's engine, `plain` for vector art.
@@ -47,10 +56,17 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
         .map(|layer| LayerRow {
             id: layer.id.clone(),
             name: layer.name.clone(),
-            medium: engine_label(art, &layer.medium),
+            medium: if layer.is_mask() {
+                ui::i18n::I18nManager::lookup_plain("canvas-medium-mask")
+            } else {
+                engine_label(art, &layer.medium)
+            },
             visible: layer.visible,
             locked: layer.locked,
             opacity: layer.opacity,
+            is_mask: layer.is_mask(),
+            mask: art.mask_of(&layer.id).map(|mask| mask.invert),
+            clip: layer.clip,
         })
         .collect()
 }
@@ -245,6 +261,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
     };
     let raise = order(Icon::ArrowUp, "canvas-layer-up", "forward");
     let lower = order(Icon::ArrowDown, "canvas-layer-down", "backward");
+    let masking = mask_buttons(cx, &row);
     let remove = icon_button(
         cx,
         Icon::Trash2,
@@ -266,12 +283,61 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
                     .with_align_items(ui::taffy::AlignItems::Center)
                     .push(Box::new(label))
                     .push(Box::new(Spacer::new()))
+                    .push(masking)
                     .push(Box::new(raise))
                     .push(Box::new(lower))
                     .push(Box::new(remove)),
             ))
             .push(Box::new(slider)),
     )
+}
+
+/// The chosen layer's mask (add one, invert it, remove it) and clipping to
+/// the layer below. A mask is chosen in the list like a layer, to paint on.
+fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let mut buttons = Row::new()
+        .with_gap(2.0)
+        .no_wrap()
+        .with_align_items(ui::taffy::AlignItems::Center);
+    if row.is_mask {
+        return Box::new(buttons);
+    }
+    match row.mask {
+        None => {
+            buttons = buttons.push(Box::new(icon_button(
+                cx,
+                Icon::SquareDashed,
+                &lookup("canvas-layer-mask-add"),
+                ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into())),
+            )));
+        }
+        Some(inverted) => {
+            buttons = buttons
+                .push(Box::new(icon_button(
+                    cx,
+                    Icon::ArrowUpDown,
+                    &lookup("canvas-layer-mask-invert"),
+                    ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !inverted)),
+                )))
+                .push(Box::new(icon_button(
+                    cx,
+                    Icon::X,
+                    &lookup("canvas-layer-mask-remove"),
+                    ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into())),
+                )));
+        }
+    }
+    let mut clip = icon_button(
+        cx,
+        Icon::Paperclip,
+        &lookup("canvas-layer-clip"),
+        ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip)),
+    );
+    if row.clip {
+        clip = clip.primary();
+    }
+    Box::new(buttons.push(Box::new(clip)))
 }
 
 /// Adding a layer: a menu of the media to paint it in, adding the chosen

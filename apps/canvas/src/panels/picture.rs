@@ -167,7 +167,7 @@ impl Target {
     fn invoke(&self, edit: Adjust) -> Invoke<ArtworkResource> {
         match self {
             Self::Marks(ids) => ArtworkResource::SET_ADJUST.with((ids.clone(), edit)),
-            Self::Layer(id) => ArtworkResource::SET_LAYER_ADJUST.with((id.clone(), edit)),
+            Self::Layer(id) => ArtworkResource::SET_LAYER_ADJUST.with((id.clone(), Box::new(edit))),
         }
     }
 
@@ -192,7 +192,7 @@ impl Target {
                 cx.actions().bind(
                     control,
                     ArtworkResource::SET_LAYER_ADJUST
-                        .map(move |value: I| (id.clone(), edit(value))),
+                        .map(move |value: I| (id.clone(), Box::new(edit(value)))),
                 )
             }
         }
@@ -241,13 +241,7 @@ pub fn adjustments(
     tools: &Tools,
 ) -> Element {
     let reset = cx
-        .button(
-            "canvas-adjust-reset",
-            target.invoke(Adjust {
-                reset: Some(true),
-                ..Adjust::default()
-            }),
-        )
+        .button("canvas-adjust-reset", target.invoke(Adjust::default()))
         .ghost();
     let title = Row::new()
         .with_gap(8.0)

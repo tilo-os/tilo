@@ -41,7 +41,11 @@ impl Default for Ground {
 }
 
 /// One layer of the artwork.
-#[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "shown, held still, an inverted mask and clipped are independent settings"
+)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
     pub id: String,
     pub name: String,
@@ -59,6 +63,43 @@ pub struct Layer {
     pub locked: bool,
     /// Colour and tone adjustments of everything on the layer.
     pub adjust: Option<Adjust>,
+    /// The layer this layer masks, or empty for an ordinary layer. A mask's
+    /// marks are drawn in greys: where it is light that layer shows, where
+    /// it is dark it is hidden. Hiding the mask turns it off.
+    pub mask_of: String,
+    /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
+    /// 0 hides all of it.
+    pub base: f64,
+    /// A mask that hides where it is light and shows where it is dark.
+    pub invert: bool,
+    /// Clipped to the layer below: it shows only where that layer has paint.
+    pub clip: bool,
+}
+
+impl Layer {
+    /// Whether this layer is another layer's mask.
+    pub fn is_mask(&self) -> bool {
+        !self.mask_of.is_empty()
+    }
+}
+
+/// The area selected for the next edit: a region of the artwork, kept with
+/// it like the reference picture and never drawn into it. Fills, masks and
+/// copies take its shape; its feather softens their edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Selection {
+    /// SVG path data in artwork units, filled non-zero.
+    pub d: String,
+    /// How far its edge fades, in units.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub feather: f64,
+}
+
+impl Selection {
+    /// The selected area.
+    pub fn region(&self) -> crate::region::Region {
+        crate::region::Region::of_path(&BezPath::from_svg(&self.d).unwrap_or_default())
+    }
 }
 
 /// A point of a stroke: `[x, y]` or `[x, y, pressure]` with pressure `0..=1`.
@@ -144,26 +185,21 @@ pub enum Shape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dab_length: Option<f64>,
     },
-    /// A picture (PNG, JPEG or WebP) shown in the frame `x, y, width,
-    /// height`.
+    /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
     Image {
-        /// An absolute file path, a content address or a `data:` URI; kept
-        /// by its content.
+        /// File path, content address or `data:` URI.
         src: String,
         x: f64,
         y: f64,
-        /// Units; when absent a unit per pixel, or the aspect kept when the
-        /// other side is given.
+        /// Units; absent: a unit per pixel, or the other side's aspect.
         #[serde(default, skip_serializing_if = "is_zero")]
         width: f64,
         #[serde(default, skip_serializing_if = "is_zero")]
         height: f64,
-        /// `[x, y, w, h]` as fractions (0-1) of the picture: the part the
-        /// frame shows. The whole picture when absent.
+        /// Fractions `[x, y, w, h]` of the picture shown.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         crop: Option<[f64; 4]>,
-        /// Degrees the picture turns inside its frame, enlarged just enough
-        /// that no corner shows: level a horizon.
+        /// Degrees turned inside the frame.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         straighten: Option<f64>,
     },
@@ -250,7 +286,7 @@ pub struct Style {
 }
 
 /// Non-destructive colour and tone adjustments, applied in this order:
-/// white balance, exposure, levels, contrast, curve, highlights and
+/// white balance, exposure, contrast, curve, highlights and
 /// shadows, hue, saturation, vibrance, grayscale, invert; then blur,
 /// sharpen and vignette. Absent or zero leaves a step out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -279,10 +315,8 @@ pub struct Adjust {
     /// Magenta +.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<f64>,
-    /// `[black, white, gamma]`: input points 0-1, gamma 0.1-10.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub levels: Option<[f64; 3]>,
-    /// Tone curve `[[in, out], …]`, 0-1.
+    /// Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets
+    /// black and white points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<Vec<[f64; 2]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,9 +332,6 @@ pub struct Adjust {
     /// Edges darker +, lighter -.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vignette: Option<f64>,
-    /// Clear the others first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset: Option<bool>,
 }
 
 /// The blend modes a mark may use.
@@ -413,6 +444,7 @@ pub struct Artwork {
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
     pub reference: Option<Reference>,
+    pub selection: Option<Selection>,
 }
 
 impl Default for Artwork {
@@ -426,6 +458,7 @@ impl Default for Artwork {
             marks: Vec::new(),
             media: BTreeMap::new(),
             reference: None,
+            selection: None,
         }
     }
 }
@@ -437,6 +470,17 @@ impl Artwork {
 
     pub fn mark(&self, id: &str) -> Option<&Mark> {
         self.marks.iter().find(|mark| mark.id == id)
+    }
+
+    /// The layer new marks go on when none is named: the top layer that is
+    /// not a mask.
+    pub fn top_layer(&self) -> Option<&Layer> {
+        self.layers.iter().rev().find(|layer| !layer.is_mask())
+    }
+
+    /// The mask of `layer`, if it has one.
+    pub fn mask_of(&self, layer: &str) -> Option<&Layer> {
+        self.layers.iter().find(|mask| mask.mask_of == layer)
     }
 
     /// The marks of `layer`, bottom to top.
@@ -454,7 +498,8 @@ impl Artwork {
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
             self.layer(&mark.layer)
-                .is_some_and(|layer| layer.visible && !layer.locked)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && mark.inked()
                 && mark.hit(point)
                 && self.clipped_in(mark, point)
         })
@@ -1154,6 +1199,13 @@ fn polyline(points: &[[f64; 2]], closed: bool) -> BezPath {
 }
 
 impl Mark {
+    /// Whether the mark puts down any colour: a mark with none only cuts
+    /// others to its shape.
+    pub fn inked(&self) -> bool {
+        let style = &self.style;
+        style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
+    }
+
     pub fn affine(&self) -> Affine {
         self.transform.map_or(Affine::IDENTITY, Affine::new)
     }

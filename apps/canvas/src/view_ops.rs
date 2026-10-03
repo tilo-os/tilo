@@ -476,6 +476,7 @@ pub fn look(
         bare: false,
         wet: None,
         marks: None,
+        selection: true,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
@@ -674,35 +675,6 @@ fn whole(value: f64) -> f64 {
     value.round()
 }
 
-/// One layer as `inspect` lists it: what differs from a plain, shown,
-/// opaque layer.
-fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
-    let mut entry = json!({
-        "id": layer.id,
-        "name": layer.name,
-        "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
-        "marks": art.marks_of(&layer.id).count(),
-    });
-    if let Value::Object(fields) = &mut entry {
-        if layer.opacity < 1.0 {
-            fields.insert("opacity".into(), layer.opacity.into());
-        }
-        if !layer.visible {
-            fields.insert("visible".into(), false.into());
-        }
-        if layer.texture > 0.0 {
-            fields.insert("texture".into(), layer.texture.into());
-        }
-        if let Some(adjust) = &layer.adjust {
-            fields.insert("adjust".into(), json!(adjust));
-        }
-        if layer.locked {
-            fields.insert("locked".into(), true.into());
-        }
-    }
-    entry
-}
-
 /// One mark as `inspect` lists it; its layer only when the caller did not
 /// name one, and its shape, style and transform when `full`.
 fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Value {
@@ -897,6 +869,11 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if let Some(selection) = selection_info(art)
+        && let Value::Object(fields) = &mut answer
+    {
+        fields.insert("selection".into(), selection);
+    }
     if marks.len() < matching.len()
         && let Value::Object(fields) = &mut answer
     {
@@ -911,6 +888,62 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         );
     }
     Ok(answer)
+}
+
+/// One layer as `inspect` lists it.
+fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
+    let mut entry = json!({
+        "id": layer.id,
+        "name": layer.name,
+        "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
+        "marks": art.marks_of(&layer.id).count(),
+    });
+    if let Value::Object(fields) = &mut entry {
+        if layer.opacity < 1.0 {
+            fields.insert("opacity".into(), layer.opacity.into());
+        }
+        if !layer.visible {
+            fields.insert("visible".into(), false.into());
+        }
+        if layer.texture > 0.0 {
+            fields.insert("texture".into(), layer.texture.into());
+        }
+        if layer.locked {
+            fields.insert("locked".into(), true.into());
+        }
+        if let Some(adjust) = &layer.adjust {
+            fields.insert("adjust".into(), json!(adjust));
+        }
+        mask_fields(layer, fields);
+    }
+    entry
+}
+
+/// The selection as `inspect` reports it: where it is, how much it covers
+/// and how soft its edge is.
+fn selection_info(art: &Artwork) -> Option<Value> {
+    let selection = art.selection.as_ref()?;
+    let region = selection.region();
+    let bounds = region.bounds().unwrap_or_default();
+    Some(json!({
+        "bounds": [whole(bounds.x0), whole(bounds.y0), whole(bounds.width()), whole(bounds.height())],
+        "area": whole(region.area()),
+        "feather": selection.feather,
+    }))
+}
+
+/// A layer's mask and clipping as `inspect` lists them.
+fn mask_fields(layer: &Layer, fields: &mut serde_json::Map<String, Value>) {
+    if layer.is_mask() {
+        fields.insert("mask_of".into(), layer.mask_of.clone().into());
+        fields.insert("base".into(), layer.base.into());
+        if layer.invert {
+            fields.insert("invert".into(), true.into());
+        }
+    }
+    if layer.clip {
+        fields.insert("clip".into(), true.into());
+    }
 }
 
 /// A medium's number as an agent reads it: two decimals say what an f32

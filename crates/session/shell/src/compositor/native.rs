@@ -82,8 +82,8 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolS
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
-    Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
-    combined_geometry, headless, logical_geometry, output_geometry,
+    Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, TabletPhase,
+    WinitBackend, combined_geometry, headless, logical_geometry, output_geometry,
 };
 use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
@@ -2629,6 +2629,7 @@ impl TestControlCtx {
             | PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
             | PlannedAction::MouseWheel { .. }
+            | PlannedAction::Pen { .. }
             | PlannedAction::Touchpad(_) => self.input.note_used(ui::InputModality::Pointer),
             _ => false,
         };
@@ -3294,6 +3295,27 @@ fn execute_planned_action(
             x,
             y,
         } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
+        PlannedAction::Pen {
+            phase,
+            x,
+            y,
+            pressure,
+        } => {
+            let input = virtual_pen(*phase, (*x, *y), *pressure);
+            ctx.cursor = PhysicalPosition::new(*x, *y);
+            let fallback = match state.as_deref_mut() {
+                Some(st) => client_input::route_tablet_event(st, fb, &input, false),
+                None => crate::compositor::tablet::tablet_pointer_events(&input)
+                    .into_iter()
+                    .map(BackendEvent::Input)
+                    .collect(),
+            };
+            for event in fallback {
+                if let BackendEvent::Input(event) = event {
+                    dispatch_synth_event(&event, fb, ctx, &mut state);
+                }
+            }
+        }
         PlannedAction::Touchpad(edge) => {
             if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
                 apply_shell_gesture(fb, gesture);
@@ -3377,6 +3399,47 @@ fn execute_planned_action(
     None
 }
 
+/// One event of the pen an agent or a test draws with: a tablet of its own
+/// whose pen reports pressure, and nothing else.
+fn virtual_pen(
+    phase: TabletPhase,
+    position: (f64, f64),
+    pressure: f64,
+) -> crate::compositor::backend::TabletInput {
+    use crate::compositor::backend::{TabletDevice, TabletInput, TabletTool, TabletToolKind};
+    TabletInput {
+        device: TabletDevice {
+            name: "Tilo virtual pen".into(),
+            usb_id: None,
+            syspath: None,
+        },
+        tool: TabletTool {
+            kind: TabletToolKind::Pen,
+            serial: 0,
+            wacom_id: 0,
+            pressure: true,
+            distance: false,
+            tilt: false,
+            rotation: false,
+            slider: false,
+            wheel: false,
+        },
+        phase,
+        position,
+        pressure: pressure.clamp(0.0, 1.0),
+        distance: 0.0,
+        tilt: (0.0, 0.0),
+        rotation: 0.0,
+        slider: 0.0,
+        wheel: (0.0, 0),
+        // Milliseconds on a clock of the pen's own, as a device's is.
+        time_msec: {
+            static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+            u32::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u32::MAX)
+        },
+    }
+}
+
 /// Why a planned invocation did not happen. Carries the action layer's own
 /// code: `invalid_arguments` for a bad fit, `action_failed` when it ran and refused.
 struct InvokeFailure {
@@ -3414,6 +3477,7 @@ fn execute_locked_action(
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
         | PlannedAction::Touch { .. }
+        | PlannedAction::Pen { .. }
         | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
@@ -4133,12 +4197,14 @@ fn dispatch_for_agent(
             x_to,
             y_to,
             steps,
+            pressure,
         } => Command::Drag {
             x_from: x_from + ox,
             y_from: y_from + oy,
             x_to: x_to + ox,
             y_to: y_to + oy,
             steps,
+            pressure,
         },
         other => other,
     };
@@ -4146,10 +4212,13 @@ fn dispatch_for_agent(
     let viewport = scope.viewport;
     let inside =
         |x: f64, y: f64| x >= viewport.x0 && x < viewport.x1 && y >= viewport.y0 && y < viewport.y1;
-    if actions
-        .iter()
-        .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
-    {
+    if actions.iter().any(|action| {
+        matches!(
+            action,
+            PlannedAction::CursorMoved { x, y } | PlannedAction::Pen { x, y, .. }
+                if !inside(*x, *y)
+        )
+    }) {
         let message = match &scope.window {
             Some(app_id) => format!(
                 "the pointer would leave {app_id}'s window, which is {}x{} pixels from its top-left",
@@ -7978,6 +8047,8 @@ pub fn run() {
         // in order, before the batch is dispatched.
         // A pad follows keyboard focus the same way, with its settings'
         // mapping standing in wherever no tablet-aware app is focused.
+        // The cursor follows a pen over a tablet-aware client too.
+        let mut pen_moved = false;
         if pending_events.iter().any(|event| {
             matches!(
                 event,
@@ -7991,9 +8062,10 @@ pub fn run() {
             for event in std::mem::take(&mut pending_events) {
                 match event {
                     BackendEvent::Tablet(input) => {
+                        pen_moved = true;
                         pending_events.extend(client_input::route_tablet_event(
                             &mut state,
-                            &frame_builder,
+                            &mut frame_builder,
                             &input,
                             session.is_locked(),
                         ));
@@ -8063,7 +8135,7 @@ pub fn run() {
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
-        let mut visible_input_changed = false;
+        let mut visible_input_changed = pen_moved;
         for request in native_accessibility.drain() {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
